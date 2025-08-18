@@ -4,7 +4,7 @@ import re
 import time
 import os
 import shutil
-from log_handler import log_error, log_info, log_warning
+from log_handler import log_error, log_info
 from pathlib import Path
 
 def run_command(command_list: list[str], raise_on_error: bool = True) -> str:
@@ -432,77 +432,153 @@ def validate_vm_name(name: str) -> tuple[bool, str]:
 def get_active_disk():
     """
     Detect the active device backing the root filesystem.
-    Returns a list of devices or None for consistency with original code.
+    Always returns a list of devices or None for consistency.
+    Uses LVM logic if the root device is a logical volume (/dev/mapper/),
+    otherwise uses regular disk detection logic including live boot media detection.
     """
     try:
         # Initialize devices set for collecting all active devices
         devices = set()
+        live_boot_found = False
         
-        # Method 1: Check /proc/mounts for root filesystem
-        try:
-            with open('/proc/mounts', 'r') as f:
-                for line in f:
-                    if line.strip() and ' / ' in line:
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            root_device = parts[0]
-                            
-                            # Extract device name with improved regex for NVMe
-                            match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', root_device)
-                            if match:
-                                device_name = match.group(1)
-                                # Get base disk name
-                                base_device = get_base_disk(device_name)
-                                devices.add(base_device)
-                            break
-        except (IOError, OSError):
-            log_warning("Could not read /proc/mounts")
-        
-        # Method 2: Use lsblk to find mounted root filesystems
-        try:
-            # Get all block devices with mount points
-            output = run_command(["lsblk", "-o", "NAME,MOUNTPOINT", "-n"], raise_on_error=False)
-            for line in output.split('\n'):
-                if ' /' in line and line.strip().endswith(' /'):
-                    # This is mounted as root
+        # Step 1: Check /proc/mounts for all mounted devices
+        with open('/proc/mounts', 'r') as f:
+            mounts_content = f.read()
+            
+            # Look for root filesystem mount
+            root_device = None
+            for line in mounts_content.split('\n'):
+                if line.strip() and ' / ' in line:
                     parts = line.split()
-                    if parts:
-                        device_name = parts[0].strip()
-                        # Remove any tree characters from lsblk output
-                        device_name = re.sub(r'^[├└─│\s]+', '', device_name)
-                        base_device = get_base_disk(device_name)
-                        devices.add(base_device)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            log_warning("Could not use lsblk to detect active disks")
-        
-        # Method 3: Check for logical volumes and map to physical drives
-        try:
-            # Get all logical volumes that might be active
-            active_logical_devices = []
+                    if len(parts) >= 2:
+                        root_device = parts[0]
+                        break
+
+        # Step 2: Handle special live boot cases where root is not a real device
+        if not root_device or root_device in ['rootfs', 'overlay', 'aufs', '/dev/root']:
             
-            # Check /proc/mounts for any mapper devices
+            # In live boot, look for the actual boot media in /proc/mounts
             with open('/proc/mounts', 'r') as f:
                 for line in f:
-                    if '/dev/mapper/' in line:
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            active_logical_devices.append(parts[0])
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        device = parts[0]
+                        mount_point = parts[1]
+                        
+                        # Look for common live boot mount points
+                        if any(keyword in mount_point for keyword in ['/run/live', '/lib/live', '/live/', '/cdrom']):
+                            match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
+                            if match:
+                                devices.add(match.group(1))
+                                live_boot_found = True
+                        
+                        # Also check for USB/removable media patterns
+                        elif device.startswith('/dev/') and any(keyword in device for keyword in ['sd', 'nvme', 'mmc']):
+                            # Check if this looks like a removable device by checking mount point
+                            if '/media' in mount_point or '/mnt' in mount_point or '/run' in mount_point:
+                                match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
+                                if match:
+                                    devices.add(match.group(1))
             
-            if active_logical_devices:
-                physical_drives = get_physical_drives_for_logical_volumes(active_logical_devices)
-                devices.update(physical_drives)
-                
-        except (IOError, OSError):
-            log_warning("Could not check for logical volumes")
+            # If we still haven't found anything, fall back to df command analysis
+            if not devices:
+                # Use df command instead of viewing /proc/mounts
+                try:
+                    output = run_command(["df", "-h"])
+                    lines = output.strip().split('\n')
+                    
+                    for line in lines[1:]:  # Skip header
+                        parts = line.split()
+                        if len(parts) >= 6:
+                            device = parts[0]
+                            mount_point = parts[5]
+                            
+                            # Look for any mounted storage devices
+                            if device.startswith('/dev/') and any(keyword in device for keyword in ['sd', 'nvme', 'mmc']):
+                                match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
+                                if match:
+                                    devices.add(match.group(1))
+                except (FileNotFoundError, subprocess.CalledProcessError) as e:
+                    log_error(f"Error running df command: {str(e)}")
         
+        else:
+            # Step 3: Handle normal root device (installed system)
+            # Check if this is LVM/device mapper
+            if '/dev/mapper/' in root_device or '/dev/dm-' in root_device:
+                # LVM resolution - map to physical drives
+                active_physical_drives = get_physical_drives_for_logical_volumes([root_device])
+                
+                # Add physical drives to devices set
+                for drive in active_physical_drives:
+                    devices.add(get_base_disk(drive))
+                    
+            else:
+                # Regular disk - extract device name with improved regex for NVMe
+                match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', root_device)
+                if match:
+                    devices.add(match.group(1))
+            
+            # Also check for live boot media even in normal systems
+            try:
+                output = run_command(["df", "-h"])
+                lines = output.strip().split('\n')
+                
+                for line in lines[1:]:  # Skip header line
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        device = parts[0]
+                        mount_point = parts[5]
+                        
+                        # Check for live boot mount points
+                        if "/run/live" in mount_point or "/lib/live" in mount_point:
+                            match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
+                            if match:
+                                devices.add(match.group(1))
+                                live_boot_found = True
+            except (FileNotFoundError, subprocess.CalledProcessError) as e:
+                log_info(f"Could not check for live boot devices: {str(e)}")
+
+        # Step 4: Return logic
         if devices:
-            return list(devices)
+            device_list = list(devices)
+            
+            # If we found live boot devices, prioritize those (remove LVM if present)
+            if live_boot_found:
+                # Filter out LVM devices when live boot is detected, keep only regular disk names
+                final_devices = [dev for dev in device_list if not dev.startswith('/dev/')]
+                if final_devices:
+                    return final_devices
+            return device_list
         else:
             log_error("No active devices found")
             return None
 
-    except Exception as e:
-        log_error(f"Error detecting active disk: {str(e)}")
+    except FileNotFoundError as e:
+        log_error(f"Required file not found: {str(e)}")
+        return None
+    except PermissionError as e:
+        log_error(f"Permission denied accessing system files: {str(e)}")
+        return None
+    except OSError as e:
+        log_error(f"OS error accessing system information: {str(e)}")
+        return None
+    except subprocess.CalledProcessError as e:
+        log_error(f"Error running command: {str(e)}")
+        return None
+    except (IndexError, ValueError) as e:
+        log_error(f"Error parsing command output: {str(e)}")
+        return None
+    except re.error as e:
+        log_error(f"Regex pattern error: {str(e)}")
+        return None
+    except KeyboardInterrupt:
+        log_error("Operation interrupted by user")
+        return None
+    except UnicodeDecodeError as e:
+        log_error(f"Error decoding file content: {str(e)}")
+        return None
+    except MemoryError:
+        log_error("Insufficient memory to process device information")
         return None
 
 def get_physical_drives_for_logical_volumes(active_devices: list) -> set:
