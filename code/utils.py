@@ -163,6 +163,184 @@ def get_disk_list() -> list[dict]:
         log_error("Disk listing interrupted by user")
         return []
 
+def get_mounted_devices() -> set:
+    """
+    Get set of currently mounted device paths
+    """
+    mounted_devices = set()
+    try:
+        with open('/proc/mounts', 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 1 and parts[0].startswith('/dev/'):
+                    device = parts[0]
+                    mounted_devices.add(device)
+                    # Also add base disk name for partition checking
+                    if device[-1].isdigit():
+                        base_device = device.rstrip('0123456789')
+                        mounted_devices.add(base_device)
+    except (IOError, OSError) as e:
+        log_error(f"Could not read /proc/mounts: {str(e)}")
+    
+    return mounted_devices
+
+def check_filesystem(device_path: str) -> str:
+    """Check if device has a mountable filesystem and return filesystem type"""
+    try:
+        # Check for filesystem using lsblk
+        result = subprocess.run(['lsblk', '-n', '-o', 'FSTYPE', device_path], 
+                              capture_output=True, text=True, check=True)
+        
+        filesystems = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+        
+        # Common mountable filesystems
+        mountable_fs = ['ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'ntfs', 'fat32', 'vfat', 'exfat']
+        
+        for fs in filesystems:
+            if fs.lower() in mountable_fs:
+                return fs
+        
+        return None
+    
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+def mount_disk(device_path: str, mount_point: str, filesystem_type: str = None) -> bool:
+    """
+    Mount a disk to a specified mount point
+    
+    Args:
+        device_path: Path to device (e.g., /dev/sdb1)
+        mount_point: Directory to mount to
+        filesystem_type: Optional filesystem type
+    
+    Returns:
+        bool: True if mount successful, False otherwise
+    """
+    try:
+        # Create mount point if it doesn't exist
+        os.makedirs(mount_point, exist_ok=True)
+        
+        # Build mount command
+        mount_cmd = ['sudo', 'mount']
+        
+        if filesystem_type:
+            if filesystem_type.lower() == 'ntfs':
+                mount_cmd.extend(['-t', 'ntfs-3g'])
+            else:
+                mount_cmd.extend(['-t', filesystem_type])
+        
+        mount_cmd.extend([device_path, mount_point])
+        
+        # Execute mount command
+        result = subprocess.run(mount_cmd, capture_output=True, text=True, check=True)
+        
+        # Verify mount was successful
+        if os.path.ismount(mount_point):
+            log_info(f"Successfully mounted {device_path} to {mount_point}")
+            return True
+        else:
+            log_error(f"Mount command succeeded but {mount_point} is not mounted")
+            return False
+    
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to mount {device_path}: {e.stderr if e.stderr else str(e)}"
+        log_error(error_msg)
+        return False
+    
+    except PermissionError as e:
+        log_error(f"Permission denied mounting {device_path}: {str(e)}")
+        return False
+    
+    except Exception as e:
+        log_error(f"Unexpected error mounting {device_path}: {str(e)}")
+        return False
+
+def unmount_disk(mount_point: str) -> bool:
+    """
+    Unmount a disk from specified mount point
+    
+    Args:
+        mount_point: Directory to unmount
+    
+    Returns:
+        bool: True if unmount successful, False otherwise
+    """
+    try:
+        # Execute unmount command
+        result = subprocess.run(['sudo', 'umount', mount_point], 
+                              capture_output=True, text=True, check=True)
+        
+        # Verify unmount was successful
+        if not os.path.ismount(mount_point):
+            log_info(f"Successfully unmounted {mount_point}")
+            return True
+        else:
+            log_error(f"Unmount command succeeded but {mount_point} is still mounted")
+            return False
+    
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to unmount {mount_point}: {e.stderr if e.stderr else str(e)}"
+        log_error(error_msg)
+        return False
+    
+    except Exception as e:
+        log_error(f"Unexpected error unmounting {mount_point}: {str(e)}")
+        return False
+
+def get_unmounted_disks() -> list[dict]:
+    """
+    Get list of unmounted disks suitable for mounting
+    Returns list of disk dictionaries with additional 'has_filesystem' field
+    """
+    try:
+        # Get all disks
+        all_disks = get_disk_list()
+        unmounted_disks = []
+        
+        # Get currently mounted devices
+        mounted_devices = get_mounted_devices()
+        
+        # Filter out mounted and system disks
+        for disk in all_disks:
+            device_path = disk['device']
+            
+            # Skip if it's a system/active disk
+            if disk.get('is_active', False) or is_system_disk(device_path):
+                continue
+            
+            # Check if any partitions are mounted
+            is_mounted = False
+            try:
+                # Get partitions for this disk
+                result = subprocess.run(['lsblk', '-n', '-o', 'NAME', device_path], 
+                                      capture_output=True, text=True, check=True)
+                
+                for line in result.stdout.strip().split('\n'):
+                    if line.strip():
+                        partition_name = line.strip()
+                        partition_path = f"/dev/{partition_name}"
+                        if partition_path in mounted_devices:
+                            is_mounted = True
+                            break
+            
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                # If we can't check partitions, assume it might be mounted
+                if device_path in mounted_devices:
+                    is_mounted = True
+            
+            if not is_mounted:
+                # Check if disk has a filesystem we can mount
+                has_filesystem = check_filesystem(device_path)
+                disk['has_filesystem'] = has_filesystem
+                unmounted_disks.append(disk)
+        
+        return unmounted_disks
+    
+    except Exception as e:
+        log_error(f"Error getting unmounted disks: {str(e)}")
+        return []
+
 def format_bytes(bytes_count: int) -> str:
     """Convert bytes to human readable format"""
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -310,7 +488,7 @@ def check_output_space(output_path: str, source_disk: str) -> tuple[bool, str]:
         has_space = space_info['free'] >= required_space
         
         message += f"Required space (with 10% margin): {format_bytes(required_space)}\n"
-        message += f"Status: {'✅ Sufficient space' if has_space else '❌ Insufficient space'}"
+        message += f"Status: {'Sufficient space' if has_space else 'Insufficient space'}"
         
         return has_space, message
         
