@@ -4,6 +4,7 @@ import re
 import time
 import os
 import shutil
+import json
 from log_handler import log_error, log_info
 from pathlib import Path
 
@@ -186,13 +187,77 @@ def get_directory_space(path: str) -> dict:
         log_error(f"Error getting disk space for {path}: {str(e)}")
         return {'total': 0, 'used': 0, 'free': 0}
 
-def check_output_space(output_path: str, source_disk_size: int, compression_ratio: float = 0.5) -> tuple[bool, str]:
+def get_disk_usage_info(device: str) -> dict:
     """
-    Check if output directory has enough space for the VM
+    Get disk usage information for better space estimation
+    Returns dict with filesystem usage info
+    """
+    try:
+        # Try to get filesystem usage information
+        result = subprocess.run(['df', device], capture_output=True, text=True, check=True)
+        lines = result.stdout.strip().split('\n')
+        
+        if len(lines) > 1:
+            parts = lines[1].split()
+            if len(parts) >= 6:
+                total = int(parts[1]) * 1024  # Convert from KB to bytes
+                used = int(parts[2]) * 1024
+                available = int(parts[3]) * 1024
+                
+                return {
+                    'total': total,
+                    'used': used,
+                    'available': available,
+                    'usage_percent': (used / total * 100) if total > 0 else 0
+                }
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError, IndexError):
+        # If we can't get filesystem info, try to estimate from partitions
+        try:
+            # Get all partitions for this device and try to sum their usage
+            result = subprocess.run(['lsblk', '-n', '-o', 'NAME', device], capture_output=True, text=True, check=True)
+            partitions = []
+            for line in result.stdout.strip().split('\n'):
+                partition = line.strip()
+                if partition and partition != device.replace('/dev/', ''):
+                    partitions.append(f"/dev/{partition}")
+            
+            total_used = 0
+            for partition in partitions:
+                try:
+                    df_result = subprocess.run(['df', partition], capture_output=True, text=True, check=True)
+                    df_lines = df_result.stdout.strip().split('\n')
+                    if len(df_lines) > 1:
+                        df_parts = df_lines[1].split()
+                        if len(df_parts) >= 3:
+                            total_used += int(df_parts[2]) * 1024  # Convert KB to bytes
+                except subprocess.CalledProcessError:
+                    continue
+            
+            if total_used > 0:
+                disk_info = get_disk_info(device)
+                total_size = disk_info['size_bytes']
+                return {
+                    'total': total_size,
+                    'used': total_used,
+                    'available': total_size - total_used,
+                    'usage_percent': (total_used / total_size * 100) if total_size > 0 else 0
+                }
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    
+    return {
+        'total': 0,
+        'used': 0, 
+        'available': 0,
+        'usage_percent': 0
+    }
+
+def check_output_space(output_path: str, source_disk: str) -> tuple[bool, str]:
+    """
+    Improved space checking that considers actual disk usage
     Args:
         output_path: Path to output directory
-        source_disk_size: Size of source disk in bytes
-        compression_ratio: Expected compression ratio (0.5 = 50% compression)
+        source_disk: Path to source disk or disk size in bytes (for backward compatibility)
     Returns:
         tuple: (has_enough_space, message)
     """
@@ -200,20 +265,52 @@ def check_output_space(output_path: str, source_disk_size: int, compression_rati
         # Ensure directory exists
         os.makedirs(output_path, exist_ok=True)
         
+        # Get output directory space
         space_info = get_directory_space(output_path)
-        estimated_vm_size = int(source_disk_size * compression_ratio)
         
-        # Add 10% safety margin
-        required_space = int(estimated_vm_size * 1.1)
+        # Handle both disk path and size inputs for backward compatibility
+        if isinstance(source_disk, str) and source_disk.startswith('/dev/'):
+            # It's a disk path - get disk info and usage
+            disk_info = get_disk_info(source_disk)
+            disk_size = disk_info['size_bytes']
+            usage_info = get_disk_usage_info(source_disk)
+            
+            if usage_info['used'] > 0:
+                # Use actual filesystem usage + 30% overhead for metadata/compression variation
+                estimated_size = int(usage_info['used'] * 1.3)
+                estimation_method = "filesystem usage + 30% overhead"
+            else:
+                # Fallback to conservative estimate (50% of disk size)
+                estimated_size = int(disk_size * 0.5)
+                estimation_method = "50% of total disk size (conservative)"
+            
+            message = (
+                f"Source disk size: {format_bytes(disk_size)}\n"
+                f"Available output space: {format_bytes(space_info['free'])}\n"
+                f"Estimated VM size: {format_bytes(estimated_size)} ({estimation_method})\n"
+            )
+            
+            if usage_info['used'] > 0:
+                message += f"Filesystem usage: {format_bytes(usage_info['used'])} ({usage_info['usage_percent']:.1f}%)\n"
         
+        else:
+            # Backward compatibility: source_disk is actually disk size in bytes
+            disk_size = int(source_disk) if isinstance(source_disk, (int, str)) else source_disk
+            estimated_size = int(disk_size * 0.5)  # 50% compression ratio
+            estimation_method = "50% compression ratio (conservative)"
+            
+            message = (
+                f"Source disk size: {format_bytes(disk_size)}\n"
+                f"Available output space: {format_bytes(space_info['free'])}\n"
+                f"Estimated VM size: {format_bytes(estimated_size)} ({estimation_method})\n"
+            )
+        
+        # Add additional 10% safety margin
+        required_space = int(estimated_size * 1.1)
         has_space = space_info['free'] >= required_space
         
-        message = (
-            f"Available space: {format_bytes(space_info['free'])}\n"
-            f"Estimated VM size: {format_bytes(estimated_vm_size)}\n"
-            f"Required space (with 10% margin): {format_bytes(required_space)}\n"
-            f"Status: {'✅ Sufficient space' if has_space else '❌ Insufficient space'}"
-        )
+        message += f"Required space (with 10% margin): {format_bytes(required_space)}\n"
+        message += f"Status: {'✅ Sufficient space' if has_space else '❌ Insufficient space'}"
         
         return has_space, message
         
@@ -235,9 +332,48 @@ def check_qemu_tools() -> tuple[bool, str]:
         return False, f"Missing required tools: {', '.join(missing)}"
     return True, "All required tools available"
 
+def verify_vm_image(qcow2_path: str) -> dict:
+    """
+    Verify and get information about a qcow2 VM image
+    Returns dict with verification results and image information
+    """
+    try:
+        # Use qemu-img info to get image details
+        result = subprocess.run(['qemu-img', 'info', '--output=json', qcow2_path], 
+                               capture_output=True, text=True, check=True)
+        
+        info_data = json.loads(result.stdout)
+        
+        return {
+            'success': True,
+            'virtual_size': info_data.get('virtual-size', 0),
+            'actual_size': info_data.get('actual-size', 0),
+            'format': info_data.get('format', 'unknown'),
+            'compressed': info_data.get('compressed', False)
+        }
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError, KeyError):
+        # Fallback to file size if qemu-img info fails
+        try:
+            actual_size = os.path.getsize(qcow2_path)
+            return {
+                'success': False,
+                'virtual_size': 0,
+                'actual_size': actual_size,
+                'format': 'qcow2',
+                'compressed': True
+            }
+        except OSError:
+            return {
+                'success': False,
+                'virtual_size': 0,
+                'actual_size': 0,
+                'format': 'unknown',
+                'compressed': False
+            }
+
 def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progress_callback=None, stop_flag=None) -> str:
     """
-    Convert physical disk to qcow2 VM
+    Convert physical disk to qcow2 VM with sparse allocation (only used data)
     Args:
         source_disk: Path to source disk (e.g., /dev/sda)
         output_path: Directory to save VM files
@@ -252,43 +388,73 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
         os.makedirs(output_path, exist_ok=True)
         
         # Generate file paths
-        raw_image_path = os.path.join(output_path, f"{vm_name}_temp.img")
         qcow2_path = os.path.join(output_path, f"{vm_name}.qcow2")
+        temp_qcow2_path = os.path.join(output_path, f"{vm_name}_temp.qcow2")
         
         log_info(f"Starting P2V conversion: {source_disk} -> {qcow2_path}")
         
-        # Step 1: Create raw image from physical disk using dd
-        log_info("Step 1: Creating raw disk image...")
-        if progress_callback:
-            progress_callback(10, "Creating raw disk image...")
-        
-        # Get disk size for dd progress monitoring
+        # Get original disk size
         disk_info = get_disk_info(source_disk)
-        block_size = "1M"  # 1MB blocks for better performance
+        original_size = disk_info['size_bytes']
         
-        dd_cmd = [
-            'dd',
-            f'if={source_disk}',
-            f'of={raw_image_path}',
-            f'bs={block_size}',
-            'conv=sync,noerror',  # Continue on read errors
-            'status=progress'  # Show progress
+        log_info(f"Original disk size: {format_bytes(original_size)}")
+        
+        # Step 1: Convert directly from physical disk to qcow2 with sparse allocation
+        log_info("Step 1: Converting disk with sparse allocation...")
+        if progress_callback:
+            progress_callback(10, "Starting sparse disk conversion...")
+        
+        # Convert directly from physical disk to qcow2 with sparse and compression
+        qemu_convert_cmd = [
+            'qemu-img', 'convert',
+            '-f', 'raw',                    # Input format
+            '-O', 'qcow2',                  # Output format  
+            '-c',                           # Compress
+            '-S', '4k',                     # Skip empty sectors (4k blocks)
+            '-p',                           # Show progress
+            source_disk,                    # Input device
+            temp_qcow2_path                # Temporary output
         ]
         
-        # Run dd with monitoring
-        process = subprocess.Popen(dd_cmd, stderr=subprocess.PIPE, text=True)
+        log_info(f"Running command: {' '.join(qemu_convert_cmd)}")
         
+        # Run qemu-img convert with monitoring
+        process = subprocess.Popen(qemu_convert_cmd, stderr=subprocess.PIPE, 
+                                 stdout=subprocess.PIPE, text=True, bufsize=1)
+        
+        last_progress = 0
         while process.poll() is None:
             if stop_flag and stop_flag():
                 process.terminate()
                 process.wait()
-                # Clean up temporary file
-                if os.path.exists(raw_image_path):
-                    os.remove(raw_image_path)
+                # Clean up files
+                for temp_file in [temp_qcow2_path]:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
                 raise KeyboardInterrupt("Operation cancelled by user")
             
-            if progress_callback:
-                progress_callback(50, "Copying disk data...")
+            # Try to parse progress from stderr
+            if process.stderr and process.stderr.readable():
+                try:
+                    # Non-blocking read
+                    import select
+                    if select.select([process.stderr], [], [], 0)[0]:
+                        line = process.stderr.readline()
+                        if line and '(' in line and '%' in line:
+                            # Extract percentage from qemu-img progress output
+                            import re
+                            match = re.search(r'\((\d+\.\d+)/100%\)', line)
+                            if match:
+                                current_progress = int(10 + float(match.group(1)) * 0.8)  # Scale to 10-90%
+                                if current_progress > last_progress:
+                                    last_progress = current_progress
+                                    if progress_callback:
+                                        progress_callback(current_progress, "Converting disk data...")
+                except:
+                    pass  # Ignore errors in progress parsing
+            
+            if progress_callback and last_progress == 0:
+                progress_callback(50, "Converting disk data...")
             
             time.sleep(2)
         
@@ -296,69 +462,47 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
         
         if process.returncode != 0:
             # Clean up on failure
-            if os.path.exists(raw_image_path):
-                os.remove(raw_image_path)
-            raise subprocess.CalledProcessError(process.returncode, dd_cmd, stdout, stderr)
+            if os.path.exists(temp_qcow2_path):
+                os.remove(temp_qcow2_path)
+            error_msg = f"qemu-img convert failed with return code {process.returncode}"
+            if stderr:
+                error_msg += f"\nError output: {stderr}"
+            raise subprocess.CalledProcessError(process.returncode, qemu_convert_cmd, stdout, stderr)
         
-        log_info("Raw disk image created successfully")
+        log_info("Sparse disk conversion completed")
         
-        # Step 2: Convert raw image to compressed qcow2
-        log_info("Step 2: Converting to compressed qcow2...")
+        # Step 2: Move temporary file to final location
+        log_info("Step 2: Finalizing VM image...")
         if progress_callback:
-            progress_callback(70, "Converting to qcow2 format...")
+            progress_callback(95, "Finalizing VM image...")
         
-        qemu_cmd = [
-            'qemu-img', 'convert',
-            '-f', 'raw',           # Input format
-            '-O', 'qcow2',         # Output format
-            '-c',                  # Compress
-            '-p',                  # Show progress
-            raw_image_path,        # Input file
-            qcow2_path            # Output file
-        ]
+        # Move the converted file to final location
+        os.rename(temp_qcow2_path, qcow2_path)
         
-        # Run qemu-img convert
-        process = subprocess.Popen(qemu_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        
-        while process.poll() is None:
-            if stop_flag and stop_flag():
-                process.terminate()
-                process.wait()
-                # Clean up files
-                for temp_file in [raw_image_path, qcow2_path]:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                raise KeyboardInterrupt("Operation cancelled by user")
-            
-            if progress_callback:
-                progress_callback(85, "Compressing virtual machine...")
-            
-            time.sleep(1)
-        
-        stdout, stderr = process.communicate()
-        
-        if process.returncode != 0:
-            # Clean up on failure
-            for temp_file in [raw_image_path, qcow2_path]:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            raise subprocess.CalledProcessError(process.returncode, qemu_cmd, stdout, stderr)
-        
-        # Step 3: Clean up temporary raw image
-        log_info("Step 3: Cleaning up temporary files...")
-        if progress_callback:
-            progress_callback(95, "Cleaning up...")
-        
-        os.remove(raw_image_path)
-        
-        # Step 4: Verify output file
+        # Step 3: Verify and get final information
         if not os.path.exists(qcow2_path):
             raise Exception("qcow2 file was not created successfully")
         
-        final_size = os.path.getsize(qcow2_path)
-        log_info(f"P2V conversion completed successfully")
-        log_info(f"Output file: {qcow2_path}")
-        log_info(f"Final VM size: {format_bytes(final_size)}")
+        # Get detailed image information
+        verification_info = verify_vm_image(qcow2_path)
+        
+        if verification_info['success']:
+            actual_size = verification_info['actual_size']
+            virtual_size = verification_info['virtual_size']
+            
+            log_info(f"P2V conversion completed successfully")
+            log_info(f"Output file: {qcow2_path}")
+            log_info(f"Virtual disk size: {format_bytes(virtual_size)}")
+            log_info(f"Actual file size: {format_bytes(actual_size)}")
+            
+            if virtual_size > 0:
+                space_saved = virtual_size - actual_size
+                savings_percent = (space_saved / virtual_size * 100)
+                log_info(f"Space saved: {format_bytes(space_saved)} ({savings_percent:.1f}%)")
+        else:
+            log_info(f"P2V conversion completed - file created: {qcow2_path}")
+            actual_size = os.path.getsize(qcow2_path)
+            log_info(f"Final file size: {format_bytes(actual_size)}")
         
         if progress_callback:
             progress_callback(100, "Conversion completed successfully!")
@@ -432,9 +576,10 @@ def validate_vm_name(name: str) -> tuple[bool, str]:
 def get_active_disk():
     """
     Detect the active device backing the root filesystem.
-    Always returns a list of devices or None for consistency.
+    Always returns a list of base disk names (e.g., ['nvme0n1', 'sda']) or None for consistency.
     Uses LVM logic if the root device is a logical volume (/dev/mapper/),
     otherwise uses regular disk detection logic including live boot media detection.
+    All returned device names are resolved to their base disk names.
     """
     try:
         # Initialize devices set for collecting all active devices
@@ -469,7 +614,9 @@ def get_active_disk():
                         if any(keyword in mount_point for keyword in ['/run/live', '/lib/live', '/live/', '/cdrom']):
                             match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
                             if match:
-                                devices.add(match.group(1))
+                                device_name = match.group(1)
+                                base_device = get_base_disk(device_name)
+                                devices.add(base_device)
                                 live_boot_found = True
                         
                         # Also check for USB/removable media patterns
@@ -478,7 +625,9 @@ def get_active_disk():
                             if '/media' in mount_point or '/mnt' in mount_point or '/run' in mount_point:
                                 match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
                                 if match:
-                                    devices.add(match.group(1))
+                                    device_name = match.group(1)
+                                    base_device = get_base_disk(device_name)
+                                    devices.add(base_device)
             
             # If we still haven't found anything, fall back to df command analysis
             if not devices:
@@ -497,7 +646,9 @@ def get_active_disk():
                             if device.startswith('/dev/') and any(keyword in device for keyword in ['sd', 'nvme', 'mmc']):
                                 match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
                                 if match:
-                                    devices.add(match.group(1))
+                                    device_name = match.group(1)
+                                    base_device = get_base_disk(device_name)
+                                    devices.add(base_device)
                 except (FileNotFoundError, subprocess.CalledProcessError) as e:
                     log_error(f"Error running df command: {str(e)}")
         
@@ -508,15 +659,18 @@ def get_active_disk():
                 # LVM resolution - map to physical drives
                 active_physical_drives = get_physical_drives_for_logical_volumes([root_device])
                 
-                # Add physical drives to devices set
+                # Add physical drives to devices set, resolving to base names
                 for drive in active_physical_drives:
-                    devices.add(get_base_disk(drive))
+                    base_device = get_base_disk(drive)
+                    devices.add(base_device)
                     
             else:
                 # Regular disk - extract device name with improved regex for NVMe
                 match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', root_device)
                 if match:
-                    devices.add(match.group(1))
+                    device_name = match.group(1)
+                    base_device = get_base_disk(device_name)
+                    devices.add(base_device)
             
             # Also check for live boot media even in normal systems
             try:
@@ -533,7 +687,9 @@ def get_active_disk():
                         if "/run/live" in mount_point or "/lib/live" in mount_point:
                             match = re.search(r'/dev/([a-zA-Z]+\d*[a-zA-Z]*\d*)', device)
                             if match:
-                                devices.add(match.group(1))
+                                device_name = match.group(1)
+                                base_device = get_base_disk(device_name)
+                                devices.add(base_device)
                                 live_boot_found = True
             except (FileNotFoundError, subprocess.CalledProcessError) as e:
                 log_info(f"Could not check for live boot devices: {str(e)}")
@@ -541,13 +697,6 @@ def get_active_disk():
         # Step 4: Return logic
         if devices:
             device_list = list(devices)
-            
-            # If we found live boot devices, prioritize those (remove LVM if present)
-            if live_boot_found:
-                # Filter out LVM devices when live boot is detected, keep only regular disk names
-                final_devices = [dev for dev in device_list if not dev.startswith('/dev/')]
-                if final_devices:
-                    return final_devices
             return device_list
         else:
             log_error("No active devices found")

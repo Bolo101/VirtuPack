@@ -26,9 +26,6 @@ class P2VConverterGUI:
         self.root.title("Physical to Virtual (P2V) Converter")
         self.root.geometry("1000x800")
         
-        # Set up GUI styling first
-        setup_gui_styling()
-        
         # Operation control variables
         self.operation_running = False
         self.stop_requested = False
@@ -194,12 +191,12 @@ class P2VConverterGUI:
         control_frame = ttk.Frame(main_frame)
         control_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         
-        self.check_space_btn = ttk.Button(control_frame, text="🔍 Check Space Requirements", 
+        self.check_space_btn = ttk.Button(control_frame, text="💾 Check Space Requirements", 
                                          command=self.check_space_requirements)
         self.check_space_btn.grid(row=0, column=0, padx=(0, 10))
         
         self.convert_btn = ttk.Button(control_frame, text="▶️ Start P2V Conversion", 
-                                     command=self.start_conversion, style="Accent.TButton")
+                                     command=self.start_conversion)
         self.convert_btn.grid(row=0, column=1, padx=(0, 10))
         
         self.stop_btn = ttk.Button(control_frame, text="⏹️ Stop Operation", 
@@ -521,15 +518,11 @@ class P2VConverterGUI:
             
             log_info(f"Checking space requirements for {device_path}")
             
-            # Get disk info using the improved function
+            # Use the consolidated check_output_space function
+            has_space, space_message = check_output_space(output_dir, device_path)
+            
+            # Get disk info for additional display information
             disk_info = get_disk_info(device_path)
-            disk_size = disk_info.get('size_bytes', 0)
-            
-            if disk_size == 0:
-                raise ValueError("Could not determine disk size")
-            
-            # Check space using improved function
-            has_space, space_message = check_output_space(output_dir, disk_size)
             
             # Update space info display with enhanced information
             self.space_info_text.config(state=tk.NORMAL)
@@ -539,7 +532,6 @@ class P2VConverterGUI:
             info_text += f"Model: {disk_info.get('model', 'Unknown')}\n"
             if disk_info.get('label') and disk_info['label'] != "Unknown":
                 info_text += f"Label: {disk_info['label']}\n"
-            info_text += f"Source Size: {disk_info.get('size_human', 'Unknown')}\n"
             info_text += f"Output Directory: {output_dir}\n\n"
             info_text += space_message
             
@@ -614,15 +606,12 @@ class P2VConverterGUI:
         
         # Space check before starting
         try:
-            disk_info = get_disk_info(device_path)
-            disk_size = disk_info.get('size_bytes', 0)
-            if disk_size > 0:
-                has_space, space_message = check_output_space(output_dir, disk_size)
-                if not has_space:
-                    if not messagebox.askyesno("Insufficient Space Warning",
-                                             f"⚠️ Space Warning ⚠️\n\n{space_message}\n\n"
-                                             f"Continue anyway? The conversion may fail."):
-                        return
+            has_space, space_message = check_output_space(output_dir, device_path)
+            if not has_space:
+                if not messagebox.askyesno("Insufficient Space Warning",
+                                         f"⚠️ Space Warning ⚠️\n\n{space_message}\n\n"
+                                         f"Continue anyway? The conversion may fail."):
+                    return
         except (OSError, IOError) as e:
             log_warning(f"System error checking space before conversion: {str(e)}")
         except (ValueError, TypeError, KeyError) as e:
@@ -923,25 +912,3 @@ class P2VConverterGUI:
             # Re-enable button and reset status
             self.file_pdf_btn.config(state=tk.NORMAL)
             self.status_var.set("Ready")
-
-
-def setup_gui_styling():
-    """Set up GUI styling and themes"""
-    try:
-        style = ttk.Style()
-        # Try to use a modern theme if available
-        available_themes = style.theme_names()
-        if 'clam' in available_themes:
-            style.theme_use('clam')
-        elif 'alt' in available_themes:
-            style.theme_use('alt')
-        
-        # Configure accent button style if theme supports it
-        try:
-            style.configure("Accent.TButton", 
-                          font=("Arial", 9, "bold"))
-        except (tk.TclError, AttributeError):
-            pass
-    except (tk.TclError, AttributeError, ImportError):
-        # Continue with default theme if styling fails
-        pass
