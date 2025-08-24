@@ -87,11 +87,108 @@ def get_disk_label(device: str) -> str:
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "Unknown"
 
+def get_mounted_devices() -> set:
+    """
+    Get set of currently mounted device paths and their base disks
+    Returns both partition paths and base disk paths
+    """
+    mounted_devices = set()
+    try:
+        with open('/proc/mounts', 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 1 and parts[0].startswith('/dev/'):
+                    device = parts[0]
+                    mounted_devices.add(device)
+                    # Also add base disk name for partition checking
+                    base_device = get_base_device_from_partition(device)
+                    if base_device != device:
+                        mounted_devices.add(base_device)
+    except (IOError, OSError) as e:
+        log_error(f"Could not read /proc/mounts: {str(e)}")
+    
+    return mounted_devices
+
+def get_base_device_from_partition(device_path: str) -> str:
+    """
+    Get the base device from a partition path
+    Examples: 
+        '/dev/sda1' -> '/dev/sda'
+        '/dev/nvme0n1p1' -> '/dev/nvme0n1'
+        '/dev/sda' -> '/dev/sda' (unchanged)
+    """
+    try:
+        # Handle nvme devices (e.g., /dev/nvme0n1p1 -> /dev/nvme0n1)
+        if 'nvme' in device_path and 'p' in device_path:
+            match = re.match(r'(/dev/nvme\d+n\d+)', device_path)
+            if match:
+                return match.group(1)
+        
+        # Handle traditional devices (e.g., /dev/sda1 -> /dev/sda)
+        match = re.match(r'(/dev/[a-zA-Z]+)', device_path)
+        if match:
+            return match.group(1)
+        
+        # If no pattern matches, return the original
+        return device_path
+        
+    except Exception as e:
+        log_error(f"Error processing device path '{device_path}': {str(e)}")
+        return device_path
+
+def has_mounted_partitions(device_path: str) -> bool:
+    """
+    Check if a disk has any mounted partitions
+    Args:
+        device_path: Path to device (e.g., /dev/sda)
+    Returns:
+        bool: True if any partition is mounted, False otherwise
+    """
+    try:
+        mounted_devices = get_mounted_devices()
+        
+        # Check if the device itself is mounted
+        if device_path in mounted_devices:
+            return True
+        
+        # Get all partitions for this device
+        try:
+            result = subprocess.run(['lsblk', '-n', '-o', 'NAME', device_path], 
+                                  capture_output=True, text=True, check=True)
+            
+            lines = result.stdout.strip().split('\n')
+            device_name = device_path.replace('/dev/', '')
+            
+            for line in lines:
+                if line.strip():
+                    partition_name = line.strip()
+                    # Remove tree characters from lsblk output
+                    partition_name = partition_name.lstrip('├─└│ ─')
+                    partition_path = f"/dev/{partition_name}"
+                    
+                    # Skip the main device line
+                    if partition_name == device_name:
+                        continue
+                        
+                    # Check if this partition is mounted
+                    if partition_path in mounted_devices:
+                        return True
+        
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # If we can't check partitions, just check if base device is mounted
+            return device_path in mounted_devices
+        
+        return False
+        
+    except Exception as e:
+        log_error(f"Error checking mounted partitions for {device_path}: {str(e)}")
+        return False
+
 def get_disk_list() -> list[dict]:
     """
     Get list of available disks as structured data.
     Returns a list of dictionaries with disk information.
-    Each dictionary contains: 'device', 'size', 'model', 'size_bytes', 'label', and 'is_active'.
+    Each dictionary contains: 'device', 'size', 'model', 'size_bytes', 'label', 'is_active', and 'is_mounted'.
     """
     try:
         # Use more explicit column specification with -o option and -n to skip header
@@ -141,13 +238,18 @@ def get_disk_list() -> list[dict]:
                 # Check if this disk is active (system disk)
                 is_active = device in active_disk_names
                 
+                # Check if this disk has mounted partitions
+                device_path = f"/dev/{device}"
+                is_mounted = has_mounted_partitions(device_path)
+                
                 disks.append({
-                    "device": f"/dev/{device}",
+                    "device": device_path,
                     "size": size_human,
                     "size_bytes": size_bytes,
                     "model": model,
                     "label": label,
-                    "is_active": is_active
+                    "is_active": is_active,
+                    "is_mounted": is_mounted
                 })
         return disks
     except FileNotFoundError as e:
@@ -162,27 +264,6 @@ def get_disk_list() -> list[dict]:
     except KeyboardInterrupt:
         log_error("Disk listing interrupted by user")
         return []
-
-def get_mounted_devices() -> set:
-    """
-    Get set of currently mounted device paths
-    """
-    mounted_devices = set()
-    try:
-        with open('/proc/mounts', 'r') as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 1 and parts[0].startswith('/dev/'):
-                    device = parts[0]
-                    mounted_devices.add(device)
-                    # Also add base disk name for partition checking
-                    if device[-1].isdigit():
-                        base_device = device.rstrip('0123456789')
-                        mounted_devices.add(base_device)
-    except (IOError, OSError) as e:
-        log_error(f"Could not read /proc/mounts: {str(e)}")
-    
-    return mounted_devices
 
 def check_filesystem(device_path: str) -> str:
     """Check if device has a mountable filesystem and return filesystem type"""
@@ -298,42 +379,18 @@ def get_unmounted_disks() -> list[dict]:
         all_disks = get_disk_list()
         unmounted_disks = []
         
-        # Get currently mounted devices
-        mounted_devices = get_mounted_devices()
-        
         # Filter out mounted and system disks
         for disk in all_disks:
             device_path = disk['device']
             
-            # Skip if it's a system/active disk
-            if disk.get('is_active', False) or is_system_disk(device_path):
+            # Skip if it's a system/active disk or mounted disk
+            if disk.get('is_active', False) or disk.get('is_mounted', False) or is_system_disk(device_path):
                 continue
             
-            # Check if any partitions are mounted
-            is_mounted = False
-            try:
-                # Get partitions for this disk
-                result = subprocess.run(['lsblk', '-n', '-o', 'NAME', device_path], 
-                                      capture_output=True, text=True, check=True)
-                
-                for line in result.stdout.strip().split('\n'):
-                    if line.strip():
-                        partition_name = line.strip()
-                        partition_path = f"/dev/{partition_name}"
-                        if partition_path in mounted_devices:
-                            is_mounted = True
-                            break
-            
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                # If we can't check partitions, assume it might be mounted
-                if device_path in mounted_devices:
-                    is_mounted = True
-            
-            if not is_mounted:
-                # Check if disk has a filesystem we can mount
-                has_filesystem = check_filesystem(device_path)
-                disk['has_filesystem'] = has_filesystem
-                unmounted_disks.append(disk)
+            # Check if disk has a filesystem we can mount
+            has_filesystem = check_filesystem(device_path)
+            disk['has_filesystem'] = has_filesystem
+            unmounted_disks.append(disk)
         
         return unmounted_disks
     
