@@ -10,7 +10,6 @@ from tkinter import ttk, messagebox, filedialog
 import os
 import subprocess
 import threading
-import time
 from log_handler import (log_info, log_error, log_warning, generate_session_pdf, 
                         generate_log_file_pdf, session_start, session_end, 
                         log_application_exit, get_current_session_logs, 
@@ -19,26 +18,6 @@ from utils import (get_disk_list, get_directory_space, check_output_space, check
                    create_vm_from_disk, validate_vm_name, format_bytes, get_active_disk,
                    get_disk_info, is_system_disk)
 
-#!/usr/bin/env python3
-"""
-P2V Converter GUI Module - Enhanced with Disk Mounting Support
-Provides the graphical user interface for the Physical to Virtual converter
-with support for mounting unmounted partitions for output storage
-"""
-
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import os
-import subprocess
-import threading
-import time
-from log_handler import (log_info, log_error, log_warning, generate_session_pdf, 
-                        generate_log_file_pdf, session_start, session_end, 
-                        log_application_exit, get_current_session_logs, 
-                        is_session_active)
-from utils import (get_disk_list, get_directory_space, check_output_space, check_qemu_tools, 
-                   create_vm_from_disk, validate_vm_name, format_bytes, get_active_disk,
-                   get_disk_info, is_system_disk)
 
 class DiskMountDialog:
     """Dialog for selecting and mounting unmounted partitions"""
@@ -52,7 +31,8 @@ class DiskMountDialog:
         # Create dialog window
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Select Partition for Output Storage")
-        self.dialog.geometry("650x550")
+        self.dialog.geometry("600x500")
+        self.dialog.attributes("-fullscreen", True)
         self.dialog.transient(parent)
         self.dialog.grab_set()
         
@@ -126,7 +106,7 @@ class DiskMountDialog:
         button_frame.pack(fill=tk.X)
         
         # Cancel button
-        cancel_btn = ttk.Button(button_frame, text="Cancel", command=self.cancel)
+        cancel_btn = ttk.Button(button_frame, text="Close", command=self.cancel)
         cancel_btn.pack(side=tk.RIGHT, padx=(10, 0))
         
         # Mount & Select button (initially disabled)
@@ -447,7 +427,8 @@ class P2VConverterGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Physical to Virtual (P2V) Converter")
-        self.root.geometry("1000x800")
+        self.root.geometry("600x500")
+        self.root.attributes("-fullscreen", True)
         
         # Operation control variables
         self.operation_running = False
