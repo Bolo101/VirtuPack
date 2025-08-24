@@ -493,6 +493,54 @@ class P2VConverterGUI:
             self.root.iconname("P2V Converter")
         except (tk.TclError, AttributeError):
             pass
+
+    def is_disk_unavailable_for_conversion(self, device_path):
+        """
+        Check if a disk is unavailable for conversion due to being active, mounted, or in use
+        Args:
+            device_path: Full device path (e.g., '/dev/sda')
+        Returns:
+            tuple: (is_unavailable, reason_message)
+        """
+        try:
+            # Check if it's an active/system disk
+            if is_system_disk(device_path):
+                return True, "This is an active system disk currently in use"
+            
+            # Check if the disk or any of its partitions are mounted
+            from utils import has_mounted_partitions
+            if has_mounted_partitions(device_path):
+                return True, "This disk has mounted partitions"
+            
+            # Additional check for specific mount points that might be from our program
+            try:
+                with open('/proc/mounts', 'r') as f:
+                    mounts_content = f.read()
+                    
+                # Check if any partitions of this disk are mounted
+                device_name = device_path.replace('/dev/', '')
+                
+                for line in mounts_content.split('\n'):
+                    if line.strip():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            mounted_device = parts[0]
+                            mount_point = parts[1]
+                            
+                            # Check if this mounted device belongs to our disk
+                            if mounted_device.startswith('/dev/') and device_name in mounted_device:
+                                # Skip if it's just the disk itself without partitions
+                                if mounted_device != device_path:
+                                    return True, f"Partition {mounted_device} is mounted at {mount_point}"
+            
+            except (IOError, OSError) as e:
+                log_warning(f"Could not check mount status: {str(e)}")
+            
+            return False, "Available for conversion"
+            
+        except Exception as e:
+            log_error(f"Error checking disk availability: {str(e)}")
+            return True, "Unable to verify disk status"
     
     def create_widgets(self):
         """Create all GUI widgets"""
@@ -799,7 +847,7 @@ class P2VConverterGUI:
         self.last_log_count = 0
     
     def refresh_disks(self):
-        """Refresh the list of available disks"""
+        """Refresh the list of available disks with enhanced status information"""
         try:
             log_info("Refreshing disk list")
             
@@ -807,8 +855,10 @@ class P2VConverterGUI:
             self.current_disks = get_disk_list()
             
             if self.current_disks:
-                # Format disk info for display with improved labeling
+                # Format disk info for display with improved labeling and status
                 disk_options = []
+                unavailable_count = 0
+                
                 for disk in self.current_disks:
                     # Create base display string
                     disk_info = f"{disk['device']} ({disk['size']}) - {disk['model']}"
@@ -817,9 +867,17 @@ class P2VConverterGUI:
                     if disk['label'] and disk['label'] != "No Label":
                         disk_info += f" [{disk['label']}]"
                     
-                    # Mark system/active disks
-                    if disk.get('is_active', False):
-                        disk_info = f"SYSTEM: {disk_info} [ACTIVE]"
+                    # Check availability status
+                    is_unavailable, reason = self.is_disk_unavailable_for_conversion(disk['device'])
+                    
+                    if is_unavailable:
+                        unavailable_count += 1
+                        if "active system disk" in reason.lower():
+                            disk_info = f"SYSTEM: {disk_info} [ACTIVE]"
+                        elif "mounted" in reason.lower():
+                            disk_info = f"MOUNTED: {disk_info} [IN USE]"
+                        else:
+                            disk_info = f"BUSY: {disk_info} [UNAVAILABLE]"
                     
                     disk_options.append(disk_info)
                 
@@ -832,12 +890,12 @@ class P2VConverterGUI:
                 
                 log_info(f"Found {len(self.current_disks)} disk(s)")
                 
-                # Count active disks for status
-                active_count = sum(1 for disk in self.current_disks if disk.get('is_active', False))
-                if active_count > 0:
-                    self.status_var.set(f"Found {len(self.current_disks)} disk(s) ({active_count} active)")
+                # Update status with availability info
+                available_count = len(self.current_disks) - unavailable_count
+                if unavailable_count > 0:
+                    self.status_var.set(f"Found {len(self.current_disks)} disk(s) ({available_count} available, {unavailable_count} unavailable)")
                 else:
-                    self.status_var.set(f"Found {len(self.current_disks)} disk(s)")
+                    self.status_var.set(f"Found {len(self.current_disks)} disk(s) (all available)")
                 
             else:
                 log_warning("No disks found")
@@ -877,36 +935,61 @@ class P2VConverterGUI:
         return None
     
     def on_source_selected(self, event=None):
-        """Handle source disk selection"""
+        """Handle source disk selection with enhanced validation"""
         selected = self.source_var.get()
         if selected:
             # Extract device path
             device_path = selected.split(' ')[1] if selected.startswith('SYSTEM:') else selected.split(' ')[0]
             
-            # Check if this is an active/system disk
-            if is_system_disk(device_path) or "ACTIVE" in selected:
-                # Show warning and refuse selection
-                messagebox.showerror("Active Disk Selection Denied", 
-                                   f"Cannot Select Active System Disk\n\n"
-                                   f"The selected disk ({device_path}) is currently active and in use by the system.\n\n"
-                                   f"Converting an active system disk is not recommended as it may:\n"
-                                   f"• Cause system instability\n"
-                                   f"• Result in incomplete or corrupted conversion\n"
-                                   f"• Interfere with running system processes\n\n"
-                                   f"Please:\n"
-                                   f"• Select a different, inactive disk for conversion\n"
-                                   f"• Or boot from a live USB/CD to convert this disk safely")
+            # Check if this disk is unavailable for conversion
+            is_unavailable, reason = self.is_disk_unavailable_for_conversion(device_path)
+            
+            if is_unavailable:
+                # Show detailed warning dialog
+                warning_title = "Disk Unavailable for Conversion"
+                warning_message = f"Cannot Select Disk for Conversion\n\n"
+                warning_message += f"Selected disk: {device_path}\n"
+                warning_message += f"Reason: {reason}\n\n"
+                
+                if "active system disk" in reason.lower():
+                    warning_message += f"Converting an active system disk is dangerous and may:\n"
+                    warning_message += f"• Cause system instability or crashes\n"
+                    warning_message += f"• Result in incomplete or corrupted conversion\n"
+                    warning_message += f"• Interfere with running system processes\n\n"
+                    warning_message += f"Recommendations:\n"
+                    warning_message += f"• Select a different, inactive disk for conversion\n"
+                    warning_message += f"• Boot from a live USB/CD to convert this disk safely"
+                
+                elif "mounted" in reason.lower():
+                    warning_message += f"Converting a disk with mounted partitions may:\n"
+                    warning_message += f"• Cause data corruption or loss\n"
+                    warning_message += f"• Result in incomplete conversion\n"
+                    warning_message += f"• Interfere with active file operations\n\n"
+                    warning_message += f"Recommendations:\n"
+                    warning_message += f"• Unmount all partitions on this disk first\n"
+                    warning_message += f"• Select a different disk that is not mounted\n"
+                    warning_message += f"• Use 'umount' command to safely unmount partitions"
+                
+                else:
+                    warning_message += f"Please select a different disk that is not in use."
+                
+                messagebox.showerror(warning_title, warning_message)
                 
                 # Clear the selection
                 self.source_var.set("")
-                log_warning(f"User attempted to select active system disk: {device_path}")
-                self.status_var.set("Active disk selection denied")
-                self.operation_details.config(text="Cannot select active system disk", foreground="red")
+                log_warning(f"User attempted to select unavailable disk: {device_path} - {reason}")
+                self.status_var.set("Disk selection denied")
+                self.operation_details.config(text=f"Cannot select disk: {reason}", foreground="red")
                 
                 # Clear space info
                 self.space_info_text.config(state=tk.NORMAL)
                 self.space_info_text.delete(1.0, tk.END)
-                self.space_info_text.insert(tk.END, "Please select a non-active disk for P2V conversion.")
+                self.space_info_text.insert(tk.END, 
+                    "Please select a disk that is not mounted or in active use for P2V conversion.\n\n"
+                    "Safe disks for conversion:\n"
+                    "• Secondary storage drives not currently mounted\n"
+                    "• External drives that are unmounted\n"
+                    "• Drives from systems booted via live media")
                 self.space_info_text.config(state=tk.DISABLED)
                 return
             
@@ -923,7 +1006,6 @@ class P2VConverterGUI:
             disk_info = self.get_selected_disk_info()
             if disk_info and self.output_path.get():
                 self.root.after(100, self.check_space_requirements)
-    
     def validate_vm_name_input(self, event=None):
         """Validate VM name as user types"""
         name = self.vm_name.get()
@@ -1018,7 +1100,7 @@ class P2VConverterGUI:
             self.operation_details.config(text="Space check failed", foreground="red")
     
     def start_conversion(self):
-        """Start the P2V conversion operation"""
+        """Start the P2V conversion operation with enhanced validation"""
         source = self.source_var.get()
         vm_name = self.vm_name.get().strip()
         output_dir = self.output_path.get().strip()
@@ -1043,15 +1125,18 @@ class P2VConverterGUI:
             return
         
         # Extract device path
-        device_path = source.split(' ')[1] if source.startswith('SYSTEM:') else source.split(' ')[0]
+        device_path = source.split(' ')[1] if source.startswith(('SYSTEM:', 'MOUNTED:', 'BUSY:')) else source.split(' ')[0]
         
-        # Double-check that this is not an active disk (safety check)
-        if is_system_disk(device_path) or "ACTIVE" in source:
-            messagebox.showerror("Active Disk Detected", 
-                               f"Conversion Blocked\n\n"
-                               f"The selected disk ({device_path}) is an active system disk.\n\n"
-                               f"This disk cannot be converted while it's in use.\n"
-                               f"Please select a different disk or boot from a live system.")
+        # Final safety check - re-validate disk availability right before conversion
+        is_unavailable, reason = self.is_disk_unavailable_for_conversion(device_path)
+        if is_unavailable:
+            messagebox.showerror("Disk Unavailable", 
+                            f"Conversion Blocked\n\n"
+                            f"The selected disk ({device_path}) is not available for conversion.\n\n"
+                            f"Reason: {reason}\n\n"
+                            f"Please select a different disk or resolve the issue before converting.")
+            # Refresh disk list to update status
+            self.refresh_disks()
             return
         
         # Space check before starting
@@ -1059,8 +1144,8 @@ class P2VConverterGUI:
             has_space, space_message = check_output_space(output_dir, device_path)
             if not has_space:
                 if not messagebox.askyesno("Insufficient Space Warning",
-                                         f"Space Warning\n\n{space_message}\n\n"
-                                         f"Continue anyway? The conversion may fail."):
+                                        f"Space Warning\n\n{space_message}\n\n"
+                                        f"Continue anyway? The conversion may fail."):
                     return
         except (OSError, IOError) as e:
             log_warning(f"System error checking space before conversion: {str(e)}")
@@ -1109,6 +1194,7 @@ class P2VConverterGUI:
         self.check_space_btn.config(state=tk.DISABLED)
         self.source_combo.config(state=tk.DISABLED)
         self.status_var.set("P2V conversion in progress...")
+
     
     def _conversion_worker(self, source_device, output_dir, vm_name):
         """Worker thread for P2V conversion operation"""
