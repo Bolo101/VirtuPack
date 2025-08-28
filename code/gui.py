@@ -10,13 +10,13 @@ from tkinter import ttk, messagebox, filedialog
 import os
 import subprocess
 import threading
-from log_handler import (log_info, log_error, log_warning, generate_session_pdf, 
-                        generate_log_file_pdf, session_start, session_end, 
-                        log_application_exit, get_current_session_logs, 
-                        is_session_active)
-from utils import (get_disk_list, get_directory_space, check_output_space, check_qemu_tools, 
-                   create_vm_from_disk, validate_vm_name, format_bytes, get_active_disk,
-                   get_disk_info, is_system_disk)
+from log_handler import (log_info, log_error, log_warning, generate_session_pdf,
+generate_log_file_pdf, session_start, session_end,
+log_application_exit, get_current_session_logs,
+is_session_active)
+from utils import (get_disk_list, get_directory_space, format_bytes, get_active_disk,
+get_disk_info, is_system_disk)
+from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 
 
 class DiskMountDialog:
