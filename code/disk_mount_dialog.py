@@ -177,7 +177,7 @@ class DiskMountDialog:
                                 label = parts[3] if len(parts) > 3 and parts[3] != '' else "No Label"
                                 
                                 # Remove any tree characters from lsblk output
-                                partition_name = partition_name.lstrip('â"œâ"€â""â"‚ â"€')
+                                partition_name = partition_name.lstrip('├─└│ ─')
                                 partition_path = f"/dev/{partition_name}"
                                 
                                 # Check if this partition is mounted
