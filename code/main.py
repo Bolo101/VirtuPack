@@ -57,7 +57,7 @@ def run_gui_mode():
     """Run the GUI mode"""
     try:
         import tkinter as tk
-        from gui import P2VConverterGUI
+        from p2v_dialog import P2VConverterGUI
         
         log_info("P2V Converter GUI application started")
         
