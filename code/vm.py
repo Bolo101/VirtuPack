@@ -1,8 +1,9 @@
 import subprocess
-import sys
 import os
 import json
 import time
+import select
+import re
 from log_handler import log_error, log_info
 from utils import (
     format_bytes, 
@@ -157,6 +158,33 @@ def validate_vm_name(name: str) -> tuple[bool, str]:
     return True, "Valid name"
 
 
+def parse_qemu_progress(line: str) -> float:
+    """
+    Parse qemu-img progress output and return percentage
+    qemu-img -p outputs lines like: (45.67/100%)\r
+    """
+    try:
+        # Look for pattern like (XX.XX/100%) or (XX/100%)
+        match = re.search(r'\((\d+(?:\.\d+)?)/100%\)', line)
+        if match:
+            return float(match.group(1))
+        
+        # Alternative pattern: (XX.XX%)
+        match = re.search(r'\((\d+(?:\.\d+)?)%\)', line)
+        if match:
+            return float(match.group(1))
+            
+        # Look for standalone percentage: XX.XX%
+        match = re.search(r'(\d+(?:\.\d+)?)%', line)
+        if match:
+            return float(match.group(1))
+            
+    except (ValueError, AttributeError):
+        pass
+    
+    return None
+
+
 def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progress_callback=None, stop_flag=None) -> str:
     """
     Convert physical disk to qcow2 VM with sparse allocation (only used data)
@@ -188,7 +216,7 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
         # Step 1: Convert directly from physical disk to qcow2 with sparse allocation
         log_info("Step 1: Converting disk with sparse allocation...")
         if progress_callback:
-            progress_callback(10, "Starting sparse disk conversion...")
+            progress_callback(0, "Initializing conversion...")
         
         # Convert directly from physical disk to qcow2 with sparse and compression
         qemu_convert_cmd = [
@@ -204,11 +232,17 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
         
         log_info(f"Running command: {' '.join(qemu_convert_cmd)}")
         
-        # Run qemu-img convert with monitoring
-        process = subprocess.Popen(qemu_convert_cmd, stderr=subprocess.PIPE, 
-                                 stdout=subprocess.PIPE, text=True, bufsize=1)
+        # Run qemu-img convert with proper progress monitoring
+        process = subprocess.Popen(qemu_convert_cmd, 
+                                 stderr=subprocess.PIPE, 
+                                 stdout=subprocess.PIPE, 
+                                 text=True, 
+                                 bufsize=0,  # Unbuffered for real-time output
+                                 universal_newlines=True)
         
         last_progress = 0
+        progress_buffer = ""
+        
         while process.poll() is None:
             if stop_flag and stop_flag():
                 process.terminate()
@@ -219,32 +253,77 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
                         os.remove(temp_file)
                 raise KeyboardInterrupt("Operation cancelled by user")
             
-            # Try to parse progress from stderr
-            if process.stderr and process.stderr.readable():
+            # Check for available output from stderr (where qemu-img sends progress)
+            if process.stderr:
                 try:
-                    # Non-blocking read
-                    import select
-                    if select.select([process.stderr], [], [], 0)[0]:
-                        line = process.stderr.readline()
-                        if line and '(' in line and '%' in line:
-                            # Extract percentage from qemu-img progress output
-                            import re
-                            match = re.search(r'\((\d+\.\d+)/100%\)', line)
-                            if match:
-                                current_progress = int(10 + float(match.group(1)) * 0.8)  # Scale to 10-90%
-                                if current_progress > last_progress:
-                                    last_progress = current_progress
-                                    if progress_callback:
-                                        progress_callback(current_progress, "Converting disk data...")
-                except:
-                    pass  # Ignore errors in progress parsing
+                    # Use select to check if data is available (Unix/Linux)
+                    if hasattr(select, 'select'):
+                        ready, _, _ = select.select([process.stderr], [], [], 0.1)
+                        if ready:
+                            # Read available data
+                            char = process.stderr.read(1)
+                            if char:
+                                progress_buffer += char
+                                
+                                # Process complete lines or carriage return updates
+                                if char == '\n' or char == '\r':
+                                    if progress_buffer.strip():
+                                        # Try to parse progress from the buffer
+                                        parsed_progress = parse_qemu_progress(progress_buffer)
+                                        
+                                        if parsed_progress is not None:
+                                            # Scale progress: 0-95% for conversion, 95-100% for finalization
+                                            scaled_progress = int(parsed_progress * 0.95)
+                                            
+                                            if scaled_progress > last_progress:
+                                                last_progress = scaled_progress
+                                                if progress_callback:
+                                                    progress_callback(scaled_progress, f"Converting disk data... {parsed_progress:.1f}%")
+                                        
+                                        # Log significant progress milestones
+                                        if parsed_progress and parsed_progress % 10 < 1:  # Every ~10%
+                                            log_info(f"Conversion progress: {parsed_progress:.1f}%")
+                                    
+                                    progress_buffer = ""
+                    else:
+                        # Fallback for systems without select (Windows)
+                        time.sleep(0.5)
+                        if progress_callback and last_progress == 0:
+                            # Provide generic progress updates
+                            elapsed_time = time.time() - start_time if 'start_time' in locals() else 0
+                            estimated_progress = min(50, elapsed_time / 10)  # Rough estimate
+                            progress_callback(estimated_progress, "Converting disk data...")
+                            
+                except (OSError, IOError, ValueError):
+                    # Handle any errors in progress reading
+                    pass
             
+            # Provide fallback progress updates if no progress parsed yet
             if progress_callback and last_progress == 0:
-                progress_callback(50, "Converting disk data...")
+                if 'fallback_progress' not in locals():
+                    fallback_progress = 10
+                    start_time = time.time()
+                else:
+                    # Increment fallback progress slowly
+                    elapsed = time.time() - start_time
+                    fallback_progress = min(50, 10 + (elapsed / 20))  # Slow increase
+                
+                progress_callback(fallback_progress, "Converting disk data...")
             
-            time.sleep(2)
+            time.sleep(0.1)  # Short sleep to prevent excessive CPU usage
         
+        # Wait for process to complete and capture any remaining output
         stdout, stderr = process.communicate()
+        
+        # Process any remaining progress in stderr
+        if stderr:
+            for line in stderr.split('\n'):
+                if line.strip():
+                    parsed_progress = parse_qemu_progress(line)
+                    if parsed_progress is not None and parsed_progress > last_progress:
+                        last_progress = int(parsed_progress * 0.95)
+                        if progress_callback:
+                            progress_callback(last_progress, f"Converting disk data... {parsed_progress:.1f}%")
         
         if process.returncode != 0:
             # Clean up on failure
@@ -252,7 +331,13 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
                 os.remove(temp_qcow2_path)
             error_msg = f"qemu-img convert failed with return code {process.returncode}"
             if stderr:
-                error_msg += f"\nError output: {stderr}"
+                # Filter out progress lines from error message
+                error_lines = []
+                for line in stderr.split('\n'):
+                    if line.strip() and not re.search(r'\d+(?:\.\d+)?%', line):
+                        error_lines.append(line)
+                if error_lines:
+                    error_msg += f"\nError output: {chr(10).join(error_lines)}"
             raise subprocess.CalledProcessError(process.returncode, qemu_convert_cmd, stdout, stderr)
         
         log_info("Sparse disk conversion completed")
@@ -270,6 +355,9 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
             raise Exception("qcow2 file was not created successfully")
         
         # Get detailed image information
+        if progress_callback:
+            progress_callback(98, "Verifying VM image...")
+        
         verification_info = verify_vm_image(qcow2_path)
         
         if verification_info['success']:

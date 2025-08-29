@@ -17,7 +17,7 @@ is_session_active)
 from utils import (get_disk_list, get_directory_space, format_bytes, get_active_disk,
 get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
-from p2v_dialog import DiskMountDialog
+from disk_mount_dialog import DiskMountDialog
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
