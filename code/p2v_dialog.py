@@ -863,9 +863,15 @@ class P2VConverterGUI:
     
     def _update_progress(self, percent, status):
         """Update progress bar and status from worker thread"""
+        # Ensure percent is within valid range
+        percent = max(0, min(100, percent))
+        
         self.progress_var.set(percent)
         self.progress_label.config(text=f"{percent:.1f}%")
         self.operation_details.config(text=status, foreground="blue")
+        
+        # Force GUI update
+        self.root.update_idletasks()
     
     def _reset_ui_after_operation(self):
         """Reset UI after operation completes"""
