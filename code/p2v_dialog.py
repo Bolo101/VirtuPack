@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-P2V Converter GUI Module - Enhanced with Disk Mounting Support
+P2V Converter GUI Module - Enhanced with Disk Mounting Support and QCOW2 Resize
 Provides the graphical user interface for the Physical to Virtual converter
-with support for mounting unmounted disks for output storage
+with support for mounting unmounted disks for output storage and resizing QCOW2 images
 """
 
 import tkinter as tk
@@ -18,6 +18,7 @@ from utils import (get_disk_list, get_directory_space, format_bytes, get_active_
 get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 from disk_mount_dialog import DiskMountDialog
+from qcow2_resize_dialog import show_qcow2_resizer
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
@@ -219,7 +220,7 @@ class P2VConverterGUI:
         output_entry = ttk.Entry(output_frame, textvariable=self.output_path, font=("Arial", 9))
         output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         
-        # Enhanced browse button with dropdown
+        # Enhanced browse button with dropdown - Updated with QCOW2 Resize button
         browse_frame = ttk.Frame(output_frame)
         browse_frame.grid(row=0, column=1)
         
@@ -227,7 +228,11 @@ class P2VConverterGUI:
         browse_btn.grid(row=0, column=0, padx=(0, 2))
         
         mount_btn = ttk.Button(browse_frame, text="Mount Disk...", command=self.mount_disk_dialog)
-        mount_btn.grid(row=0, column=1)
+        mount_btn.grid(row=0, column=1, padx=(0, 2))
+        
+        # NEW: QCOW2 Resize button
+        resize_btn = ttk.Button(browse_frame, text="Resize QCOW2...", command=self.open_qcow2_resizer)
+        resize_btn.grid(row=0, column=2)
         
         # Space information frame
         space_frame = ttk.LabelFrame(main_frame, text="Storage Space Information", padding="10")
@@ -295,6 +300,23 @@ class P2VConverterGUI:
         
         # Track last displayed log count
         self.last_log_count = 0
+    
+    def open_qcow2_resizer(self):
+        """Open the QCOW2 resizer dialog"""
+        try:
+            log_info("Opening QCOW2 Resizer dialog")
+            resizer_app = show_qcow2_resizer(self.root)
+            
+        except ImportError as e:
+            error_msg = f"QCOW2 Resizer not available: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Feature Not Available", 
+                               "QCOW2 Resizer feature is not available.\n\n"
+                               "Please ensure qcow2_resize_dialog.py is in the same directory.")
+        except Exception as e:
+            error_msg = f"Error opening QCOW2 Resizer: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Error", error_msg)
     
     def mount_disk_dialog(self):
         """Show dialog to select and mount a disk for output storage"""
@@ -585,6 +607,7 @@ class P2VConverterGUI:
             disk_info = self.get_selected_disk_info()
             if disk_info and self.output_path.get():
                 self.root.after(100, self.check_space_requirements)
+    
     def validate_vm_name_input(self, event=None):
         """Validate VM name as user types"""
         name = self.vm_name.get()
@@ -806,7 +829,8 @@ class P2VConverterGUI:
                 completion_text += f"• VirtualBox (with conversion)\n"
                 completion_text += f"• Other virtualization platforms supporting qcow2\n\n"
                 completion_text += f"To boot the VM with QEMU:\n"
-                completion_text += f"qemu-system-x86_64 -hda \"{output_file}\" -m 2048"
+                completion_text += f"qemu-system-x86_64 -hda \"{output_file}\" -m 2048\n\n"
+                completion_text += f"Use 'Resize QCOW2...' button to optimize disk size if needed."
                 
                 self.root.after(0, lambda: messagebox.showinfo("Conversion Complete", completion_text))
             
