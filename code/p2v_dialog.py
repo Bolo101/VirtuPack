@@ -18,7 +18,7 @@ from utils import (get_disk_list, get_directory_space, format_bytes, get_active_
 get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 from disk_mount_dialog import DiskMountDialog
-from qcow2_resize_dialog import show_qcow2_resizer
+from qcow2_resize_dialog import QCow2ResizerGUI
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
@@ -302,22 +302,34 @@ class P2VConverterGUI:
         self.last_log_count = 0
     
     def open_qcow2_resizer(self):
-        """Open the QCOW2 resizer dialog"""
+        """Open the QCOW2 resizer dialog as a modal window"""
         try:
             log_info("Opening QCOW2 Resizer dialog")
-            resizer_app = show_qcow2_resizer(self.root)
+            
+            # Create a new toplevel window for the resizer
+            resizer_window = tk.Toplevel(self.root)
+            resizer_window.transient(self.root)
+            resizer_window.grab_set()
+            
+            # Create the resizer GUI inside the toplevel window
+            resizer_app = QCow2ResizerGUI(resizer_window)
+            
+            # Wait for the dialog to close
+            self.root.wait_window(resizer_window)
+            
+            log_info("QCOW2 Resizer dialog closed")
             
         except ImportError as e:
             error_msg = f"QCOW2 Resizer not available: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("Feature Not Available", 
-                               "QCOW2 Resizer feature is not available.\n\n"
-                               "Please ensure qcow2_resize_dialog.py is in the same directory.")
+                            "QCOW2 Resizer feature is not available.\n\n"
+                            "Please ensure qcow2_resize_dialog.py is in the same directory.")
         except Exception as e:
             error_msg = f"Error opening QCOW2 Resizer: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("Error", error_msg)
-    
+        
     def mount_disk_dialog(self):
         """Show dialog to select and mount a disk for output storage"""
         try:
