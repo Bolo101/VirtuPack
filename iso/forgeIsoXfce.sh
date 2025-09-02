@@ -52,6 +52,7 @@ calamares
 calamares-settings-debian
 squashfs-tools
 xorg
+gparted
 xfce4
 network-manager
 network-manager-gnome
