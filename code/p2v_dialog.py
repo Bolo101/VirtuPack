@@ -18,7 +18,7 @@ from utils import (get_disk_list, get_directory_space, format_bytes, get_active_
 get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 from disk_mount_dialog import DiskMountDialog
-from qcow2_resize_dialog import QCow2ResizerGUI
+from qcow2_resize_dialog import QCow2CloneResizerGUI
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
@@ -123,7 +123,7 @@ class P2VConverterGUI:
             return True, "Unable to verify disk status"
     
     def create_widgets(self):
-        """Create all GUI widgets"""
+        """Create all GUI widgets - Updated version with proper QCOW2 Resizer integration"""
         self.create_header_frame()
         self.create_main_frame()
         self.create_status_frame()
@@ -176,7 +176,7 @@ class P2VConverterGUI:
         separator.grid(row=0, column=0, sticky="ew", pady=(0, 5), columnspan=1)
     
     def create_main_frame(self):
-        """Create the main content frame"""
+        """Create the main content frame - Updated with proper QCOW2 Resizer button"""
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         main_frame.grid_rowconfigure(4, weight=1)
@@ -196,7 +196,7 @@ class P2VConverterGUI:
         
         # Refresh button
         self.refresh_btn = ttk.Button(source_frame, text="Refresh Disks", 
-                                     command=self.refresh_disks)
+                                    command=self.refresh_disks)
         self.refresh_btn.grid(row=0, column=2, padx=(10, 0))
         
         # VM configuration frame
@@ -220,7 +220,7 @@ class P2VConverterGUI:
         output_entry = ttk.Entry(output_frame, textvariable=self.output_path, font=("Arial", 9))
         output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         
-        # Enhanced browse button with dropdown - Updated with QCOW2 Resize button
+        # Enhanced browse button with dropdown - Updated with QCOW2 Clone Resize button
         browse_frame = ttk.Frame(output_frame)
         browse_frame.grid(row=0, column=1)
         
@@ -230,16 +230,26 @@ class P2VConverterGUI:
         mount_btn = ttk.Button(browse_frame, text="Mount Disk...", command=self.mount_disk_dialog)
         mount_btn.grid(row=0, column=1, padx=(0, 2))
         
-        # NEW: QCOW2 Resize button
-        resize_btn = ttk.Button(browse_frame, text="Resize QCOW2...", command=self.open_qcow2_resizer)
+        # Updated: QCOW2 Clone Resize button with proper tooltip
+        resize_btn = ttk.Button(browse_frame, text="QCOW2 Tools...", command=self.open_qcow2_resizer,
+                            width=12)
         resize_btn.grid(row=0, column=2)
+        
+        # Add tooltip/description for the QCOW2 Tools button
+        tools_info_frame = ttk.Frame(vm_config_frame)
+        tools_info_frame.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=(5, 0))
+        
+        tools_info_label = ttk.Label(tools_info_frame, 
+                                    text="QCOW2 Tools: Resize existing QCOW2 virtual disk images safely",
+                                    font=("Arial", 8), foreground="gray")
+        tools_info_label.grid(row=0, column=0, sticky="w")
         
         # Space information frame
         space_frame = ttk.LabelFrame(main_frame, text="Storage Space Information", padding="10")
         space_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         
         self.space_info_text = tk.Text(space_frame, height=6, wrap=tk.WORD, state=tk.DISABLED, 
-                                      font=("Consolas", 9), bg="#f8f8f8")
+                                    font=("Consolas", 9), bg="#f8f8f8")
         space_scrollbar = ttk.Scrollbar(space_frame, orient="vertical", command=self.space_info_text.yview)
         self.space_info_text.configure(yscrollcommand=space_scrollbar.set)
         
@@ -254,19 +264,19 @@ class P2VConverterGUI:
         control_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         
         self.check_space_btn = ttk.Button(control_frame, text="Check Space Requirements", 
-                                         command=self.check_space_requirements)
+                                        command=self.check_space_requirements)
         self.check_space_btn.grid(row=0, column=0, padx=(0, 10))
         
         self.convert_btn = ttk.Button(control_frame, text="Start P2V Conversion", 
-                                     command=self.start_conversion)
+                                    command=self.start_conversion)
         self.convert_btn.grid(row=0, column=1, padx=(0, 10))
         
         self.stop_btn = ttk.Button(control_frame, text="Stop Operation", 
-                                  command=self.stop_operation, state=tk.DISABLED)
+                                command=self.stop_operation, state=tk.DISABLED)
         self.stop_btn.grid(row=0, column=2, padx=(0, 10))
         
         self.clear_log_btn = ttk.Button(control_frame, text="Clear Display", 
-                                       command=self.clear_log_display)
+                                    command=self.clear_log_display)
         self.clear_log_btn.grid(row=0, column=3)
         
         # Progress and log area
@@ -282,7 +292,7 @@ class P2VConverterGUI:
         text_frame.grid_columnconfigure(0, weight=1)
         
         self.log_text = tk.Text(text_frame, wrap=tk.WORD, state=tk.DISABLED, 
-                               font=("Consolas", 9), bg="#f8f8f8", fg="#333333")
+                            font=("Consolas", 9), bg="#f8f8f8", fg="#333333")
         scrollbar_v = ttk.Scrollbar(text_frame, orient="vertical", command=self.log_text.yview)
         scrollbar_h = ttk.Scrollbar(text_frame, orient="horizontal", command=self.log_text.xview)
         
@@ -304,31 +314,41 @@ class P2VConverterGUI:
     def open_qcow2_resizer(self):
         """Open the QCOW2 resizer dialog as a modal window"""
         try:
-            log_info("Opening QCOW2 Resizer dialog")
+            log_info("Opening QCOW2 Clone Resizer dialog")
             
             # Create a new toplevel window for the resizer
             resizer_window = tk.Toplevel(self.root)
+            resizer_window.title("QCOW2 Clone Resizer")
+            resizer_window.geometry("900x700")
             resizer_window.transient(self.root)
             resizer_window.grab_set()
             
+            # Center the window on parent
+            self.root.update_idletasks()
+            x = (self.root.winfo_screenwidth() // 2) - (900 // 2)
+            y = (self.root.winfo_screenheight() // 2) - (700 // 2)
+            resizer_window.geometry(f"900x700+{x}+{y}")
+            
             # Create the resizer GUI inside the toplevel window
-            resizer_app = QCow2ResizerGUI(resizer_window)
+            resizer_app = QCow2CloneResizerGUI(resizer_window)
             
             # Wait for the dialog to close
             self.root.wait_window(resizer_window)
             
-            log_info("QCOW2 Resizer dialog closed")
+            log_info("QCOW2 Clone Resizer dialog closed")
             
         except ImportError as e:
-            error_msg = f"QCOW2 Resizer not available: {str(e)}"
+            error_msg = f"QCOW2 Clone Resizer not available: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("Feature Not Available", 
-                            "QCOW2 Resizer feature is not available.\n\n"
-                            "Please ensure qcow2_resize_dialog.py is in the same directory.")
+                            "QCOW2 Clone Resizer feature is not available.\n\n"
+                            "Please ensure qcow2_resize_dialog.py is in the same directory.\n\n"
+                            "Missing dependency: qcow2_resize_dialog module")
         except Exception as e:
-            error_msg = f"Error opening QCOW2 Resizer: {str(e)}"
+            error_msg = f"Error opening QCOW2 Clone Resizer: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Error", error_msg)
+            messagebox.showerror("Error", 
+                            f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
         
     def mount_disk_dialog(self):
         """Show dialog to select and mount a disk for output storage"""
