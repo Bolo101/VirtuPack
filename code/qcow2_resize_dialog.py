@@ -571,37 +571,93 @@ class NewSizeDialog:
         self.partition_changes = partition_changes
         self.result = None
         
-        # Create dialog
+        # Create dialog with better sizing
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("New Image Size - Based on Final Partition Layout")
-        self.dialog.geometry("700x600")
+        
+        # Make dialog modal and ensure it stays on top
         self.dialog.transient(parent)
         self.dialog.grab_set()
+        self.dialog.focus_force()
         
-        # Center on parent
-        parent.update_idletasks()
-        x = (parent.winfo_screenwidth() // 2) - (700 // 2)
-        y = (parent.winfo_screenheight() // 2) - (600 // 2)
-        self.dialog.geometry(f"700x600+{x}+{y}")
+        # Get screen dimensions for proper sizing
+        screen_width = self.dialog.winfo_screenwidth()
+        screen_height = self.dialog.winfo_screenheight()
+        
+        # Set dialog size to 80% of screen height, max 800px wide
+        dialog_width = min(800, int(screen_width * 0.6))
+        dialog_height = min(700, int(screen_height * 0.8))
+        
+        # Center on screen
+        x = (screen_width - dialog_width) // 2
+        y = (screen_height - dialog_height) // 2
+        self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        
+        # Make dialog resizable
+        self.dialog.resizable(True, True)
+        self.dialog.minsize(600, 500)
+        
+        # Ensure dialog is properly displayed before continuing
+        self.dialog.update_idletasks()
         
         self.setup_ui()
         
-        # Wait for dialog completion
-        self.dialog.wait_window()
+        # Add proper dialog close handling
+        self.dialog.protocol("WM_DELETE_WINDOW", self.skip_cloning)
+        
+        # Wait for dialog completion - this is the key fix
+        try:
+            # Force the dialog to be visible and responsive
+            self.dialog.lift()
+            self.dialog.attributes('-topmost', True)
+            self.dialog.after_idle(lambda: self.dialog.attributes('-topmost', False))
+            
+            # Wait for the dialog to complete
+            self.dialog.wait_window()
+        except Exception as e:
+            print(f"Dialog wait error: {e}")
+            self.result = None
     
     def setup_ui(self):
-        """Setup dialog UI"""
-        main_frame = ttk.Frame(self.dialog, padding="20")
-        main_frame.pack(fill="both", expand=True)
+        """Setup dialog UI with scrollable content"""
+        # Create main container
+        main_container = ttk.Frame(self.dialog)
+        main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Create scrollable frame
+        canvas = tk.Canvas(main_container)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack scrollable components
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Enable mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        # Main content in scrollable frame
+        content_frame = ttk.Frame(scrollable_frame, padding="15")
+        content_frame.pack(fill="both", expand=True)
         
         # Title
-        title = ttk.Label(main_frame, text="Create New Image - Final Size Selection", 
-                        font=("Arial", 16, "bold"))
-        title.pack(pady=(0, 20))
+        title = ttk.Label(content_frame, text="Create New Image - Final Size Selection", 
+                         font=("Arial", 16, "bold"))
+        title.pack(pady=(0, 15))
         
         # GParted Changes Summary
-        changes_frame = ttk.LabelFrame(main_frame, text="GParted Partition Changes", padding="15")
-        changes_frame.pack(fill="x", pady=(0, 20))
+        changes_frame = ttk.LabelFrame(content_frame, text="GParted Partition Changes", padding="10")
+        changes_frame.pack(fill="x", pady=(0, 15))
         
         changes_info = "GParted operations completed successfully!\n\n"
         changes_info += f"Partition modifications: {self.partition_changes}\n\n"
@@ -611,14 +667,13 @@ class NewSizeDialog:
             for i, part in enumerate(self.final_layout_info['partitions']):
                 changes_info += f"  Partition {part['number']}: {part['start']} - {part['end']} ({part['size']})\n"
         
-        changes_label = ttk.Label(changes_frame, text=changes_info, justify="left", font=("Arial", 10))
+        changes_label = ttk.Label(changes_frame, text=changes_info, justify="left", font=("Arial", 9))
         changes_label.pack()
         
-        # Current status - SIMPLIFIED: Just show the facts
-        status_frame = ttk.LabelFrame(main_frame, text="Size Requirements", padding="15")
-        status_frame.pack(fill="x", pady=(0, 20))
+        # Size Requirements
+        status_frame = ttk.LabelFrame(content_frame, text="Size Requirements", padding="10")
+        status_frame.pack(fill="x", pady=(0, 15))
         
-        # Use the simple calculation: last partition end + 200MB
         last_partition_end = self.final_layout_info['last_partition_end_bytes']
         min_size_with_buffer = self.final_layout_info['required_minimum_bytes']
         
@@ -629,83 +684,104 @@ class NewSizeDialog:
         if min_size_with_buffer < self.original_size:
             saved = self.original_size - min_size_with_buffer
             current_info += f"Space Savings: {QCow2CloneResizer.format_size(saved)} "
-            current_info += f"({(saved/self.original_size*100):.1f}% reduction)\n"
+            current_info += f"({(saved/self.original_size*100):.1f}% reduction)"
         elif min_size_with_buffer > self.original_size:
             added = min_size_with_buffer - self.original_size
-            current_info += f"Additional Space Needed: {QCow2CloneResizer.format_size(added)}\n"
+            current_info += f"Additional Space Needed: {QCow2CloneResizer.format_size(added)}"
         else:
-            current_info += f"Same space requirements as original\n"
+            current_info += f"Same space requirements as original"
         
-        status_label = ttk.Label(status_frame, text=current_info, justify="left", font=("Arial", 10))
+        status_label = ttk.Label(status_frame, text=current_info, justify="left", font=("Arial", 9))
         status_label.pack()
         
-        # Size selection - SIMPLIFIED
-        size_frame = ttk.LabelFrame(main_frame, text="New Image Size Selection", padding="15")
-        size_frame.pack(fill="x", pady=(0, 20))
-        
-        rec_frame = ttk.Frame(size_frame)
-        rec_frame.pack(fill="x", pady=(0, 15))
+        # Size Selection
+        size_frame = ttk.LabelFrame(content_frame, text="New Image Size Selection", padding="10")
+        size_frame.pack(fill="x", pady=(0, 15))
         
         self.choice = tk.StringVar(value="calculated")
         
-        # Option 1: Use calculated size (recommended)
-        ttk.Radiobutton(rec_frame, text=f"Use Calculated Size: {QCow2CloneResizer.format_size(min_size_with_buffer)} (RECOMMENDED)", 
-                    variable=self.choice, value="calculated").pack(anchor="w", pady=2)
+        # Option 1: Use calculated size (recommended) - Make this more prominent
+        calc_frame = ttk.Frame(size_frame)
+        calc_frame.pack(fill="x", pady=2)
+        calc_radio = ttk.Radiobutton(calc_frame, text=f"Use Calculated Size: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
+                                    variable=self.choice, value="calculated")
+        calc_radio.pack(side="left")
+        ttk.Label(calc_frame, text="(RECOMMENDED)", font=("Arial", 8, "bold"), foreground="green").pack(side="left", padx=(5, 0))
         
         # Option 2: Same as original (if sufficient)
         if self.original_size >= min_size_with_buffer:
-            ttk.Radiobutton(rec_frame, text=f"Keep Original Size: {QCow2CloneResizer.format_size(self.original_size)} (no space savings)", 
-                        variable=self.choice, value="original").pack(anchor="w", pady=2)
+            ttk.Radiobutton(size_frame, text=f"Keep Original Size: {QCow2CloneResizer.format_size(self.original_size)} (no space savings)", 
+                           variable=self.choice, value="original").pack(anchor="w", pady=2)
         else:
             # Original is too small
             shortage = min_size_with_buffer - self.original_size
-            ttk.Label(rec_frame, text=f"Original size insufficient - needs {QCow2CloneResizer.format_size(shortage)} more space", 
-                    foreground="red", font=("Arial", 9)).pack(anchor="w", pady=2)
+            ttk.Label(size_frame, text=f"Original size insufficient - needs {QCow2CloneResizer.format_size(shortage)} more space", 
+                     foreground="red", font=("Arial", 8)).pack(anchor="w", pady=2)
         
         # Option 3: Custom size
-        custom_frame = ttk.Frame(rec_frame)
-        custom_frame.pack(fill="x", pady=(10, 0))
+        custom_frame = ttk.Frame(size_frame)
+        custom_frame.pack(fill="x", pady=(8, 0))
         
         ttk.Radiobutton(custom_frame, text="Custom size:", 
-                    variable=self.choice, value="custom").pack(side="left")
+                       variable=self.choice, value="custom").pack(side="left")
         
         # Default custom size
         default_gb = max(1, int(min_size_with_buffer / (1024**3)) + 1)
         self.custom_size = tk.StringVar(value=f"{default_gb}G")
-        custom_entry = ttk.Entry(custom_frame, textvariable=self.custom_size, width=12, font=("Arial", 10))
+        custom_entry = ttk.Entry(custom_frame, textvariable=self.custom_size, width=12, font=("Arial", 9))
         custom_entry.pack(side="left", padx=(10, 10))
         
-        ttk.Label(custom_frame, text="(e.g. 100G, 512M, 2T)", font=("Arial", 9)).pack(side="left")
+        ttk.Label(custom_frame, text="(e.g. 100G, 512M, 2T)", font=("Arial", 8)).pack(side="left")
         
         # Show minimum size warning
-        warning_frame = ttk.Frame(rec_frame)
-        warning_frame.pack(fill="x", pady=(10, 0))
+        warning_frame = ttk.Frame(size_frame)
+        warning_frame.pack(fill="x", pady=(8, 0))
         ttk.Label(warning_frame, text=f"⚠ Minimum size required: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
-                font=("Arial", 9), foreground="orange").pack(anchor="w")
+                 font=("Arial", 8), foreground="orange").pack(anchor="w")
         
-        # Clone explanation
-        exp_frame = ttk.LabelFrame(main_frame, text="What Happens Next", padding="15")
+        # What Happens Next
+        exp_frame = ttk.LabelFrame(content_frame, text="What Happens Next", padding="10")
         exp_frame.pack(fill="x", pady=(0, 20))
         
         explanation = ("1. Create new empty image with selected size\n"
-                    "2. Copy partition table structure from current image\n"
-                    "3. Clone each partition with all your GParted changes\n"
-                    "4. Preserve bootloader and all modifications\n\n"
-                    "All your partition resizing and changes will be preserved.")
+                      "2. Copy partition table structure from current image\n"
+                      "3. Clone each partition with all your GParted changes\n"
+                      "4. Preserve bootloader and all modifications\n\n"
+                      "All your partition resizing and changes will be preserved.")
         
-        exp_label = ttk.Label(exp_frame, text=explanation, wraplength=660, justify="left", font=("Arial", 9))
+        exp_label = ttk.Label(exp_frame, text=explanation, wraplength=500, justify="left", font=("Arial", 9))
         exp_label.pack()
         
-        # Buttons
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill="x", pady=(20, 0))
+        # FIXED: Buttons outside scrollable area, always visible
+        button_container = ttk.Frame(main_container)
+        button_container.pack(fill="x", pady=(10, 0))
         
-        create_btn = ttk.Button(button_frame, text="Create New Optimized Image", command=self.create_new)
-        create_btn.pack(side="right", padx=(10, 0))
+        # Separator line
+        separator = ttk.Separator(button_container, orient="horizontal")
+        separator.pack(fill="x", pady=(0, 10))
         
-        cancel_btn = ttk.Button(button_frame, text="Skip Cloning", command=self.skip_cloning)
-        cancel_btn.pack(side="right", padx=(10, 0))
-
+        # Buttons frame
+        button_frame = ttk.Frame(button_container)
+        button_frame.pack(fill="x")
+        
+        # Create buttons with larger size and clear labels
+        create_btn = ttk.Button(button_frame, text="✓ Create New Optimized Image", 
+                               command=self.create_new, 
+                               style="Accent.TButton")
+        create_btn.pack(side="right", padx=(10, 0), ipadx=10, ipady=5)
+        
+        cancel_btn = ttk.Button(button_frame, text="Skip Cloning", 
+                               command=self.skip_cloning,
+                               ipadx=10, ipady=5)
+        cancel_btn.pack(side="right")
+        
+        # Add keyboard shortcuts
+        self.dialog.bind('<Return>', lambda e: self.create_new())
+        self.dialog.bind('<Escape>', lambda e: self.skip_cloning())
+        
+        # Focus on the create button
+        create_btn.focus_set()
+    
     def create_new(self):
         """Create new image with selected size"""
         choice = self.choice.get()
@@ -732,15 +808,18 @@ class NewSizeDialog:
                 return
             
             self.result = new_size
+            self.dialog.quit()  # Use quit() instead of destroy() for proper cleanup
             self.dialog.destroy()
             
         except ValueError as e:
             messagebox.showerror("Invalid Size", f"Error parsing size: {e}")
-
+    
     def skip_cloning(self):
         """Skip cloning - keep original image with changes"""
         self.result = None
+        self.dialog.quit()  # Use quit() instead of destroy() for proper cleanup
         self.dialog.destroy()
+
 
 class QCow2CloneResizerGUI:
     """GUI for clone-based resizing with mandatory GParted usage"""
@@ -750,12 +829,16 @@ class QCow2CloneResizerGUI:
         self.root.title("QCOW2 Clone Resizer - GParted + Safe Cloning")
         
         # Appropriate window size
-        self.root.geometry("900x700")
+        self.root.geometry("800x600")
+        self.root.minsize(750, 550)
         
         self.image_path = tk.StringVar()
         self.image_info = None
         self.operation_active = False
-        self.new_size_result = None
+        
+        # Threading event system for dialog handling
+        self.dialog_result_event = threading.Event()
+        self.dialog_result_value = None
         
         self.setup_ui()
         self.check_prerequisites()
@@ -774,111 +857,60 @@ class QCow2CloneResizerGUI:
         self.root.destroy()
 
     def setup_ui(self):
-        """Setup user interface"""
-        # Main container with scrollable content
-        main_canvas = tk.Canvas(self.root)
-        main_scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=main_canvas.yview)
-        scrollable_frame = ttk.Frame(main_canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: main_canvas.configure(scrollregion=main_canvas.bbox("all"))
-        )
-        
-        main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        main_canvas.configure(yscrollcommand=main_scrollbar.set)
-        
-        main_canvas.pack(side="left", fill="both", expand=True)
-        main_scrollbar.pack(side="right", fill="y")
-        
-        # Main content frame
-        main_frame = ttk.Frame(scrollable_frame, padding="25")
+        """Setup simplified user interface with single action button"""
+        # Main container with padding
+        main_frame = ttk.Frame(self.root, padding="20")
         main_frame.pack(fill="both", expand=True)
         
         # Header section
         header_frame = ttk.Frame(main_frame)
-        header_frame.pack(fill="x", pady=(0, 25))
+        header_frame.pack(fill="x", pady=(0, 20))
         
         # Title
         title = ttk.Label(header_frame, text="QCOW2 Clone Resizer", 
-                        font=("Arial", 20, "bold"))
-        title.pack(pady=(0, 8))
+                        font=("Arial", 18, "bold"))
+        title.pack(pady=(0, 5))
         
-        subtitle = ttk.Label(header_frame, text="Manual GParted Resizing + Safe Cloning", 
-                           font=("Arial", 12))
-        subtitle.pack(pady=(0, 15))
+        subtitle = ttk.Label(header_frame, text="GParted Manual Resizing + Safe Cloning", 
+                           font=("Arial", 11))
+        subtitle.pack(pady=(0, 10))
         
-        # Quick action buttons at top
-        quick_action_frame = ttk.Frame(header_frame)
-        quick_action_frame.pack(fill="x", pady=(0, 15))
-        
-        self.resize_btn_top = ttk.Button(quick_action_frame, text="START: GPARTED + CLONE PROCESS", 
-                                       command=self.start_gparted_resize, state="disabled",
-                                       style="Accent.TButton")
-        self.resize_btn_top.pack(side="left", padx=(0, 15))
-        
-        ttk.Button(quick_action_frame, text="Create Backup", 
-                  command=self.create_backup).pack(side="left", padx=(0, 15))
-        
-        # Create two columns
-        columns_frame = ttk.Frame(main_frame)
-        columns_frame.pack(fill="both", expand=True)
-        
-        # Left column
-        left_column = ttk.Frame(columns_frame)
-        left_column.pack(side="left", fill="both", expand=True, padx=(0, 15))
-        
-        # Right column  
-        right_column = ttk.Frame(columns_frame)
-        right_column.pack(side="right", fill="both", expand=True, padx=(15, 0))
-        
-        # LEFT COLUMN CONTENT
-        
-        # Description
-        desc_frame = ttk.LabelFrame(left_column, text="GParted + Cloning Method", padding="15")
-        desc_frame.pack(fill="x", pady=(0, 15))
-        
-        desc_text = ("PROCESS WORKFLOW:\n"
-                    "1. Select your QCOW2 virtual disk file\n"
-                    "2. Mount disk and launch GParted\n" 
-                    "3. Manually resize/modify partitions in GParted\n"
-                    "4. Apply all changes and close GParted\n"
-                    "5. Choose optimal size for new image\n"
-                    "6. Clone modified partitions to new optimized image\n\n"
-                    "ADVANTAGES:\n"
-                    "• Full manual control with GParted GUI\n"
-                    "• All partition changes preserved\n"
-                    "• No risk of data corruption\n"
-                    "• Bootloader and structures intact\n"
-                    "• Final image optimized for actual needs")
-        
-        desc_label = ttk.Label(desc_frame, text=desc_text, justify="left", font=("Arial", 10))
-        desc_label.pack()
-        
-        # File selection
-        file_frame = ttk.LabelFrame(left_column, text="QCOW2 Image Selection", padding="15")
+        # File selection section
+        file_frame = ttk.LabelFrame(main_frame, text="QCOW2 Image File", padding="15")
         file_frame.pack(fill="x", pady=(0, 15))
         
         path_frame = ttk.Frame(file_frame)
         path_frame.pack(fill="x", pady=(0, 10))
         
         self.path_entry = ttk.Entry(path_frame, textvariable=self.image_path, font=("Arial", 10))
-        self.path_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.path_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         
-        ttk.Button(path_frame, text="Browse", command=self.browse_file).pack(side="right", padx=(0, 8))
+        ttk.Button(path_frame, text="Browse", command=self.browse_file).pack(side="right", padx=(0, 5))
         ttk.Button(path_frame, text="Analyze", command=self.analyze_image).pack(side="right")
         
-        # Prerequisites
-        self.prereq_frame = ttk.LabelFrame(left_column, text="System Requirements", padding="15")
+        # Image information display
+        info_frame = ttk.LabelFrame(main_frame, text="Image Information", padding="15")
+        info_frame.pack(fill="both", expand=True, pady=(0, 15))
+        
+        self.info_text = tk.Text(info_frame, height=10, state="disabled", wrap="word", 
+                                font=("Consolas", 9), bg="white")
+        info_scrollbar = ttk.Scrollbar(info_frame, orient="vertical", command=self.info_text.yview)
+        self.info_text.configure(yscrollcommand=info_scrollbar.set)
+        
+        self.info_text.pack(side="left", fill="both", expand=True)
+        info_scrollbar.pack(side="right", fill="y")
+        
+        # System requirements check
+        self.prereq_frame = ttk.LabelFrame(main_frame, text="System Status", padding="15")
         self.prereq_frame.pack(fill="x", pady=(0, 15))
         
         self.prereq_label = ttk.Label(self.prereq_frame, text="Checking required tools...", 
-                                     font=("Arial", 10))
+                                     font=("Arial", 9))
         self.prereq_label.pack()
         
         # Progress section
-        progress_frame = ttk.LabelFrame(left_column, text="Operation Progress", padding="15")
-        progress_frame.pack(fill="x", pady=(0, 15))
+        progress_frame = ttk.LabelFrame(main_frame, text="Operation Progress", padding="15")
+        progress_frame.pack(fill="x", pady=(0, 20))
         
         self.progress = ttk.Progressbar(progress_frame, length=400, style="TProgressbar")
         self.progress.pack(fill="x", pady=(0, 8))
@@ -887,78 +919,42 @@ class QCow2CloneResizerGUI:
                                        font=("Arial", 10, "bold"))
         self.progress_label.pack()
         
-        # RIGHT COLUMN CONTENT
+        # Action buttons section
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x", pady=(0, 10))
         
-        # Image info
-        info_frame = ttk.LabelFrame(right_column, text="Image Information", padding="15")
-        info_frame.pack(fill="x", pady=(0, 15))
-        
-        self.info_text = tk.Text(info_frame, height=8, state="disabled", wrap="word", 
-                                font=("Consolas", 9), bg="white")
-        info_scrollbar = ttk.Scrollbar(info_frame, orient="vertical", command=self.info_text.yview)
-        self.info_text.configure(yscrollcommand=info_scrollbar.set)
-        
-        self.info_text.pack(side="left", fill="both", expand=True)
-        info_scrollbar.pack(side="right", fill="y")
-        
-        # Instructions
-        instructions_frame = ttk.LabelFrame(right_column, text="Step-by-Step Process", padding="15")
-        instructions_frame.pack(fill="x", pady=(0, 15))
-        
-        instructions_text = ("DETAILED WORKFLOW:\n\n"
-                           "STEP 1: Preparation\n"
-                           "• Ensure VM is completely shut down\n"
-                           "• Create backup (recommended)\n"
-                           "• Select QCOW2 image file\n\n"
-                           "STEP 2: GParted Session\n"
-                           "• Image mounted as NBD device\n"
-                           "• GParted launches automatically\n"
-                           "• Resize/move/modify partitions as needed\n"
-                           "• IMPORTANT: Apply all changes before closing\n\n"
-                           "STEP 3: Size Selection\n"
-                           "• Choose final image size based on new layout\n"
-                           "• Optimal size calculated automatically\n\n"
-                           "STEP 4: Safe Cloning\n"
-                           "• New image created with chosen size\n"
-                           "• All partitions cloned with modifications\n"
-                           "• Bootloader and structures preserved")
-        
-        instructions_label = ttk.Label(instructions_frame, text=instructions_text, justify="left", 
-                                     font=("Arial", 9))
-        instructions_label.pack()
-        
-        # Action buttons
-        button_frame = ttk.LabelFrame(right_column, text="Actions", padding="15")
-        button_frame.pack(fill="x", pady=(0, 15))
-        
-        # Primary action button
-        self.resize_btn_main = ttk.Button(button_frame, text="START GPARTED + CLONE PROCESS", 
-                                         command=self.start_gparted_resize, state="disabled",
+        # Primary action button (large, prominent)
+        self.main_action_btn = ttk.Button(button_frame, 
+                                         text="🚀 START GPARTED + CLONE PROCESS", 
+                                         command=self.start_gparted_resize, 
+                                         state="disabled",
                                          style="Accent.TButton")
-        self.resize_btn_main.pack(fill="x", pady=(0, 10))
+        self.main_action_btn.pack(side="top", fill="x", pady=(0, 15), ipady=8)
         
-        # Secondary buttons
+        # Secondary buttons (smaller, side by side)
         secondary_frame = ttk.Frame(button_frame)
         secondary_frame.pack(fill="x")
         
-        ttk.Button(secondary_frame, text="Create Backup", 
-                  command=self.create_backup).pack(side="left", padx=(0, 8))
+        self.backup_btn = ttk.Button(secondary_frame, text="💾 Create Backup", 
+                                    command=self.create_backup)
+        self.backup_btn.pack(side="left", padx=(0, 10))
         
-        ttk.Button(secondary_frame, text="Refresh", 
-                  command=self.analyze_image).pack(side="left", padx=(0, 8))
+        ttk.Button(secondary_frame, text="🔄 Refresh", 
+                  command=self.analyze_image).pack(side="left", padx=(0, 10))
         
-        ttk.Button(secondary_frame, text="Close", 
+        ttk.Button(secondary_frame, text="❌ Close", 
                   command=self.close_window).pack(side="right")
         
         # Status bar
         status_frame = ttk.Frame(main_frame)
-        status_frame.pack(fill="x", pady=(20, 0))
+        status_frame.pack(fill="x", pady=(15, 0))
         
         separator = ttk.Separator(status_frame, orient="horizontal")
         separator.pack(fill="x", pady=(0, 8))
         
-        status_text = "Ready - Select image and ensure VM is shut down"
-        self.status_label = ttk.Label(status_frame, text=status_text, font=("Arial", 9))
+        self.status_label = ttk.Label(status_frame, 
+                                     text="Ready - Select QCOW2 image file and ensure VM is shut down", 
+                                     font=("Arial", 9))
         self.status_label.pack()
         
         # Configure styles
@@ -968,10 +964,10 @@ class QCow2CloneResizerGUI:
         """Setup custom styles"""
         style = ttk.Style()
         
-        # Configure accent button style
+        # Configure accent button style for main action
         style.configure("Accent.TButton",
-                       font=("Arial", 11, "bold"),
-                       padding=(15, 8))
+                       font=("Arial", 12, "bold"),
+                       padding=(20, 10))
     
     def check_prerequisites(self):
         """Check if required tools are installed"""
@@ -979,7 +975,7 @@ class QCow2CloneResizerGUI:
         
         text = ""
         if missing:
-            text = f"Missing required tools: {', '.join(missing)}\n"
+            text = f"❌ Missing required tools: {', '.join(missing)}\n"
             
             install_msg = "Required tools missing!\n\n"
             install_msg += "Ubuntu/Debian:\n"
@@ -992,12 +988,12 @@ class QCow2CloneResizerGUI:
             messagebox.showerror("Missing Tools", install_msg)
             
         else:
-            text = "All required tools available\n"
+            text = "✅ All required tools available\n"
         
         if optional:
-            text += f"Optional tools: {', '.join(optional)}\n"
+            text += f"📋 Optional tools: {', '.join(optional)}\n"
         
-        root_status = "Running as root" if os.geteuid() == 0 else "Not running as root (will use privilege escalation)"
+        root_status = "🔐 Running as root" if os.geteuid() == 0 else "🔓 Will use privilege escalation"
         text += root_status
         
         color = "red" if missing else "green"
@@ -1029,12 +1025,11 @@ class QCow2CloneResizerGUI:
             self.image_info = QCow2CloneResizer.get_image_info(path)
             self.display_image_info()
             
-            # Enable resize buttons
-            self.resize_btn_top.config(state="normal")
-            self.resize_btn_main.config(state="normal")
+            # Enable action buttons
+            self.main_action_btn.config(state="normal")
             
             self.update_progress(0, "Analysis complete - Ready for GParted + Clone process")
-            self.status_label.config(text="Image analyzed successfully - Ready for GParted resize")
+            self.status_label.config(text="✅ Image analyzed - Ready to start GParted + Clone process")
             
         except Exception as e:
             messagebox.showerror("Analysis Failed", f"Failed to analyze image:\n\n{e}")
@@ -1048,14 +1043,14 @@ class QCow2CloneResizerGUI:
         self.info_text.config(state="normal")
         self.info_text.delete(1.0, "end")
         
-        info = f"FILE INFORMATION\n"
-        info += f"{'='*45}\n"
+        info = f"📁 FILE INFORMATION\n"
+        info += f"{'='*50}\n"
         info += f"Path: {self.image_path.get()}\n"
         info += f"Name: {os.path.basename(self.image_path.get())}\n"
         info += f"Format: {self.image_info['format'].upper()}\n\n"
         
-        info += f"SIZE INFORMATION\n"
-        info += f"{'='*45}\n"
+        info += f"💾 SIZE INFORMATION\n"
+        info += f"{'='*50}\n"
         info += f"Virtual Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
         info += f"File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n"
         
@@ -1064,14 +1059,22 @@ class QCow2CloneResizerGUI:
             info += f"Usage: {ratio*100:.1f}% of virtual size\n"
             
             if ratio < 0.5:
-                info += f"Info: Image with sparse allocation\n"
+                info += f"ℹ️ Sparse allocation detected (efficient storage)\n"
         
-        info += f"\nPROCESS READY\n"
-        info += f"{'='*45}\n"
-        info += f"Compressed: {'Yes' if self.image_info.get('compressed', False) else 'No'}\n"
-        info += f"Ready for GParted: YES\n"
-        info += f"NBD mount: Available\n"
-        info += f"\nReady for manual partition editing\nfollowed by safe cloning!"
+        info += f"\n🔧 PROCESS WORKFLOW\n"
+        info += f"{'='*50}\n"
+        info += f"1. 🖥️  Mount image as NBD device\n"
+        info += f"2. 🎯 Launch GParted for manual partition editing\n"
+        info += f"3. ✏️  Resize/modify partitions as needed\n"
+        info += f"4. 💾 Apply changes and close GParted\n"
+        info += f"5. 📏 Select optimal size for new image\n"
+        info += f"6. 🚀 Clone all partitions to new optimized image\n\n"
+        
+        info += f"⚠️  IMPORTANT REQUIREMENTS:\n"
+        info += f"• Virtual machine MUST be completely shut down\n"
+        info += f"• Apply ALL changes in GParted before closing\n"
+        info += f"• Backup recommended before starting\n"
+        info += f"\n✅ Ready for GParted + Clone process!"
         
         self.info_text.insert(1.0, info)
         self.info_text.config(state="disabled")
@@ -1088,10 +1091,11 @@ class QCow2CloneResizerGUI:
             backup_path = QCow2CloneResizer.create_backup(path)
             self.update_progress(0, "Backup created successfully")
             
-            backup_msg = f"Backup created successfully!\n\n"
+            backup_msg = f"💾 BACKUP CREATED SUCCESSFULLY!\n\n"
             backup_msg += f"Original: {path}\n"
             backup_msg += f"Backup: {backup_path}\n\n"
-            backup_msg += f"The backup is a complete copy of your virtual disk."
+            backup_msg += f"The backup is a complete copy of your virtual disk.\n"
+            backup_msg += f"You can now safely proceed with the resizing process."
             
             messagebox.showinfo("Backup Complete", backup_msg)
             
@@ -1107,21 +1111,21 @@ class QCow2CloneResizerGUI:
         path = self.image_path.get()
         
         # Detailed confirmation dialog
-        msg = f"GPARTED + CLONE OPERATION\n\n"
-        msg += f"File: {os.path.basename(path)}\n"
-        msg += f"Current Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
-        msg += f"File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n\n"
+        msg = f"🚀 GPARTED + CLONE OPERATION\n\n"
+        msg += f"📁 File: {os.path.basename(path)}\n"
+        msg += f"💾 Current Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
+        msg += f"📂 File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n\n"
         
-        msg += f"PROCESS STEPS:\n"
-        msg += f"1. Mount image as NBD device\n"
-        msg += f"2. Launch GParted for manual partition editing\n"
-        msg += f"3. You resize/move/modify partitions in GParted\n"
-        msg += f"4. Apply changes and close GParted\n"
-        msg += f"5. Select optimal size for new image\n"
-        msg += f"6. Create new optimized image\n"
-        msg += f"7. Clone all modified partitions safely\n\n"
+        msg += f"🔄 PROCESS STEPS:\n"
+        msg += f"1. 🖥️  Mount image as NBD device\n"
+        msg += f"2. 🎯 Launch GParted for manual partition editing\n"
+        msg += f"3. ✏️  Resize/move/modify partitions in GParted\n"
+        msg += f"4. ✅ Apply changes and close GParted\n"
+        msg += f"5. 📏 Select optimal size for new image\n"
+        msg += f"6. 🚀 Create new optimized image\n"
+        msg += f"7. 📋 Clone all modified partitions safely\n\n"
         
-        msg += f"REQUIREMENTS:\n"
+        msg += f"⚠️  CRITICAL REQUIREMENTS:\n"
         msg += f"• Virtual machine MUST be completely shut down\n"
         msg += f"• Root privileges required for NBD operations\n"
         msg += f"• APPLY ALL CHANGES in GParted before closing\n"
@@ -1129,27 +1133,27 @@ class QCow2CloneResizerGUI:
         
         msg += f"Continue with GParted + Clone process?"
         
-        if not messagebox.askyesno("Confirm GParted Operation", msg):
+        if not messagebox.askyesno("Confirm Operation", msg):
             return
         
         # Check root privileges
         if os.geteuid() != 0:
-            root_msg = ("ROOT PRIVILEGES REQUIRED\n\n"
+            root_msg = ("🔐 ROOT PRIVILEGES REQUIRED\n\n"
                        "This operation requires root privileges for NBD device management.\n\n"
                        "The application will attempt to use privilege escalation (pkexec, sudo) "
                        "when launching GParted.\n\n"
-                       "For best experience, run entire application with:\n"
+                       "💡 For best experience, run entire application with:\n"
                        "sudo python3 qcow2_clone_resizer.py\n\n"
                        "Continue anyway?")
             
-            if not messagebox.askyesno("Root Privileges", root_msg):
+            if not messagebox.askyesno("Root Privileges Required", root_msg):
                 return
         
         # Start resize in thread
         self.operation_active = True
-        self.resize_btn_top.config(state="disabled")
-        self.resize_btn_main.config(state="disabled")
-        self.status_label.config(text="GParted + Clone operation in progress...")
+        self.main_action_btn.config(state="disabled")
+        self.backup_btn.config(state="disabled")
+        self.status_label.config(text="🔄 GParted + Clone operation in progress...")
         
         thread = threading.Thread(target=self._gparted_clone_worker, args=(path,))
         thread.daemon = True
@@ -1181,22 +1185,22 @@ class QCow2CloneResizerGUI:
             
             # Show detailed GParted instructions
             instructions = (
-                f"GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
+                f"🎯 GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
                 f"Device: {nbd_device}\n\n"
-                f"CURRENT PARTITIONS:\n{initial_info}\n"
-                f"INSTRUCTIONS FOR GPARTED:\n"
+                f"📋 CURRENT PARTITIONS:\n{initial_info}\n"
+                f"🔧 INSTRUCTIONS FOR GPARTED:\n"
                 f"1. Resize partitions (shrink to save space or expand)\n"
                 f"2. Move partitions if needed\n"
                 f"3. Modify filesystem sizes\n"
                 f"4. Delete unused partitions\n"
-                f"5. CRITICAL: Click 'Apply' to execute all changes\n"
+                f"5. ⚠️  CRITICAL: Click 'Apply' to execute all changes\n"
                 f"6. Wait for all operations to complete\n"
                 f"7. Close GParted when finished\n\n"
-                f"After GParted closes, this tool will:\n"
+                f"🚀 After GParted closes, this tool will:\n"
                 f"• Analyze your partition changes\n"
                 f"• Let you choose optimal new image size\n"
                 f"• Clone all modified partitions to new image\n\n"
-                f"TIP: Shrinking partitions = smaller final image size!"
+                f"💡 TIP: Shrinking partitions = smaller final image size!"
             )
             
             self.root.after(0, lambda: messagebox.showinfo("GParted Session Starting", instructions))
@@ -1219,19 +1223,27 @@ class QCow2CloneResizerGUI:
             
             # Show new size dialog with final layout information
             self.update_progress(45, "Select size for new optimized image...")
-            self.new_size_result = None
+            
+            # Reset the event and result
+            self.dialog_result_event.clear()
+            self.dialog_result_value = None
+            
+            # Show dialog in main thread
             self.root.after(0, self._show_final_size_dialog, final_layout, partition_changes)
             
-            # Wait for size selection dialog result
-            timeout_count = 0
-            while self.new_size_result is None and timeout_count < 600:  # 60 second timeout
-                time.sleep(0.1)
-                timeout_count += 1
+            # Wait for dialog completion with proper event handling
+            dialog_completed = self.dialog_result_event.wait(timeout=300)  # 5 minute timeout
             
-            if timeout_count >= 600:
+            if not dialog_completed:
                 raise Exception("Size selection dialog timed out - please try again")
             
-            new_size = self.new_size_result
+            new_size = self.dialog_result_value
+            print(f"DEBUG: Dialog completed. New size selected: {new_size}")
+            
+            if new_size is not None:
+                print(f"DEBUG: User selected to create new image with size: {QCow2CloneResizer.format_size(new_size)}")
+            else:
+                print(f"DEBUG: User chose to skip cloning")
             
             if new_size is not None:
                 # User chose to create new optimized image
@@ -1257,47 +1269,47 @@ class QCow2CloneResizerGUI:
                 new_image_info = QCow2CloneResizer.get_image_info(str(new_path))
                 
                 # Show comprehensive success message
-                success_msg = f"GPARTED + CLONE OPERATION COMPLETED SUCCESSFULLY!\n\n"
-                success_msg += f"RESULTS:\n"
-                success_msg += f"Original image: {image_path}\n"
-                success_msg += f"New optimized image: {new_path}\n\n"
-                success_msg += f"SIZE COMPARISON:\n"
-                success_msg += f"Original virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}\n"
-                success_msg += f"New virtual size: {QCow2CloneResizer.format_size(new_image_info['virtual_size'])}\n"
+                success_msg = f"🎉 GPARTED + CLONE OPERATION COMPLETED SUCCESSFULLY!\n\n"
+                success_msg += f"📊 RESULTS:\n"
+                success_msg += f"📁 Original image: {image_path}\n"
+                success_msg += f"✨ New optimized image: {new_path}\n\n"
+                success_msg += f"📏 SIZE COMPARISON:\n"
+                success_msg += f"📊 Original virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}\n"
+                success_msg += f"🎯 New virtual size: {QCow2CloneResizer.format_size(new_image_info['virtual_size'])}\n"
                 
                 if new_size < original_info['virtual_size']:
                     saved = original_info['virtual_size'] - new_size
-                    success_msg += f"Space saved: {QCow2CloneResizer.format_size(saved)} "
+                    success_msg += f"💾 Space saved: {QCow2CloneResizer.format_size(saved)} "
                     success_msg += f"({(saved/original_info['virtual_size']*100):.1f}% reduction)\n"
                 elif new_size > original_info['virtual_size']:
                     added = new_size - original_info['virtual_size']
-                    success_msg += f"Space added: {QCow2CloneResizer.format_size(added)} "
+                    success_msg += f"📈 Space added: {QCow2CloneResizer.format_size(added)} "
                     success_msg += f"({(added/original_info['virtual_size']*100):.1f}% increase)\n"
                 else:
-                    success_msg += f"Size maintained (optimized structure)\n"
+                    success_msg += f"🔧 Size maintained (optimized structure)\n"
                 
-                success_msg += f"\nPROCESS SUMMARY:\n"
-                success_msg += f"✓ GParted partition modifications applied\n"
-                success_msg += f"✓ All partition changes preserved\n"
-                success_msg += f"✓ Bootloader and structures intact\n"
-                success_msg += f"✓ New image optimized for actual needs\n\n"
-                success_msg += f"Your virtual machine is ready to use with the new image!"
+                success_msg += f"\n🏆 PROCESS SUMMARY:\n"
+                success_msg += f"✅ GParted partition modifications applied\n"
+                success_msg += f"✅ All partition changes preserved\n"
+                success_msg += f"✅ Bootloader and structures intact\n"
+                success_msg += f"✅ New image optimized for actual needs\n\n"
+                success_msg += f"🚀 Your virtual machine is ready to use with the new image!"
                 
                 # Ask about replacing original file
-                replace_msg = f"REPLACE ORIGINAL FILE?\n\n"
+                replace_msg = f"🔄 REPLACE ORIGINAL FILE?\n\n"
                 replace_msg += f"Do you want to replace the original file with the new optimized image?\n\n"
-                replace_msg += f"Original: {image_path}\n"
-                replace_msg += f"New: {new_path}\n\n"
-                replace_msg += f"If YES:\n"
+                replace_msg += f"📁 Original: {image_path}\n"
+                replace_msg += f"✨ New: {new_path}\n\n"
+                replace_msg += f"✅ If YES:\n"
                 replace_msg += f"• Old file renamed to .old extension\n"
                 replace_msg += f"• New file takes original name\n"
                 replace_msg += f"• VM configuration unchanged\n\n"
-                replace_msg += f"If NO:\n"
+                replace_msg += f"📂 If NO:\n"
                 replace_msg += f"• Both files kept\n"
                 replace_msg += f"• Update VM to use new file manually"
                 
                 def show_success_messages():
-                    messagebox.showinfo("GParted + Clone Complete", success_msg)
+                    messagebox.showinfo("Operation Complete", success_msg)
                     if messagebox.askyesno("Replace Original File", replace_msg):
                         try:
                             # Rename original to .old
@@ -1341,10 +1353,13 @@ class QCow2CloneResizerGUI:
         """Show final size dialog after GParted operations"""
         try:
             dialog = NewSizeDialog(self.root, final_layout, self.image_info['virtual_size'], partition_changes)
-            self.new_size_result = dialog.result
+            # Store the result and signal completion
+            self.dialog_result_value = dialog.result
+            self.dialog_result_event.set()
         except Exception as e:
             self.log(f"Final size dialog error: {e}")
-            self.new_size_result = None
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
     
     def validate_inputs(self):
         """Validate user inputs"""
@@ -1388,8 +1403,8 @@ class QCow2CloneResizerGUI:
     def reset_ui(self):
         """Reset UI after operation"""
         self.operation_active = False
-        self.resize_btn_top.config(state="normal")
-        self.resize_btn_main.config(state="normal")
+        self.main_action_btn.config(state="normal")
+        self.backup_btn.config(state="normal")
         self.progress['value'] = 0
         self.progress_label.config(text="Operation completed")
         self.status_label.config(text="Operation completed - Ready for next operation")
