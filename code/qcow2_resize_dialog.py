@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-QCOW2 Virtual Disk Resizer - Clone-based Edition
+QCOW2 Virtual Disk Resizer - Clone-based Edition (FIXED)
 Secure resizing by creating new image and cloning partitions
 Always uses GParted for manual partition resizing
+Features: preallocation=metadata for new images and improved error handling
 """
 
 import tkinter as tk
@@ -18,6 +19,7 @@ import sys
 from pathlib import Path
 import tempfile
 
+
 class QCow2CloneResizer:
     """Secure version using cloning instead of direct resizing"""
     
@@ -29,7 +31,7 @@ class QCow2CloneResizer:
             'qemu-nbd': 'qemu-utils',
             'parted': 'parted',
             'gparted': 'gparted',
-            'dd': 'coreutils',  # dd for cloning
+            'dd': 'coreutils',
             'partclone.ext4': 'partclone',  # optional for smart cloning
         }
         
@@ -202,7 +204,7 @@ class QCow2CloneResizer:
                         
                         print(f"DEBUG: Partition {partition_num} - start:'{start_str}' end:'{end_str}'")
                         
-                        # FIXED: Support both European (comma) and US (dot) decimal separators
+                        # Support both European (comma) and US (dot) decimal separators
                         end_bytes = 0
                         
                         # Method 1: Look for GB values (support both 47.5GB and 47,5GB)
@@ -211,9 +213,9 @@ class QCow2CloneResizer:
                             gb_value_str = gb_match.group(1).replace(',', '.')  # Convert European to US format
                             gb_value = float(gb_value_str)
                             end_bytes = int(gb_value * 1024**3)
-                            print(f"DEBUG: Found GB value: {gb_value_str}GB (converted from '{gb_match.group(1)}GB') = {end_bytes} bytes")
+                            print(f"DEBUG: Found GB value: {gb_value_str}GB = {end_bytes} bytes")
                         else:
-                            # Method 2: Look for MB values (support both 47.5MB and 47,5MB)
+                            # Method 2: Look for MB values
                             mb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*MB', end_str, re.IGNORECASE)
                             if mb_match:
                                 mb_value_str = mb_match.group(1).replace(',', '.')
@@ -343,39 +345,66 @@ class QCow2CloneResizer:
     
     @staticmethod
     def create_new_qcow2_image(target_path, size_bytes, progress_callback=None):
-        """Create a new QCOW2 image with specified size"""
+        """Create a new QCOW2 image with specified size and metadata preallocation"""
         try:
             if progress_callback:
-                progress_callback(20, "Creating new image...")
+                progress_callback(20, "Creating new image with metadata preallocation...")
             
             # Remove file if it already exists
             if os.path.exists(target_path):
+                print(f"Removing existing file: {target_path}")
                 os.remove(target_path)
             
-            # Create new QCOW2 image
+            # Create new QCOW2 image with metadata preallocation
             cmd = [
                 'qemu-img', 'create', 
-                '-f', 'qcow2', 
+                '-f', 'qcow2',
+                '-o', 'preallocation=metadata',  # FIXED: Added preallocation=metadata
                 target_path, 
                 str(size_bytes)
             ]
             
-            print(f"Executing: {' '.join(cmd)}")
+            print(f"Creating new image: {' '.join(cmd)}")
             
             result = subprocess.run(
                 cmd,
-                capture_output=True, text=True, check=True, timeout=300
+                capture_output=True, text=True, check=True, timeout=600  # Increased timeout for large images
             )
             
+            if result.stdout:
+                print(f"qemu-img output: {result.stdout}")
+            if result.stderr:
+                print(f"qemu-img stderr: {result.stderr}")
+            
+            # Verify the image was created successfully
+            if not os.path.exists(target_path):
+                raise Exception(f"Image file was not created: {target_path}")
+            
+            # Verify image properties
+            verify_info = QCow2CloneResizer.get_image_info(target_path)
+            if verify_info['virtual_size'] != size_bytes:
+                print(f"WARNING: Image size mismatch - requested: {size_bytes}, actual: {verify_info['virtual_size']}")
+            
+            print(f"New image created successfully:")
+            print(f"  Path: {target_path}")
+            print(f"  Virtual Size: {QCow2CloneResizer.format_size(verify_info['virtual_size'])}")
+            print(f"  File Size: {QCow2CloneResizer.format_size(verify_info['actual_size'])}")
+            print(f"  Format: {verify_info['format']}")
+            
             if progress_callback:
-                progress_callback(30, "New image created")
+                progress_callback(30, "New image created successfully")
             
             return target_path
             
         except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to create image: {e.stderr if e.stderr else e}")
+            error_msg = f"qemu-img failed: {e.stderr if e.stderr else str(e)}"
+            print(f"ERROR: {error_msg}")
+            raise Exception(error_msg)
         except subprocess.TimeoutExpired:
-            raise Exception("Image creation timed out")
+            raise Exception("Image creation timed out (10 minutes)")
+        except Exception as e:
+            print(f"ERROR creating image: {e}")
+            raise Exception(f"Failed to create image: {e}")
     
     @staticmethod
     def clone_disk_structure(source_nbd, target_nbd, layout_info, progress_callback=None):
@@ -384,8 +413,9 @@ class QCow2CloneResizer:
             if progress_callback:
                 progress_callback(40, "Cloning partition table...")
             
+            print(f"Cloning disk structure from {source_nbd} to {target_nbd}")
+            
             # Step 1: Copy partition table and MBR/GPT
-            # Copy first sectors (MBR + partition table)
             cmd = [
                 'dd', 
                 f'if={source_nbd}',
@@ -396,13 +426,14 @@ class QCow2CloneResizer:
             ]
             
             print(f"Copying structure: {' '.join(cmd)}")
-            subprocess.run(cmd, check=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+            if result.stderr:
+                print(f"DD stderr: {result.stderr}")
             
             if progress_callback:
                 progress_callback(50, "Recreating partition table...")
             
             # Step 2: Recreate partitions with parted
-            # First, get partition table type
             parted_result = subprocess.run(
                 ['parted', '-s', source_nbd, 'print'],
                 capture_output=True, text=True, check=True
@@ -415,6 +446,8 @@ class QCow2CloneResizer:
                     table_type = line.split(':')[1].strip()
                     break
             
+            print(f"Detected partition table type: {table_type}")
+            
             # Create partition table on new image
             subprocess.run([
                 'parted', '-s', target_nbd, 'mklabel', table_type
@@ -425,28 +458,41 @@ class QCow2CloneResizer:
                 if progress_callback:
                     progress_callback(55 + i * 5, f"Recreating partition {partition['number']}...")
                 
+                print(f"Creating partition {partition['number']}: {partition['start']} - {partition['end']}")
+                
                 # Create partition
-                subprocess.run([
+                result = subprocess.run([
                     'parted', '-s', target_nbd, 
                     'mkpart', 'primary',
                     partition['start'], partition['end']
-                ], check=True)
+                ], capture_output=True, text=True, check=True)
+                
+                if result.stderr:
+                    print(f"Parted stderr for partition {partition['number']}: {result.stderr}")
             
             # Wait for partitions to be available
-            time.sleep(2)
+            print("Waiting for partitions to be available...")
+            time.sleep(3)
             subprocess.run(['partprobe', target_nbd], check=False)
             time.sleep(2)
+            
+            # Verify partitions were created
+            verify_result = subprocess.run(['lsblk', target_nbd], 
+                                         capture_output=True, text=True, timeout=10)
+            print(f"New partition layout:\n{verify_result.stdout}")
             
             return True
             
         except Exception as e:
+            print(f"ERROR in clone_disk_structure: {e}")
             raise Exception(f"Failed to clone structure: {e}")
     
     @staticmethod
     def clone_partition_data(source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone partition data"""
+        """Clone partition data with improved error handling"""
         try:
             total_partitions = len(layout_info['partitions'])
+            print(f"Cloning {total_partitions} partitions from {source_nbd} to {target_nbd}")
             
             for i, partition in enumerate(layout_info['partitions']):
                 partition_num = partition['number']
@@ -454,17 +500,55 @@ class QCow2CloneResizer:
                 if progress_callback:
                     progress_callback(
                         70 + (i * 20 // total_partitions), 
-                        f"Cloning partition {partition_num}..."
+                        f"Cloning partition {partition_num} data..."
                     )
                 
-                source_part = f"{source_nbd}p{partition_num}"
-                target_part = f"{target_nbd}p{partition_num}"
+                # Try different partition naming schemes
+                source_part_options = [
+                    f"{source_nbd}p{partition_num}",  # /dev/nbd0p1
+                    f"{source_nbd}{partition_num}"    # /dev/nbd01
+                ]
                 
-                # Check if partitions exist
-                if not os.path.exists(source_part):
-                    print(f"Warning: {source_part} doesn't exist, trying without 'p'")
-                    source_part = f"{source_nbd}{partition_num}"
-                    target_part = f"{target_nbd}{partition_num}"
+                target_part_options = [
+                    f"{target_nbd}p{partition_num}",
+                    f"{target_nbd}{partition_num}"
+                ]
+                
+                source_part = None
+                target_part = None
+                
+                # Find existing source partition
+                for src_opt in source_part_options:
+                    if os.path.exists(src_opt):
+                        source_part = src_opt
+                        break
+                
+                # Find existing target partition
+                for tgt_opt in target_part_options:
+                    if os.path.exists(tgt_opt):
+                        target_part = tgt_opt
+                        break
+                
+                if not source_part:
+                    print(f"ERROR: Source partition not found for partition {partition_num}")
+                    print(f"Tried: {source_part_options}")
+                    continue
+                
+                if not target_part:
+                    print(f"ERROR: Target partition not found for partition {partition_num}")
+                    print(f"Tried: {target_part_options}")
+                    continue
+                
+                print(f"Cloning partition {partition_num}: {source_part} -> {target_part}")
+                
+                # Get source partition size
+                try:
+                    size_result = subprocess.run(['blockdev', '--getsize64', source_part],
+                                               capture_output=True, text=True, check=True)
+                    source_size = int(size_result.stdout.strip())
+                    print(f"Source partition {partition_num} size: {QCow2CloneResizer.format_size(source_size)}")
+                except Exception as e:
+                    print(f"Could not get source partition size: {e}")
                 
                 # Clone partition with dd
                 cmd = [
@@ -472,74 +556,130 @@ class QCow2CloneResizer:
                     f'if={source_part}',
                     f'of={target_part}',
                     'bs=4M',
-                    'conv=notrunc'
+                    'conv=notrunc',
+                    'status=progress'  # Show progress
                 ]
                 
-                print(f"Cloning partition {partition_num}: {' '.join(cmd)}")
+                print(f"Executing: {' '.join(cmd)}")
                 
                 try:
-                    result = subprocess.run(cmd, 
-                                          capture_output=True, text=True, 
-                                          check=True, timeout=3600)
+                    # Run with real-time output for large partitions
+                    process = subprocess.Popen(cmd, 
+                                             stdout=subprocess.PIPE, 
+                                             stderr=subprocess.STDOUT,
+                                             text=True, 
+                                             universal_newlines=True)
+                    
+                    # Monitor progress
+                    while True:
+                        output = process.stdout.readline()
+                        if output == '' and process.poll() is not None:
+                            break
+                        if output:
+                            print(f"DD: {output.strip()}")
+                    
+                    return_code = process.poll()
+                    if return_code != 0:
+                        raise subprocess.CalledProcessError(return_code, cmd)
+                    
                     print(f"Partition {partition_num} cloned successfully")
+                    
                 except subprocess.CalledProcessError as e:
-                    print(f"Error cloning partition {partition_num}: {e}")
-                    # Continue with other partitions
+                    print(f"ERROR cloning partition {partition_num}: {e}")
+                    continue
+                except Exception as e:
+                    print(f"Unexpected error cloning partition {partition_num}: {e}")
                     continue
             
             if progress_callback:
                 progress_callback(90, "Finalizing clone...")
             
+            print("All partitions processed successfully")
             return True
             
         except Exception as e:
+            print(f"ERROR in clone_partition_data: {e}")
             raise Exception(f"Failed to clone data: {e}")
     
     @staticmethod
     def clone_to_new_image(source_path, target_path, new_size_bytes, progress_callback=None):
-        """Complete cloning process to new image"""
+        """Complete cloning process to new image with improved error handling"""
         source_nbd = None
         target_nbd = None
         
         try:
+            print(f"Starting clone operation:")
+            print(f"  Source: {source_path}")
+            print(f"  Target: {target_path}")
+            print(f"  New size: {QCow2CloneResizer.format_size(new_size_bytes)}")
+            
             # Step 1: Analyze source image
             if progress_callback:
                 progress_callback(5, "Analyzing source image...")
             
+            print("Setting up source NBD device...")
             source_nbd = QCow2CloneResizer.setup_nbd_device(source_path)
+            print(f"Source NBD device: {source_nbd}")
+            
             layout_info = QCow2CloneResizer.get_partition_layout(source_nbd)
             
             # Verification: is new size sufficient?
-            min_required = layout_info['last_partition_end_bytes']
+            min_required = layout_info['required_minimum_bytes']
             if new_size_bytes < min_required:
                 raise Exception(
                     f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
                     f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
                 )
             
+            print(f"Size verification passed - using {QCow2CloneResizer.format_size(new_size_bytes)}")
+            
             # Step 2: Create new image
+            if progress_callback:
+                progress_callback(15, "Creating new image...")
+            
+            print("Creating new QCOW2 image...")
             QCow2CloneResizer.create_new_qcow2_image(target_path, new_size_bytes, progress_callback)
             
             # Step 3: Mount new image
             if progress_callback:
                 progress_callback(35, "Mounting new image...")
             
+            print("Setting up target NBD device...")
             target_nbd = QCow2CloneResizer.setup_nbd_device(target_path)
+            print(f"Target NBD device: {target_nbd}")
             
             # Step 4: Clone disk structure
+            if progress_callback:
+                progress_callback(45, "Cloning disk structure...")
+            
+            print("Cloning disk structure...")
             QCow2CloneResizer.clone_disk_structure(source_nbd, target_nbd, layout_info, progress_callback)
             
             # Step 5: Clone partition data
+            if progress_callback:
+                progress_callback(60, "Cloning partition data...")
+            
+            print("Cloning partition data...")
             QCow2CloneResizer.clone_partition_data(source_nbd, target_nbd, layout_info, progress_callback)
             
             if progress_callback:
                 progress_callback(95, "Cleaning up...")
             
-            # Cleanup
+            # Cleanup NBD devices
+            print("Cleaning up NBD devices...")
             QCow2CloneResizer.cleanup_nbd_device(source_nbd)
             QCow2CloneResizer.cleanup_nbd_device(target_nbd)
             source_nbd = None
             target_nbd = None
+            
+            # Final verification
+            if not os.path.exists(target_path):
+                raise Exception(f"Target image was not created: {target_path}")
+            
+            final_info = QCow2CloneResizer.get_image_info(target_path)
+            print(f"Clone operation completed successfully!")
+            print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
+            print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
             
             if progress_callback:
                 progress_callback(100, "Clone complete!")
@@ -547,16 +687,33 @@ class QCow2CloneResizer:
             return True
             
         except Exception as e:
+            print(f"ERROR in clone_to_new_image: {e}")
             if source_nbd:
-                QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                except:
+                    pass
             if target_nbd:
-                QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    print(f"Removing incomplete target file: {target_path}")
+                    os.remove(target_path)
+                except:
+                    pass
+            
             raise e
     
     @staticmethod
     def create_backup(image_path):
         """Create backup of image"""
         backup_path = f"{image_path}.backup.{int(time.time())}"
+        print(f"Creating backup: {image_path} -> {backup_path}")
         shutil.copy2(image_path, backup_path)
         return backup_path
 
@@ -605,7 +762,7 @@ class NewSizeDialog:
         # Add proper dialog close handling
         self.dialog.protocol("WM_DELETE_WINDOW", self.skip_cloning)
         
-        # Wait for dialog completion - this is the key fix
+        # Wait for dialog completion
         try:
             # Force the dialog to be visible and responsive
             self.dialog.lift()
@@ -618,6 +775,8 @@ class NewSizeDialog:
             print(f"Dialog wait error: {e}")
             self.result = None
     
+    # Fix for NewSizeDialog.setup_ui method - Replace lines 795-940 in your code
+
     def setup_ui(self):
         """Setup dialog UI with scrollable content"""
         # Create main container
@@ -652,7 +811,7 @@ class NewSizeDialog:
         
         # Title
         title = ttk.Label(content_frame, text="Create New Image - Final Size Selection", 
-                         font=("Arial", 16, "bold"))
+                        font=("Arial", 16, "bold"))
         title.pack(pady=(0, 15))
         
         # GParted Changes Summary
@@ -700,7 +859,7 @@ class NewSizeDialog:
         
         self.choice = tk.StringVar(value="calculated")
         
-        # Option 1: Use calculated size (recommended) - Make this more prominent
+        # Option 1: Use calculated size (recommended)
         calc_frame = ttk.Frame(size_frame)
         calc_frame.pack(fill="x", pady=2)
         calc_radio = ttk.Radiobutton(calc_frame, text=f"Use Calculated Size: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
@@ -711,19 +870,19 @@ class NewSizeDialog:
         # Option 2: Same as original (if sufficient)
         if self.original_size >= min_size_with_buffer:
             ttk.Radiobutton(size_frame, text=f"Keep Original Size: {QCow2CloneResizer.format_size(self.original_size)} (no space savings)", 
-                           variable=self.choice, value="original").pack(anchor="w", pady=2)
+                        variable=self.choice, value="original").pack(anchor="w", pady=2)
         else:
             # Original is too small
             shortage = min_size_with_buffer - self.original_size
             ttk.Label(size_frame, text=f"Original size insufficient - needs {QCow2CloneResizer.format_size(shortage)} more space", 
-                     foreground="red", font=("Arial", 8)).pack(anchor="w", pady=2)
+                    foreground="red", font=("Arial", 8)).pack(anchor="w", pady=2)
         
         # Option 3: Custom size
         custom_frame = ttk.Frame(size_frame)
         custom_frame.pack(fill="x", pady=(8, 0))
         
         ttk.Radiobutton(custom_frame, text="Custom size:", 
-                       variable=self.choice, value="custom").pack(side="left")
+                    variable=self.choice, value="custom").pack(side="left")
         
         # Default custom size
         default_gb = max(1, int(min_size_with_buffer / (1024**3)) + 1)
@@ -736,23 +895,23 @@ class NewSizeDialog:
         # Show minimum size warning
         warning_frame = ttk.Frame(size_frame)
         warning_frame.pack(fill="x", pady=(8, 0))
-        ttk.Label(warning_frame, text=f"⚠ Minimum size required: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
-                 font=("Arial", 8), foreground="orange").pack(anchor="w")
+        ttk.Label(warning_frame, text=f"WARNING: Minimum size required: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
+                font=("Arial", 8), foreground="orange").pack(anchor="w")
         
         # What Happens Next
         exp_frame = ttk.LabelFrame(content_frame, text="What Happens Next", padding="10")
         exp_frame.pack(fill="x", pady=(0, 20))
         
-        explanation = ("1. Create new empty image with selected size\n"
-                      "2. Copy partition table structure from current image\n"
-                      "3. Clone each partition with all your GParted changes\n"
-                      "4. Preserve bootloader and all modifications\n\n"
-                      "All your partition resizing and changes will be preserved.")
+        explanation = ("1. Create new empty image with selected size (using preallocation=metadata)\n"
+                    "2. Copy partition table structure from current image\n"
+                    "3. Clone each partition with all your GParted changes\n"
+                    "4. Preserve bootloader and all modifications\n\n"
+                    "All your partition resizing and changes will be preserved.")
         
         exp_label = ttk.Label(exp_frame, text=explanation, wraplength=500, justify="left", font=("Arial", 9))
         exp_label.pack()
         
-        # FIXED: Buttons outside scrollable area, always visible
+        # Buttons outside scrollable area, always visible
         button_container = ttk.Frame(main_container)
         button_container.pack(fill="x", pady=(10, 0))
         
@@ -764,16 +923,14 @@ class NewSizeDialog:
         button_frame = ttk.Frame(button_container)
         button_frame.pack(fill="x")
         
-        # Create buttons with larger size and clear labels
-        create_btn = ttk.Button(button_frame, text="✓ Create New Optimized Image", 
-                               command=self.create_new, 
-                               style="Accent.TButton")
-        create_btn.pack(side="right", padx=(10, 0), ipadx=10, ipady=5)
+        # FIXED: Create buttons without ipadx/ipady parameters
+        create_btn = ttk.Button(button_frame, text="Create New Optimized Image", 
+                            command=self.create_new)
+        create_btn.pack(side="right", padx=(10, 0), pady=5)
         
         cancel_btn = ttk.Button(button_frame, text="Skip Cloning", 
-                               command=self.skip_cloning,
-                               ipadx=10, ipady=5)
-        cancel_btn.pack(side="right")
+                            command=self.skip_cloning)
+        cancel_btn.pack(side="right", pady=5)
         
         # Add keyboard shortcuts
         self.dialog.bind('<Return>', lambda e: self.create_new())
@@ -808,7 +965,7 @@ class NewSizeDialog:
                 return
             
             self.result = new_size
-            self.dialog.quit()  # Use quit() instead of destroy() for proper cleanup
+            self.dialog.quit()
             self.dialog.destroy()
             
         except ValueError as e:
@@ -817,7 +974,7 @@ class NewSizeDialog:
     def skip_cloning(self):
         """Skip cloning - keep original image with changes"""
         self.result = None
-        self.dialog.quit()  # Use quit() instead of destroy() for proper cleanup
+        self.dialog.quit()
         self.dialog.destroy()
 
 
@@ -925,7 +1082,7 @@ class QCow2CloneResizerGUI:
         
         # Primary action button (large, prominent)
         self.main_action_btn = ttk.Button(button_frame, 
-                                         text="🚀 START GPARTED + CLONE PROCESS", 
+                                         text="START GPARTED + CLONE PROCESS", 
                                          command=self.start_gparted_resize, 
                                          state="disabled",
                                          style="Accent.TButton")
@@ -935,14 +1092,14 @@ class QCow2CloneResizerGUI:
         secondary_frame = ttk.Frame(button_frame)
         secondary_frame.pack(fill="x")
         
-        self.backup_btn = ttk.Button(secondary_frame, text="💾 Create Backup", 
+        self.backup_btn = ttk.Button(secondary_frame, text="Create Backup", 
                                     command=self.create_backup)
         self.backup_btn.pack(side="left", padx=(0, 10))
         
-        ttk.Button(secondary_frame, text="🔄 Refresh", 
+        ttk.Button(secondary_frame, text="Refresh", 
                   command=self.analyze_image).pack(side="left", padx=(0, 10))
         
-        ttk.Button(secondary_frame, text="❌ Close", 
+        ttk.Button(secondary_frame, text="Close", 
                   command=self.close_window).pack(side="right")
         
         # Status bar
@@ -975,7 +1132,7 @@ class QCow2CloneResizerGUI:
         
         text = ""
         if missing:
-            text = f"❌ Missing required tools: {', '.join(missing)}\n"
+            text = f"Missing required tools: {', '.join(missing)}\n"
             
             install_msg = "Required tools missing!\n\n"
             install_msg += "Ubuntu/Debian:\n"
@@ -988,12 +1145,12 @@ class QCow2CloneResizerGUI:
             messagebox.showerror("Missing Tools", install_msg)
             
         else:
-            text = "✅ All required tools available\n"
+            text = "All required tools available\n"
         
         if optional:
-            text += f"📋 Optional tools: {', '.join(optional)}\n"
+            text += f"Optional tools: {', '.join(optional)}\n"
         
-        root_status = "🔐 Running as root" if os.geteuid() == 0 else "🔓 Will use privilege escalation"
+        root_status = "Running as root" if os.geteuid() == 0 else "Will use privilege escalation"
         text += root_status
         
         color = "red" if missing else "green"
@@ -1029,7 +1186,7 @@ class QCow2CloneResizerGUI:
             self.main_action_btn.config(state="normal")
             
             self.update_progress(0, "Analysis complete - Ready for GParted + Clone process")
-            self.status_label.config(text="✅ Image analyzed - Ready to start GParted + Clone process")
+            self.status_label.config(text="Image analyzed - Ready to start GParted + Clone process")
             
         except Exception as e:
             messagebox.showerror("Analysis Failed", f"Failed to analyze image:\n\n{e}")
@@ -1043,13 +1200,13 @@ class QCow2CloneResizerGUI:
         self.info_text.config(state="normal")
         self.info_text.delete(1.0, "end")
         
-        info = f"📁 FILE INFORMATION\n"
+        info = f"FILE INFORMATION\n"
         info += f"{'='*50}\n"
         info += f"Path: {self.image_path.get()}\n"
         info += f"Name: {os.path.basename(self.image_path.get())}\n"
         info += f"Format: {self.image_info['format'].upper()}\n\n"
         
-        info += f"💾 SIZE INFORMATION\n"
+        info += f"SIZE INFORMATION\n"
         info += f"{'='*50}\n"
         info += f"Virtual Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
         info += f"File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n"
@@ -1059,22 +1216,23 @@ class QCow2CloneResizerGUI:
             info += f"Usage: {ratio*100:.1f}% of virtual size\n"
             
             if ratio < 0.5:
-                info += f"ℹ️ Sparse allocation detected (efficient storage)\n"
+                info += f"INFO: Sparse allocation detected (efficient storage)\n"
         
-        info += f"\n🔧 PROCESS WORKFLOW\n"
+        info += f"\nPROCESS WORKFLOW\n"
         info += f"{'='*50}\n"
-        info += f"1. 🖥️  Mount image as NBD device\n"
-        info += f"2. 🎯 Launch GParted for manual partition editing\n"
-        info += f"3. ✏️  Resize/modify partitions as needed\n"
-        info += f"4. 💾 Apply changes and close GParted\n"
-        info += f"5. 📏 Select optimal size for new image\n"
-        info += f"6. 🚀 Clone all partitions to new optimized image\n\n"
+        info += f"1. Mount image as NBD device\n"
+        info += f"2. Launch GParted for manual partition editing\n"
+        info += f"3. Resize/modify partitions as needed\n"
+        info += f"4. Apply changes and close GParted\n"
+        info += f"5. Select optimal size for new image\n"
+        info += f"6. Clone all partitions to new optimized image\n\n"
         
-        info += f"⚠️  IMPORTANT REQUIREMENTS:\n"
+        info += f"IMPORTANT REQUIREMENTS:\n"
         info += f"• Virtual machine MUST be completely shut down\n"
         info += f"• Apply ALL changes in GParted before closing\n"
         info += f"• Backup recommended before starting\n"
-        info += f"\n✅ Ready for GParted + Clone process!"
+        info += f"• New image will use preallocation=metadata\n"
+        info += f"\nReady for GParted + Clone process!"
         
         self.info_text.insert(1.0, info)
         self.info_text.config(state="disabled")
@@ -1091,7 +1249,7 @@ class QCow2CloneResizerGUI:
             backup_path = QCow2CloneResizer.create_backup(path)
             self.update_progress(0, "Backup created successfully")
             
-            backup_msg = f"💾 BACKUP CREATED SUCCESSFULLY!\n\n"
+            backup_msg = f"BACKUP CREATED SUCCESSFULLY!\n\n"
             backup_msg += f"Original: {path}\n"
             backup_msg += f"Backup: {backup_path}\n\n"
             backup_msg += f"The backup is a complete copy of your virtual disk.\n"
@@ -1111,21 +1269,21 @@ class QCow2CloneResizerGUI:
         path = self.image_path.get()
         
         # Detailed confirmation dialog
-        msg = f"🚀 GPARTED + CLONE OPERATION\n\n"
-        msg += f"📁 File: {os.path.basename(path)}\n"
-        msg += f"💾 Current Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
-        msg += f"📂 File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n\n"
+        msg = f"GPARTED + CLONE OPERATION\n\n"
+        msg += f"File: {os.path.basename(path)}\n"
+        msg += f"Current Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
+        msg += f"File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n\n"
         
-        msg += f"🔄 PROCESS STEPS:\n"
-        msg += f"1. 🖥️  Mount image as NBD device\n"
-        msg += f"2. 🎯 Launch GParted for manual partition editing\n"
-        msg += f"3. ✏️  Resize/move/modify partitions in GParted\n"
-        msg += f"4. ✅ Apply changes and close GParted\n"
-        msg += f"5. 📏 Select optimal size for new image\n"
-        msg += f"6. 🚀 Create new optimized image\n"
-        msg += f"7. 📋 Clone all modified partitions safely\n\n"
+        msg += f"PROCESS STEPS:\n"
+        msg += f"1. Mount image as NBD device\n"
+        msg += f"2. Launch GParted for manual partition editing\n"
+        msg += f"3. Resize/move/modify partitions in GParted\n"
+        msg += f"4. Apply changes and close GParted\n"
+        msg += f"5. Select optimal size for new image\n"
+        msg += f"6. Create new optimized image (with preallocation=metadata)\n"
+        msg += f"7. Clone all modified partitions safely\n\n"
         
-        msg += f"⚠️  CRITICAL REQUIREMENTS:\n"
+        msg += f"CRITICAL REQUIREMENTS:\n"
         msg += f"• Virtual machine MUST be completely shut down\n"
         msg += f"• Root privileges required for NBD operations\n"
         msg += f"• APPLY ALL CHANGES in GParted before closing\n"
@@ -1138,11 +1296,11 @@ class QCow2CloneResizerGUI:
         
         # Check root privileges
         if os.geteuid() != 0:
-            root_msg = ("🔐 ROOT PRIVILEGES REQUIRED\n\n"
+            root_msg = ("ROOT PRIVILEGES REQUIRED\n\n"
                        "This operation requires root privileges for NBD device management.\n\n"
                        "The application will attempt to use privilege escalation (pkexec, sudo) "
                        "when launching GParted.\n\n"
-                       "💡 For best experience, run entire application with:\n"
+                       "For best experience, run entire application with:\n"
                        "sudo python3 qcow2_clone_resizer.py\n\n"
                        "Continue anyway?")
             
@@ -1153,23 +1311,26 @@ class QCow2CloneResizerGUI:
         self.operation_active = True
         self.main_action_btn.config(state="disabled")
         self.backup_btn.config(state="disabled")
-        self.status_label.config(text="🔄 GParted + Clone operation in progress...")
+        self.status_label.config(text="GParted + Clone operation in progress...")
         
         thread = threading.Thread(target=self._gparted_clone_worker, args=(path,))
         thread.daemon = True
         thread.start()
     
     def _gparted_clone_worker(self, image_path):
-        """Worker thread for GParted + clone resize operation"""
+        """Worker thread for GParted + clone resize operation with improved error handling"""
         nbd_device = None
         
         try:
+            print(f"Starting GParted + Clone operation for: {image_path}")
+            
             # Store original image info
             original_info = self.image_info.copy()
             
             # Setup NBD device for GParted
             self.update_progress(10, "Setting up NBD device for GParted...")
             nbd_device = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
+            print(f"NBD device setup complete: {nbd_device}")
             
             # Get initial partition layout
             self.update_progress(20, "Analyzing initial partition layout...")
@@ -1185,28 +1346,30 @@ class QCow2CloneResizerGUI:
             
             # Show detailed GParted instructions
             instructions = (
-                f"🎯 GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
+                f"GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
                 f"Device: {nbd_device}\n\n"
-                f"📋 CURRENT PARTITIONS:\n{initial_info}\n"
-                f"🔧 INSTRUCTIONS FOR GPARTED:\n"
+                f"CURRENT PARTITIONS:\n{initial_info}\n"
+                f"INSTRUCTIONS FOR GPARTED:\n"
                 f"1. Resize partitions (shrink to save space or expand)\n"
                 f"2. Move partitions if needed\n"
                 f"3. Modify filesystem sizes\n"
                 f"4. Delete unused partitions\n"
-                f"5. ⚠️  CRITICAL: Click 'Apply' to execute all changes\n"
+                f"5. CRITICAL: Click 'Apply' to execute all changes\n"
                 f"6. Wait for all operations to complete\n"
                 f"7. Close GParted when finished\n\n"
-                f"🚀 After GParted closes, this tool will:\n"
+                f"After GParted closes, this tool will:\n"
                 f"• Analyze your partition changes\n"
                 f"• Let you choose optimal new image size\n"
                 f"• Clone all modified partitions to new image\n\n"
-                f"💡 TIP: Shrinking partitions = smaller final image size!"
+                f"TIP: Shrinking partitions = smaller final image size!"
             )
             
             self.root.after(0, lambda: messagebox.showinfo("GParted Session Starting", instructions))
             
             # Launch GParted and wait for completion
+            print("Launching GParted...")
             QCow2CloneResizer.launch_gparted(nbd_device)
+            print("GParted session completed")
             
             # GParted session completed - analyze final partition layout
             self.update_progress(40, "GParted completed - analyzing partition changes...")
@@ -1223,6 +1386,7 @@ class QCow2CloneResizerGUI:
             
             # Show new size dialog with final layout information
             self.update_progress(45, "Select size for new optimized image...")
+            print("Showing size selection dialog...")
             
             # Reset the event and result
             self.dialog_result_event.clear()
@@ -1238,26 +1402,25 @@ class QCow2CloneResizerGUI:
                 raise Exception("Size selection dialog timed out - please try again")
             
             new_size = self.dialog_result_value
-            print(f"DEBUG: Dialog completed. New size selected: {new_size}")
+            print(f"Dialog completed. New size selected: {new_size}")
             
             if new_size is not None:
-                print(f"DEBUG: User selected to create new image with size: {QCow2CloneResizer.format_size(new_size)}")
-            else:
-                print(f"DEBUG: User chose to skip cloning")
-            
-            if new_size is not None:
-                # User chose to create new optimized image
+                print(f"User selected to create new image with size: {QCow2CloneResizer.format_size(new_size)}")
+                
                 # Generate new filename
                 original_path = Path(image_path)
                 new_path = original_path.parent / f"{original_path.stem}_gparted_resized{original_path.suffix}"
                 
                 # Cleanup original NBD device before cloning
                 self.update_progress(50, "Preparing for cloning to new image...")
+                print("Cleaning up NBD device before cloning...")
                 QCow2CloneResizer.cleanup_nbd_device(nbd_device)
                 nbd_device = None
                 
                 # Clone to new image with all GParted modifications
                 self.update_progress(55, "Cloning modified partitions to new optimized image...")
+                print(f"Starting clone operation to: {new_path}")
+                
                 QCow2CloneResizer.clone_to_new_image(
                     image_path, 
                     str(new_path),
@@ -1265,46 +1428,50 @@ class QCow2CloneResizerGUI:
                     self.update_progress
                 )
                 
+                print("Clone operation completed successfully!")
+                
                 # Analyze new image
                 new_image_info = QCow2CloneResizer.get_image_info(str(new_path))
+                print(f"New image info: {new_image_info}")
                 
                 # Show comprehensive success message
-                success_msg = f"🎉 GPARTED + CLONE OPERATION COMPLETED SUCCESSFULLY!\n\n"
-                success_msg += f"📊 RESULTS:\n"
-                success_msg += f"📁 Original image: {image_path}\n"
-                success_msg += f"✨ New optimized image: {new_path}\n\n"
-                success_msg += f"📏 SIZE COMPARISON:\n"
-                success_msg += f"📊 Original virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}\n"
-                success_msg += f"🎯 New virtual size: {QCow2CloneResizer.format_size(new_image_info['virtual_size'])}\n"
+                success_msg = f"GPARTED + CLONE OPERATION COMPLETED SUCCESSFULLY!\n\n"
+                success_msg += f"RESULTS:\n"
+                success_msg += f"Original image: {image_path}\n"
+                success_msg += f"New optimized image: {new_path}\n\n"
+                success_msg += f"SIZE COMPARISON:\n"
+                success_msg += f"Original virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}\n"
+                success_msg += f"New virtual size: {QCow2CloneResizer.format_size(new_image_info['virtual_size'])}\n"
                 
                 if new_size < original_info['virtual_size']:
                     saved = original_info['virtual_size'] - new_size
-                    success_msg += f"💾 Space saved: {QCow2CloneResizer.format_size(saved)} "
+                    success_msg += f"Space saved: {QCow2CloneResizer.format_size(saved)} "
                     success_msg += f"({(saved/original_info['virtual_size']*100):.1f}% reduction)\n"
                 elif new_size > original_info['virtual_size']:
                     added = new_size - original_info['virtual_size']
-                    success_msg += f"📈 Space added: {QCow2CloneResizer.format_size(added)} "
+                    success_msg += f"Space added: {QCow2CloneResizer.format_size(added)} "
                     success_msg += f"({(added/original_info['virtual_size']*100):.1f}% increase)\n"
                 else:
-                    success_msg += f"🔧 Size maintained (optimized structure)\n"
+                    success_msg += f"Size maintained (optimized structure)\n"
                 
-                success_msg += f"\n🏆 PROCESS SUMMARY:\n"
-                success_msg += f"✅ GParted partition modifications applied\n"
-                success_msg += f"✅ All partition changes preserved\n"
-                success_msg += f"✅ Bootloader and structures intact\n"
-                success_msg += f"✅ New image optimized for actual needs\n\n"
-                success_msg += f"🚀 Your virtual machine is ready to use with the new image!"
+                success_msg += f"\nPROCESS SUMMARY:\n"
+                success_msg += f"✓ GParted partition modifications applied\n"
+                success_msg += f"✓ All partition changes preserved\n"
+                success_msg += f"✓ Bootloader and structures intact\n"
+                success_msg += f"✓ New image optimized for actual needs\n"
+                success_msg += f"✓ Image created with preallocation=metadata\n\n"
+                success_msg += f"Your virtual machine is ready to use with the new image!"
                 
                 # Ask about replacing original file
-                replace_msg = f"🔄 REPLACE ORIGINAL FILE?\n\n"
+                replace_msg = f"REPLACE ORIGINAL FILE?\n\n"
                 replace_msg += f"Do you want to replace the original file with the new optimized image?\n\n"
-                replace_msg += f"📁 Original: {image_path}\n"
-                replace_msg += f"✨ New: {new_path}\n\n"
-                replace_msg += f"✅ If YES:\n"
+                replace_msg += f"Original: {image_path}\n"
+                replace_msg += f"New: {new_path}\n\n"
+                replace_msg += f"If YES:\n"
                 replace_msg += f"• Old file renamed to .old extension\n"
                 replace_msg += f"• New file takes original name\n"
                 replace_msg += f"• VM configuration unchanged\n\n"
-                replace_msg += f"📂 If NO:\n"
+                replace_msg += f"If NO:\n"
                 replace_msg += f"• Both files kept\n"
                 replace_msg += f"• Update VM to use new file manually"
                 
@@ -1329,6 +1496,7 @@ class QCow2CloneResizerGUI:
                 self.root.after(0, show_success_messages)
             else:
                 # User chose to skip cloning - just keep GParted changes
+                print("User chose to skip cloning")
                 self.root.after(0, lambda: messagebox.showinfo("GParted Changes Applied", 
                     f"GParted partition modifications completed successfully!\n\n"
                     f"Changes applied:\n{partition_changes}\n\n"
@@ -1339,25 +1507,34 @@ class QCow2CloneResizerGUI:
         except Exception as e:
             error_msg = f"GPARTED + CLONE OPERATION FAILED\n\n{e}\n\nPlease check console output for more details."
             self.log(f"Operation failed: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            import traceback
+            traceback.print_exc()
             self.root.after(0, lambda: messagebox.showerror("Operation Failed", error_msg))
         
         finally:
             if nbd_device:
                 try:
+                    print(f"Cleaning up NBD device: {nbd_device}")
                     QCow2CloneResizer.cleanup_nbd_device(nbd_device)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Error cleaning up NBD device: {e}")
             self.root.after(0, self.reset_ui)
     
     def _show_final_size_dialog(self, final_layout, partition_changes):
         """Show final size dialog after GParted operations"""
         try:
+            print("Creating NewSizeDialog...")
             dialog = NewSizeDialog(self.root, final_layout, self.image_info['virtual_size'], partition_changes)
             # Store the result and signal completion
             self.dialog_result_value = dialog.result
+            print(f"Dialog result: {self.dialog_result_value}")
             self.dialog_result_event.set()
         except Exception as e:
             self.log(f"Final size dialog error: {e}")
+            print(f"ERROR in _show_final_size_dialog: {e}")
+            import traceback
+            traceback.print_exc()
             self.dialog_result_value = None
             self.dialog_result_event.set()
     
@@ -1447,7 +1624,7 @@ def main():
     print("   2. Launch GParted for manual partition editing")
     print("   3. Apply partition changes in GParted")
     print("   4. Choose optimal size for new image")
-    print("   5. Safe cloning to new optimized image")
+    print("   5. Safe cloning to new optimized image (with preallocation=metadata)")
     print("=" * 75)
     
     # Launch GUI
