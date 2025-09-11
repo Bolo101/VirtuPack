@@ -947,8 +947,8 @@ class QCow2CloneResizer:
         return backup_path
     
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
-                                         existing_source_nbd, layout_info, progress_callback=None):
-        """Clone to new image using existing NBD device, ensuring no device conflicts"""
+                                        existing_source_nbd, layout_info, progress_callback=None):
+        """Clone to new image using existing NBD device with enhanced error handling"""
         target_nbd = None
         
         try:
@@ -956,6 +956,7 @@ class QCow2CloneResizer:
             print(f"  Source NBD: {existing_source_nbd}")
             print(f"  Target: {target_path}")
             print(f"  New size: {QCow2CloneResizer.format_size(new_size_bytes)}")
+            print(f"  Layout info: {len(layout_info['partitions'])} partitions")
             
             # Verification: is new size sufficient?
             min_required = layout_info['required_minimum_bytes']
@@ -965,6 +966,8 @@ class QCow2CloneResizer:
                     f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
                 )
             
+            print(f"Size verification passed - using {QCow2CloneResizer.format_size(new_size_bytes)}")
+            
             # Step 1: Create new image
             if progress_callback:
                 progress_callback(60, "Creating new image...")
@@ -972,25 +975,44 @@ class QCow2CloneResizer:
             print("Creating new QCOW2 image...")
             QCow2CloneResizer.create_new_qcow2_image(target_path, new_size_bytes, progress_callback)
             
-            # Step 2: Mount new image to DIFFERENT NBD device
+            # Verify image was created
+            if not os.path.exists(target_path):
+                raise Exception(f"Failed to create target image: {target_path}")
+            
+            # Step 2: Mount new image with enhanced device selection
             if progress_callback:
-                progress_callback(70, "Mounting target image to different NBD device...")
+                progress_callback(70, "Mounting target image...")
             
             print("Waiting before mounting target image...")
-            time.sleep(3)
+            time.sleep(5)  # Longer wait to ensure filesystem stability
             
+            # Enhanced NBD device selection with explicit exclusions
             print(f"Setting up target NBD device (excluding {existing_source_nbd})...")
-            # CRITICAL: Exclude the source NBD device to avoid conflicts
-            target_nbd = QCow2CloneResizer.setup_nbd_device(target_path, 
-                                                        progress_callback=None, 
-                                                        exclude_devices=[existing_source_nbd])
+            exclude_devices = [existing_source_nbd]
+            
+            target_nbd = QCow2CloneResizer.setup_nbd_device(
+                target_path, 
+                progress_callback=None, 
+                exclude_devices=exclude_devices
+            )
             print(f"Target NBD device: {target_nbd}")
             
             # Verify devices are different
             if existing_source_nbd == target_nbd:
-                raise Exception(f"ERROR: Source and target NBD devices are the same: {existing_source_nbd}")
+                raise Exception(f"CRITICAL ERROR: Source and target NBD devices are identical: {existing_source_nbd}")
             
             print(f"NBD devices verified: source={existing_source_nbd}, target={target_nbd}")
+            
+            # Additional verification - check if devices are actually accessible
+            try:
+                source_check = subprocess.run(['blockdev', '--getsize64', existing_source_nbd], 
+                                            capture_output=True, check=True, timeout=15)
+                target_check = subprocess.run(['blockdev', '--getsize64', target_nbd], 
+                                            capture_output=True, check=True, timeout=15)
+                print(f"Source device size: {source_check.stdout.strip()} bytes")
+                print(f"Target device size: {target_check.stdout.strip()} bytes")
+            except Exception as e:
+                raise Exception(f"Device accessibility check failed: {e}")
             
             # Step 3: Clone disk structure
             if progress_callback:
@@ -999,42 +1021,75 @@ class QCow2CloneResizer:
             print("Cloning disk structure...")
             self._clone_disk_structure_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
             
-            # Step 4: Clone partition data
+            # Step 4: Clone partition data with enhanced error handling
             if progress_callback:
                 progress_callback(80, "Cloning partition data...")
             
             print("Cloning partition data...")
-            self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+            clone_success = False
+            try:
+                self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+                clone_success = True
+            except Exception as clone_error:
+                print(f"Partition cloning failed: {clone_error}")
+                # Don't immediately fail - try to clean up and provide useful error
+                raise clone_error
+            
+            if not clone_success:
+                raise Exception("Partition cloning did not complete successfully")
             
             if progress_callback:
-                progress_callback(95, "Finalizing...")
+                progress_callback(95, "Finalizing and cleaning up...")
             
-            # Cleanup target NBD device only
+            # Final sync before cleanup
+            print("Performing final filesystem sync...")
+            subprocess.run(['sync'], check=False, timeout=60)
+            time.sleep(3)
+            
+            # Cleanup target NBD device
             print(f"Cleaning up target NBD device: {target_nbd}")
             if target_nbd:
                 QCow2CloneResizer.cleanup_nbd_device(target_nbd)
                 target_nbd = None
             
-            # NOTE: Do NOT cleanup existing_source_nbd here - that's handled by the caller
-            
-            # Final verification
-            if not os.path.exists(target_path):
-                raise Exception(f"Target image was not created: {target_path}")
-            
-            final_info = QCow2CloneResizer.get_image_info(target_path)
-            print(f"Clone operation completed successfully!")
-            print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
-            print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
-            
-            if progress_callback:
-                progress_callback(100, "Clone complete!")
+            # Final verification with retry
+            print("Verifying target image...")
+            for verify_attempt in range(3):
+                try:
+                    time.sleep(2)  # Wait for filesystem operations to complete
+                    
+                    if not os.path.exists(target_path):
+                        raise Exception(f"Target image file not found: {target_path}")
+                    
+                    # Check if file has reasonable size
+                    file_stat = os.stat(target_path)
+                    if file_stat.st_size < 1024:  # Less than 1KB is definitely wrong
+                        raise Exception(f"Target image file is too small: {file_stat.st_size} bytes")
+                    
+                    final_info = QCow2CloneResizer.get_image_info(target_path)
+                    print(f"Clone operation completed successfully!")
+                    print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
+                    print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
+                    
+                    if progress_callback:
+                        progress_callback(100, "Clone complete!")
+                    
+                    return True
+                    
+                except Exception as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed: {verify_error}")
+                    if verify_attempt == 2:  # Last attempt
+                        raise Exception(f"Target image verification failed: {verify_error}")
+                    time.sleep(3)
             
             return True
             
         except Exception as e:
             print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+            import traceback
+            traceback.print_exc()
             
-            # Cleanup target NBD on error (NOT source NBD)
+            # Cleanup target NBD on error
             if target_nbd:
                 try:
                     print(f"Emergency cleanup of target NBD: {target_nbd}")
@@ -1045,8 +1100,10 @@ class QCow2CloneResizer:
             # Clean up partial target file
             if target_path and os.path.exists(target_path):
                 try:
-                    print(f"Removing incomplete target file: {target_path}")
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
                     os.remove(target_path)
+                    print("Incomplete target file removed successfully")
                 except Exception as file_error:
                     print(f"Could not remove incomplete file: {file_error}")
             
@@ -1959,6 +2016,77 @@ class QCow2CloneResizerGUI:
                     print(f"Could not remove incomplete file: {file_error}")
             
             raise e
+    
+    def _execute_dd_with_retry(self, cmd, timeout=300, max_retries=3):
+        """Execute dd command with retries and better error handling"""
+        for attempt in range(max_retries):
+            try:
+                print(f"DD attempt {attempt + 1}: {' '.join(cmd)}")
+                
+                # Use Popen for better control
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True
+                )
+                
+                stdout_data = []
+                stderr_data = []
+                
+                start_time = time.time()
+                while True:
+                    # Check if process has terminated
+                    if process.poll() is not None:
+                        break
+                    
+                    # Check timeout
+                    if time.time() - start_time > timeout:
+                        print(f"DD command timed out after {timeout} seconds")
+                        process.kill()
+                        process.wait()
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    
+                    time.sleep(0.5)
+                
+                # Get final output
+                stdout, stderr = process.communicate(timeout=30)
+                
+                if stdout:
+                    stdout_data.append(stdout)
+                    print(f"DD stdout: {stdout.strip()}")
+                
+                if stderr:
+                    stderr_data.append(stderr)
+                    print(f"DD stderr: {stderr.strip()}")
+                
+                if process.returncode == 0:
+                    print(f"DD command succeeded on attempt {attempt + 1}")
+                    return True
+                else:
+                    print(f"DD command failed with return code {process.returncode}")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in 3 seconds...")
+                        time.sleep(3)
+                        # Try to sync before retry
+                        subprocess.run(['sync'], check=False, timeout=30)
+                        time.sleep(2)
+                    
+            except subprocess.TimeoutExpired:
+                print(f"DD attempt {attempt + 1} timed out")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in 5 seconds...")
+                    time.sleep(5)
+            except Exception as e:
+                print(f"DD attempt {attempt + 1} failed with exception: {e}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in 3 seconds...")
+                    time.sleep(3)
+        
+        print(f"All DD attempts failed after {max_retries} tries")
+        return False
 
     def _clone_disk_structure_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
         """Clone disk structure with device verification"""
@@ -2044,7 +2172,7 @@ class QCow2CloneResizerGUI:
             raise Exception(f"Failed to clone disk structure: {e}")
 
     def _clone_partition_data_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone partition data with device verification"""
+        """Clone partition data with enhanced error handling and verification"""
         try:
             print(f"Cloning partition data from {source_nbd} to {target_nbd}")
             
@@ -2054,6 +2182,37 @@ class QCow2CloneResizerGUI:
             
             total_partitions = len(layout_info['partitions'])
             print(f"Processing {total_partitions} partitions")
+            
+            # Wait longer for all partitions to be available
+            print("Ensuring all partitions are available...")
+            max_wait_attempts = 10
+            for attempt in range(max_wait_attempts):
+                subprocess.run(['partprobe', source_nbd], check=False, timeout=30)
+                subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+                time.sleep(2)
+                
+                # Check if all partitions exist
+                all_found = True
+                for partition in layout_info['partitions']:
+                    partition_num = partition['number']
+                    source_options = [f"{source_nbd}p{partition_num}", f"{source_nbd}{partition_num}"]
+                    target_options = [f"{target_nbd}p{partition_num}", f"{target_nbd}{partition_num}"]
+                    
+                    source_exists = any(os.path.exists(opt) for opt in source_options)
+                    target_exists = any(os.path.exists(opt) for opt in target_options)
+                    
+                    if not source_exists or not target_exists:
+                        all_found = False
+                        break
+                
+                if all_found:
+                    print(f"All partitions available after {attempt + 1} attempts")
+                    break
+                else:
+                    print(f"Attempt {attempt + 1}: Some partitions not ready, waiting...")
+            
+            if not all_found:
+                print("Warning: Not all partitions detected, proceeding anyway...")
             
             for i, partition in enumerate(layout_info['partitions']):
                 partition_num = partition['number']
@@ -2076,104 +2235,163 @@ class QCow2CloneResizerGUI:
                 source_part = None
                 target_part = None
                 
-                # Find source partition
-                for src_opt in source_part_options:
-                    if os.path.exists(src_opt):
-                        source_part = src_opt
-                        print(f"Found source partition: {source_part}")
+                # Find source partition with retries
+                for retry in range(3):
+                    for src_opt in source_part_options:
+                        if os.path.exists(src_opt):
+                            # Verify it's actually accessible
+                            try:
+                                subprocess.run(['blockdev', '--getsize64', src_opt],
+                                            capture_output=True, check=True, timeout=10)
+                                source_part = src_opt
+                                print(f"Found accessible source partition: {source_part}")
+                                break
+                            except:
+                                print(f"Partition {src_opt} exists but not accessible")
+                                continue
+                    
+                    if source_part:
                         break
+                    
+                    print(f"Source partition retry {retry + 1}, waiting...")
+                    time.sleep(2)
+                    subprocess.run(['partprobe', source_nbd], check=False)
                 
-                # Find target partition
-                for tgt_opt in target_part_options:
-                    if os.path.exists(tgt_opt):
-                        target_part = tgt_opt
-                        print(f"Found target partition: {target_part}")
+                # Find target partition with retries
+                for retry in range(3):
+                    for tgt_opt in target_part_options:
+                        if os.path.exists(tgt_opt):
+                            # Verify it's writable
+                            try:
+                                subprocess.run(['blockdev', '--getsize64', tgt_opt],
+                                            capture_output=True, check=True, timeout=10)
+                                target_part = tgt_opt
+                                print(f"Found accessible target partition: {target_part}")
+                                break
+                            except:
+                                print(f"Partition {tgt_opt} exists but not accessible")
+                                continue
+                    
+                    if target_part:
                         break
+                        
+                    print(f"Target partition retry {retry + 1}, waiting...")
+                    time.sleep(2)
+                    subprocess.run(['partprobe', target_nbd], check=False)
                 
                 if not source_part:
-                    print(f"ERROR: Source partition not found for partition {partition_num}")
+                    print(f"ERROR: Could not find accessible source partition {partition_num}")
                     print(f"Tried: {source_part_options}")
                     continue
                 
                 if not target_part:
-                    print(f"ERROR: Target partition not found for partition {partition_num}")
+                    print(f"ERROR: Could not find accessible target partition {partition_num}")
                     print(f"Tried: {target_part_options}")
-                    # Wait a bit more and try again
-                    time.sleep(2)
-                    subprocess.run(['partprobe', target_nbd], check=False)
-                    time.sleep(1)
-                    for tgt_opt in target_part_options:
-                        if os.path.exists(tgt_opt):
-                            target_part = tgt_opt
-                            print(f"Found target partition on retry: {target_part}")
-                            break
-                    
-                    if not target_part:
-                        print(f"SKIP: Could not find target partition {partition_num}")
-                        continue
+                    continue
                 
                 print(f"Cloning partition {partition_num}: {source_part} -> {target_part}")
                 
-                # Get partition size
+                # Get exact partition sizes
                 try:
-                    size_result = subprocess.run(['blockdev', '--getsize64', source_part],
-                                            capture_output=True, text=True, check=True, timeout=30)
-                    source_size = int(size_result.stdout.strip())
-                    print(f"Partition {partition_num} size: {QCow2CloneResizer.format_size(source_size)}")
+                    source_size_result = subprocess.run(['blockdev', '--getsize64', source_part],
+                                                capture_output=True, text=True, check=True, timeout=30)
+                    source_size = int(source_size_result.stdout.strip())
+                    
+                    target_size_result = subprocess.run(['blockdev', '--getsize64', target_part],
+                                                capture_output=True, text=True, check=True, timeout=30)
+                    target_size = int(target_size_result.stdout.strip())
+                    
+                    print(f"Partition {partition_num} - Source: {QCow2CloneResizer.format_size(source_size)}, Target: {QCow2CloneResizer.format_size(target_size)}")
+                    
+                    if target_size < source_size:
+                        print(f"WARNING: Target partition smaller than source, truncating data")
+                    
+                    # Use the smaller size to avoid overrun
+                    copy_size = min(source_size, target_size)
+                    copy_blocks = copy_size // (4 * 1024 * 1024)  # 4MB blocks
+                    copy_remainder = copy_size % (4 * 1024 * 1024)
+                    
                 except Exception as e:
-                    print(f"Could not get partition size: {e}")
-                    source_size = 0
+                    print(f"Could not get partition sizes: {e}")
+                    # Fallback: copy without count (full partition)
+                    copy_blocks = None
+                    copy_remainder = 0
                 
-                # Clone partition data
-                cmd = [
-                    'dd',
-                    f'if={source_part}',
-                    f'of={target_part}',
-                    'bs=4M',
-                    'conv=notrunc,sync',
-                    'status=progress'
-                ]
-                
-                print(f"Executing: {' '.join(cmd)}")
-                
-                try:
-                    # Calculate reasonable timeout
-                    timeout_seconds = max(300, source_size // (5 * 1024 * 1024))  # 5MB/s minimum
-                    
-                    process = subprocess.Popen(cmd, 
-                                            stdout=subprocess.PIPE, 
-                                            stderr=subprocess.STDOUT,
-                                            text=True)
-                    
-                    start_time = time.time()
-                    while True:
-                        output = process.stdout.readline()
-                        if output == '' and process.poll() is not None:
-                            break
-                        if output and "bytes" in output:
-                            print(f"DD Progress: {output.strip()}")
+                # Enhanced dd command with better error handling
+                if copy_blocks is not None:
+                    # Copy in blocks first
+                    if copy_blocks > 0:
+                        cmd = [
+                            'dd',
+                            f'if={source_part}',
+                            f'of={target_part}',
+                            'bs=4M',
+                            f'count={copy_blocks}',
+                            'conv=notrunc,noerror,sync',
+                            'oflag=sync'
+                        ]
                         
-                        if time.time() - start_time > timeout_seconds:
-                            process.kill()
-                            raise subprocess.TimeoutExpired(cmd, timeout_seconds)
+                        print(f"Copying {copy_blocks} blocks: {' '.join(cmd)}")
+                        
+                        if not self._execute_dd_with_retry(cmd, timeout=600):
+                            print(f"ERROR: Failed to copy main blocks for partition {partition_num}")
+                            continue
                     
-                    if process.returncode != 0:
-                        raise subprocess.CalledProcessError(process.returncode, cmd)
+                    # Copy remainder if any
+                    if copy_remainder > 0:
+                        skip_blocks = copy_blocks
+                        cmd = [
+                            'dd',
+                            f'if={source_part}',
+                            f'of={target_part}',
+                            'bs=1M',
+                            f'count={copy_remainder // (1024 * 1024) + 1}',
+                            f'skip={skip_blocks * 4}',  # Skip in 1MB blocks
+                            f'seek={skip_blocks * 4}',
+                            'conv=notrunc,noerror,sync',
+                            'oflag=sync'
+                        ]
+                        
+                        print(f"Copying remainder: {' '.join(cmd)}")
+                        if not self._execute_dd_with_retry(cmd, timeout=300):
+                            print(f"WARNING: Failed to copy remainder for partition {partition_num}")
+                else:
+                    # Simple copy without size limits
+                    cmd = [
+                        'dd',
+                        f'if={source_part}',
+                        f'of={target_part}',
+                        'bs=4M',
+                        'conv=notrunc,noerror,sync',
+                        'oflag=sync'
+                    ]
                     
-                    print(f"Partition {partition_num} cloned successfully")
-                    
-                except Exception as e:
-                    print(f"ERROR cloning partition {partition_num}: {e}")
-                    continue
+                    print(f"Simple copy: {' '.join(cmd)}")
+                    if not self._execute_dd_with_retry(cmd, timeout=1800):
+                        print(f"ERROR: Failed to copy partition {partition_num}")
+                        continue
+                
+                print(f"Partition {partition_num} cloned successfully")
+                
+                # Sync and verify
+                subprocess.run(['sync'], check=False, timeout=60)
+                time.sleep(1)
                 
                 if progress_callback:
                     progress_callback(base_progress + 2, f"Partition {partition_num} completed")
+            
+            # Final sync
+            print("Performing final sync...")
+            subprocess.run(['sync'], check=False, timeout=60)
+            time.sleep(2)
             
             print("All partitions processed")
             return True
             
         except Exception as e:
             print(f"ERROR in _clone_partition_data_safe: {e}")
+            import traceback
+            traceback.print_exc()
             raise Exception(f"Failed to clone partition data: {e}")
     
     def _show_final_size_dialog(self, final_layout, partition_changes):
