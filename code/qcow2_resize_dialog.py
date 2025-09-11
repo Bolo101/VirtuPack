@@ -97,8 +97,8 @@ class QCow2CloneResizer:
             raise Exception(f"Failed to analyze image: {e}")
     
     @staticmethod
-    def setup_nbd_device(image_path, progress_callback=None):
-        """Setup NBD device for partition operations"""
+    def setup_nbd_device(image_path, progress_callback=None, exclude_devices=None):
+        """Setup NBD device with proper availability detection"""
         try:
             if progress_callback:
                 progress_callback(5, "Setting up NBD device...")
@@ -106,71 +106,300 @@ class QCow2CloneResizer:
             # Load nbd module
             subprocess.run(['modprobe', 'nbd'], check=False)
             
-            # Find available NBD device
+            exclude_devices = exclude_devices or []
+            
+            # Find available NBD device with better detection
             nbd_device = None
             for i in range(16):  # Check nbd0 to nbd15
                 device = f"/dev/nbd{i}"
-                if os.path.exists(device):
-                    # Check if device is free
-                    try:
-                        result = subprocess.run(
-                            ['lsblk', device],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        # If lsblk shows no entries, device is free
-                        if device not in result.stdout or len(result.stdout.strip().split('\n')) <= 1:
-                            nbd_device = device
-                            break
-                    except:
+                
+                # Skip excluded devices
+                if device in exclude_devices:
+                    print(f"Skipping excluded device: {device}")
+                    continue
+                    
+                if not os.path.exists(device):
+                    print(f"Device {device} does not exist")
+                    continue
+                
+                # Check if device is available using multiple methods
+                device_available = True
+                
+                try:
+                    # Method 1: Check if qemu-nbd can list the device (means it's connected)
+                    list_result = subprocess.run(
+                        ['qemu-nbd', '--list', device],
+                        capture_output=True, text=True, timeout=3, check=False
+                    )
+                    # If --list succeeds, device is connected/busy
+                    if list_result.returncode == 0:
+                        print(f"Device {device} is connected (qemu-nbd --list succeeded)")
+                        device_available = False
+                    
+                except subprocess.TimeoutExpired:
+                    print(f"Device {device} check timed out, assuming busy")
+                    device_available = False
+                except Exception as e:
+                    print(f"Error checking {device} with qemu-nbd --list: {e}")
+                    # Continue with other checks
+                
+                if not device_available:
+                    continue
+                
+                try:
+                    # Method 2: Check if blockdev can get size (means device has content)
+                    size_result = subprocess.run(
+                        ['blockdev', '--getsize64', device],
+                        capture_output=True, text=True, timeout=3, check=False
+                    )
+                    # If blockdev succeeds and shows size > 0, device is connected
+                    if size_result.returncode == 0:
+                        size = int(size_result.stdout.strip())
+                        if size > 0:
+                            print(f"Device {device} has size {size}, appears connected")
+                            device_available = False
+                    
+                except Exception as e:
+                    print(f"Error checking {device} size: {e}")
+                    # This is actually good - means device is likely free
+                
+                if not device_available:
+                    continue
+                
+                try:
+                    # Method 3: Check lsblk more carefully
+                    lsblk_result = subprocess.run(
+                        ['lsblk', '-n', device],  # -n for no headers
+                        capture_output=True, text=True, timeout=3, check=False
+                    )
+                    # If lsblk shows the device with partitions, it's in use
+                    if lsblk_result.returncode == 0 and lsblk_result.stdout.strip():
+                        lines = [line.strip() for line in lsblk_result.stdout.strip().split('\n') if line.strip()]
+                        if len(lines) > 1:  # More than just the device line means partitions
+                            print(f"Device {device} has partitions: {lines}")
+                            device_available = False
+                    
+                except Exception as e:
+                    print(f"Error checking {device} with lsblk: {e}")
+                
+                if device_available:
+                    nbd_device = device
+                    print(f"Device {device} appears to be available")
+                    break
+                else:
+                    print(f"Device {device} is busy/connected")
+            
+            if not nbd_device:
+                # Last resort: try to force disconnect all devices and retry
+                print("No free NBD device found, attempting cleanup...")
+                for i in range(16):
+                    device = f"/dev/nbd{i}"
+                    if device not in exclude_devices and os.path.exists(device):
+                        try:
+                            print(f"Force disconnecting {device}...")
+                            subprocess.run(['qemu-nbd', '--disconnect', device], 
+                                        capture_output=True, timeout=5, check=False)
+                        except:
+                            pass
+                
+                # Wait and try again
+                time.sleep(3)
+                
+                # Retry with first non-excluded device
+                for i in range(16):
+                    device = f"/dev/nbd{i}"
+                    if device not in exclude_devices and os.path.exists(device):
                         nbd_device = device
+                        print(f"Using {device} after cleanup attempt")
                         break
             
             if not nbd_device:
-                raise Exception("No available NBD device found")
+                raise Exception("No available NBD device found after cleanup attempts")
             
-            # Connect image to NBD device
-            subprocess.run(
-                ['qemu-nbd', '--connect', nbd_device, image_path],
-                check=True, timeout=30
-            )
+            print(f"Selected NBD device: {nbd_device}")
+            
+            # Try to connect
+            connect_cmd = ['qemu-nbd', '--connect', nbd_device, image_path]
+            print(f"Connecting: {' '.join(connect_cmd)}")
+            
+            try:
+                result = subprocess.run(
+                    connect_cmd,
+                    capture_output=True, text=True, check=True, timeout=30
+                )
+                
+                if result.stdout:
+                    print(f"qemu-nbd stdout: {result.stdout}")
+                if result.stderr:
+                    print(f"qemu-nbd stderr: {result.stderr}")
+                    
+            except subprocess.CalledProcessError as e:
+                error_details = f"qemu-nbd connect failed for {nbd_device}:\n"
+                error_details += f"Return code: {e.returncode}\n"
+                if e.stdout:
+                    error_details += f"Stdout: {e.stdout}\n"
+                if e.stderr:
+                    error_details += f"Stderr: {e.stderr}\n"
+                    
+                # Try next available device if this one failed
+                print(f"Connection failed, trying alternative devices...")
+                for i in range(16):
+                    alt_device = f"/dev/nbd{i}"
+                    if alt_device != nbd_device and alt_device not in exclude_devices and os.path.exists(alt_device):
+                        try:
+                            print(f"Trying alternative device: {alt_device}")
+                            # Force disconnect first
+                            subprocess.run(['qemu-nbd', '--disconnect', alt_device], 
+                                        capture_output=True, timeout=5, check=False)
+                            time.sleep(1)
+                            # Try to connect
+                            subprocess.run(['qemu-nbd', '--connect', alt_device, image_path],
+                                        capture_output=True, text=True, check=True, timeout=30)
+                            nbd_device = alt_device
+                            print(f"Successfully connected to {alt_device}")
+                            break
+                        except Exception as alt_e:
+                            print(f"Alternative device {alt_device} also failed: {alt_e}")
+                            continue
+                else:
+                    raise Exception(f"Could not connect to any NBD device. Last error: {error_details}")
             
             # Wait for device to be ready
-            max_attempts = 10
+            print(f"Waiting for {nbd_device} to be ready...")
+            max_attempts = 20
             for attempt in range(max_attempts):
                 time.sleep(1)
-                subprocess.run(['partprobe', nbd_device], check=False)
+                
+                # Force kernel to re-read partition table
+                subprocess.run(['partprobe', nbd_device], check=False, 
+                            capture_output=True, timeout=10)
                 time.sleep(1)
                 
                 # Check if device is accessible
                 try:
                     result = subprocess.run(['lsblk', nbd_device], 
-                                          capture_output=True, text=True, timeout=5)
+                                        capture_output=True, text=True, timeout=10)
                     if result.returncode == 0:
+                        print(f"NBD device {nbd_device} is ready after {attempt + 1} attempts")
+                        if result.stdout.strip():
+                            print(f"Device info:\n{result.stdout}")
                         break
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Attempt {attempt + 1}: Device check failed: {e}")
                 
                 if attempt == max_attempts - 1:
                     print(f"Warning: NBD device setup may be incomplete after {max_attempts} attempts")
+                    print("Proceeding anyway...")
             
             return nbd_device
             
         except Exception as e:
+            print(f"ERROR in setup_nbd_device: {e}")
             raise Exception(f"Failed to setup NBD device: {e}")
-    
+
     @staticmethod
     def cleanup_nbd_device(nbd_device):
-        """Cleanup NBD device"""
+        """Enhanced NBD device cleanup with better error handling"""
+        if not nbd_device:
+            return
+            
         try:
-            # Force disconnect multiple times if needed
-            for _ in range(3):
-                result = subprocess.run(['qemu-nbd', '--disconnect', nbd_device], 
-                                     capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
+            print(f"Cleaning up NBD device: {nbd_device}")
+            
+            # Multiple disconnect attempts
+            success = False
+            for attempt in range(5):  # Try up to 5 times
+                try:
+                    print(f"Disconnect attempt {attempt + 1}")
+                    result = subprocess.run(['qemu-nbd', '--disconnect', nbd_device], 
+                                        capture_output=True, text=True, 
+                                        timeout=10, check=True)
+                    print(f"Disconnect successful on attempt {attempt + 1}")
+                    if result.stdout:
+                        print(f"  stdout: {result.stdout}")
+                    success = True
                     break
-                time.sleep(1)
-        except:
-            pass
+                except subprocess.CalledProcessError as e:
+                    print(f"Disconnect attempt {attempt + 1} failed: return code {e.returncode}")
+                    if e.stderr:
+                        print(f"  stderr: {e.stderr}")
+                    time.sleep(2)
+                except subprocess.TimeoutExpired:
+                    print(f"Disconnect attempt {attempt + 1} timed out")
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"Disconnect attempt {attempt + 1} error: {e}")
+                    time.sleep(2)
+            
+            if not success:
+                print(f"Warning: Could not cleanly disconnect {nbd_device}")
+                print("Trying force kill of qemu-nbd processes...")
+                try:
+                    # Try to kill any qemu-nbd processes using this device
+                    subprocess.run(['pkill', '-f', f'qemu-nbd.*{nbd_device}'], 
+                                check=False, timeout=10)
+                    time.sleep(2)
+                except:
+                    pass
+            
+            # Final verification
+            time.sleep(2)
+            try:
+                result = subprocess.run(['lsblk', nbd_device],
+                                    capture_output=True, text=True, timeout=5)
+                if result.returncode != 0 or not result.stdout.strip():
+                    print(f"NBD device {nbd_device} appears to be disconnected")
+                else:
+                    print(f"Warning: {nbd_device} may still be connected")
+            except:
+                print(f"NBD device {nbd_device} disconnect status unknown")
+                
+        except Exception as e:
+            print(f"Error in cleanup_nbd_device: {e}")
+
+    # Also need a simple helper to check if a specific NBD device is actually free
+    @staticmethod
+    def is_nbd_device_free(device_path):
+        """Check if a specific NBD device is actually free"""
+        try:
+            if not os.path.exists(device_path):
+                return False
+            
+            # Quick checks
+            # 1. Can we get size? If yes and > 0, it's connected
+            try:
+                result = subprocess.run(['blockdev', '--getsize64', device_path],
+                                    capture_output=True, text=True, timeout=3, check=False)
+                if result.returncode == 0 and int(result.stdout.strip()) > 0:
+                    return False
+            except:
+                pass
+            
+            # 2. Does qemu-nbd think it's connected?
+            try:
+                result = subprocess.run(['qemu-nbd', '--list', device_path],
+                                    capture_output=True, text=True, timeout=3, check=False)
+                if result.returncode == 0:
+                    return False
+            except:
+                pass
+            
+            # 3. Does lsblk show partitions?
+            try:
+                result = subprocess.run(['lsblk', '-n', device_path],
+                                    capture_output=True, text=True, timeout=3, check=False)
+                if result.returncode == 0 and result.stdout.strip():
+                    lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+                    if len(lines) > 1:
+                        return False
+            except:
+                pass
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error checking if {device_path} is free: {e}")
+            return False
     
     @staticmethod
     def get_partition_layout(nbd_device):
@@ -716,6 +945,112 @@ class QCow2CloneResizer:
         print(f"Creating backup: {image_path} -> {backup_path}")
         shutil.copy2(image_path, backup_path)
         return backup_path
+    
+    def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
+                                         existing_source_nbd, layout_info, progress_callback=None):
+        """Clone to new image using existing NBD device, ensuring no device conflicts"""
+        target_nbd = None
+        
+        try:
+            print(f"Starting clone with existing NBD device:")
+            print(f"  Source NBD: {existing_source_nbd}")
+            print(f"  Target: {target_path}")
+            print(f"  New size: {QCow2CloneResizer.format_size(new_size_bytes)}")
+            
+            # Verification: is new size sufficient?
+            min_required = layout_info['required_minimum_bytes']
+            if new_size_bytes < min_required:
+                raise Exception(
+                    f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
+                    f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
+                )
+            
+            # Step 1: Create new image
+            if progress_callback:
+                progress_callback(60, "Creating new image...")
+            
+            print("Creating new QCOW2 image...")
+            QCow2CloneResizer.create_new_qcow2_image(target_path, new_size_bytes, progress_callback)
+            
+            # Step 2: Mount new image to DIFFERENT NBD device
+            if progress_callback:
+                progress_callback(70, "Mounting target image to different NBD device...")
+            
+            print("Waiting before mounting target image...")
+            time.sleep(3)
+            
+            print(f"Setting up target NBD device (excluding {existing_source_nbd})...")
+            # CRITICAL: Exclude the source NBD device to avoid conflicts
+            target_nbd = QCow2CloneResizer.setup_nbd_device(target_path, 
+                                                        progress_callback=None, 
+                                                        exclude_devices=[existing_source_nbd])
+            print(f"Target NBD device: {target_nbd}")
+            
+            # Verify devices are different
+            if existing_source_nbd == target_nbd:
+                raise Exception(f"ERROR: Source and target NBD devices are the same: {existing_source_nbd}")
+            
+            print(f"NBD devices verified: source={existing_source_nbd}, target={target_nbd}")
+            
+            # Step 3: Clone disk structure
+            if progress_callback:
+                progress_callback(75, "Cloning disk structure...")
+            
+            print("Cloning disk structure...")
+            self._clone_disk_structure_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+            
+            # Step 4: Clone partition data
+            if progress_callback:
+                progress_callback(80, "Cloning partition data...")
+            
+            print("Cloning partition data...")
+            self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+            
+            if progress_callback:
+                progress_callback(95, "Finalizing...")
+            
+            # Cleanup target NBD device only
+            print(f"Cleaning up target NBD device: {target_nbd}")
+            if target_nbd:
+                QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                target_nbd = None
+            
+            # NOTE: Do NOT cleanup existing_source_nbd here - that's handled by the caller
+            
+            # Final verification
+            if not os.path.exists(target_path):
+                raise Exception(f"Target image was not created: {target_path}")
+            
+            final_info = QCow2CloneResizer.get_image_info(target_path)
+            print(f"Clone operation completed successfully!")
+            print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
+            print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
+            
+            if progress_callback:
+                progress_callback(100, "Clone complete!")
+            
+            return True
+            
+        except Exception as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+            
+            # Cleanup target NBD on error (NOT source NBD)
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except Exception as cleanup_error:
+                    print(f"Error cleaning up target NBD: {cleanup_error}")
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    print(f"Removing incomplete target file: {target_path}")
+                    os.remove(target_path)
+                except Exception as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise e
 
 
 class NewSizeDialog:
@@ -1318,8 +1653,8 @@ class QCow2CloneResizerGUI:
         thread.start()
     
     def _gparted_clone_worker(self, image_path):
-        """Worker thread for GParted + clone resize operation with improved error handling"""
-        nbd_device = None
+        """Worker thread for GParted + clone resize operation - CORRECTED to keep NBD device"""
+        source_nbd = None
         
         try:
             print(f"Starting GParted + Clone operation for: {image_path}")
@@ -1327,14 +1662,14 @@ class QCow2CloneResizerGUI:
             # Store original image info
             original_info = self.image_info.copy()
             
-            # Setup NBD device for GParted
+            # Setup NBD device for GParted - THIS STAYS CONNECTED THROUGHOUT
             self.update_progress(10, "Setting up NBD device for GParted...")
-            nbd_device = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
-            print(f"NBD device setup complete: {nbd_device}")
+            source_nbd = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
+            print(f"NBD device setup complete: {source_nbd}")
             
             # Get initial partition layout
             self.update_progress(20, "Analyzing initial partition layout...")
-            initial_layout = QCow2CloneResizer.get_partition_layout(nbd_device)
+            initial_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
             
             # Show pre-GParted info
             initial_info = f"Initial partition layout:\n"
@@ -1347,7 +1682,7 @@ class QCow2CloneResizerGUI:
             # Show detailed GParted instructions
             instructions = (
                 f"GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
-                f"Device: {nbd_device}\n\n"
+                f"Device: {source_nbd}\n\n"
                 f"CURRENT PARTITIONS:\n{initial_info}\n"
                 f"INSTRUCTIONS FOR GPARTED:\n"
                 f"1. Resize partitions (shrink to save space or expand)\n"
@@ -1368,12 +1703,15 @@ class QCow2CloneResizerGUI:
             
             # Launch GParted and wait for completion
             print("Launching GParted...")
-            QCow2CloneResizer.launch_gparted(nbd_device)
+            QCow2CloneResizer.launch_gparted(source_nbd)
             print("GParted session completed")
+            
+            # IMPORTANT: Do NOT cleanup NBD device here - we need it for cloning!
+            # The source_nbd device now contains all the GParted modifications
             
             # GParted session completed - analyze final partition layout
             self.update_progress(40, "GParted completed - analyzing partition changes...")
-            final_layout = QCow2CloneResizer.get_partition_layout(nbd_device)
+            final_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
             
             # Compare layouts to detect changes
             partition_changes = "Partitions modified using GParted"
@@ -1411,20 +1749,18 @@ class QCow2CloneResizerGUI:
                 original_path = Path(image_path)
                 new_path = original_path.parent / f"{original_path.stem}_gparted_resized{original_path.suffix}"
                 
-                # Cleanup original NBD device before cloning
-                self.update_progress(50, "Preparing for cloning to new image...")
-                print("Cleaning up NBD device before cloning...")
-                QCow2CloneResizer.cleanup_nbd_device(nbd_device)
-                nbd_device = None
-                
                 # Clone to new image with all GParted modifications
+                # CRITICAL: Pass the existing source_nbd and final_layout to avoid re-mounting
                 self.update_progress(55, "Cloning modified partitions to new optimized image...")
                 print(f"Starting clone operation to: {new_path}")
                 
-                QCow2CloneResizer.clone_to_new_image(
-                    image_path, 
+                # Use modified clone function that accepts existing NBD device
+                self._clone_to_new_image_with_existing_nbd(
+                    image_path,
                     str(new_path),
                     new_size,
+                    source_nbd,  # Pass existing NBD device
+                    final_layout,  # Pass existing layout info
                     self.update_progress
                 )
                 
@@ -1513,13 +1849,332 @@ class QCow2CloneResizerGUI:
             self.root.after(0, lambda: messagebox.showerror("Operation Failed", error_msg))
         
         finally:
-            if nbd_device:
+            # ONLY NOW cleanup the source NBD device
+            if source_nbd:
                 try:
-                    print(f"Cleaning up NBD device: {nbd_device}")
-                    QCow2CloneResizer.cleanup_nbd_device(nbd_device)
+                    print(f"Final cleanup of NBD device: {source_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
                 except Exception as e:
                     print(f"Error cleaning up NBD device: {e}")
             self.root.after(0, self.reset_ui)
+
+    def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
+                                        existing_source_nbd, layout_info, progress_callback=None):
+        """Clone to new image using existing NBD device (avoids re-mounting source)"""
+        target_nbd = None
+        
+        try:
+            print(f"Starting clone with existing NBD device:")
+            print(f"  Source NBD: {existing_source_nbd}")
+            print(f"  Target: {target_path}")
+            print(f"  New size: {QCow2CloneResizer.format_size(new_size_bytes)}")
+            print(f"  Layout info: {len(layout_info['partitions'])} partitions")
+            
+            # Verification: is new size sufficient?
+            min_required = layout_info['required_minimum_bytes']
+            if new_size_bytes < min_required:
+                raise Exception(
+                    f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
+                    f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
+                )
+            
+            print(f"Size verification passed - using {QCow2CloneResizer.format_size(new_size_bytes)}")
+            
+            # Step 1: Create new image
+            if progress_callback:
+                progress_callback(60, "Creating new image...")
+            
+            print("Creating new QCOW2 image...")
+            QCow2CloneResizer.create_new_qcow2_image(target_path, new_size_bytes, progress_callback)
+            
+            # Step 2: Mount new image with delay to avoid NBD conflicts
+            if progress_callback:
+                progress_callback(70, "Preparing target image...")
+            
+            print("Waiting before mounting target image...")
+            time.sleep(3)  # Give time for filesystem operations to complete
+            
+            print("Setting up target NBD device...")
+            target_nbd = QCow2CloneResizer.setup_nbd_device(target_path)
+            print(f"Target NBD device: {target_nbd}")
+            
+            # Verify both NBD devices are different
+            if existing_source_nbd == target_nbd:
+                raise Exception(f"Source and target NBD devices are the same: {existing_source_nbd}")
+            
+            # Step 3: Clone disk structure
+            if progress_callback:
+                progress_callback(75, "Cloning disk structure...")
+            
+            print("Cloning disk structure...")
+            self._clone_disk_structure_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+            
+            # Step 4: Clone partition data
+            if progress_callback:
+                progress_callback(80, "Cloning partition data...")
+            
+            print("Cloning partition data...")
+            self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+            
+            if progress_callback:
+                progress_callback(95, "Finalizing and cleaning up...")
+            
+            # Cleanup target NBD device
+            print("Cleaning up target NBD device...")
+            if target_nbd:
+                QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                target_nbd = None
+            
+            # Final verification
+            if not os.path.exists(target_path):
+                raise Exception(f"Target image was not created: {target_path}")
+            
+            final_info = QCow2CloneResizer.get_image_info(target_path)
+            print(f"Clone operation completed successfully!")
+            print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
+            print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
+            
+            if progress_callback:
+                progress_callback(100, "Clone complete!")
+            
+            return True
+            
+        except Exception as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except Exception as cleanup_error:
+                    print(f"Error cleaning up target NBD: {cleanup_error}")
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    print(f"Removing incomplete target file: {target_path}")
+                    os.remove(target_path)
+                except Exception as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise e
+
+    def _clone_disk_structure_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
+        """Clone disk structure with device verification"""
+        try:
+            print(f"Cloning disk structure from {source_nbd} to {target_nbd}")
+            
+            # Verify devices are different
+            if source_nbd == target_nbd:
+                raise Exception(f"Source and target NBD devices cannot be the same: {source_nbd}")
+            
+            if progress_callback:
+                progress_callback(76, "Copying partition table...")
+            
+            # Step 1: Copy partition table and MBR/GPT
+            cmd = [
+                'dd', 
+                f'if={source_nbd}',
+                f'of={target_nbd}',
+                'bs=1M',
+                'count=1',  # First MB for MBR/GPT
+                'conv=notrunc'
+            ]
+            
+            print(f"Copying structure: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+            if result.stderr:
+                print(f"DD stderr: {result.stderr}")
+            
+            if progress_callback:
+                progress_callback(77, "Recreating partition table...")
+            
+            # Step 2: Get partition table info from source
+            parted_result = subprocess.run(
+                ['parted', '-s', source_nbd, 'print'],
+                capture_output=True, text=True, check=True, timeout=60
+            )
+            
+            # Detect table type
+            table_type = 'msdos'  # default
+            for line in parted_result.stdout.split('\n'):
+                if 'Partition Table:' in line:
+                    table_type = line.split(':')[1].strip()
+                    break
+            
+            print(f"Detected partition table type: {table_type}")
+            
+            # Create partition table on target
+            subprocess.run([
+                'parted', '-s', target_nbd, 'mklabel', table_type
+            ], check=True, timeout=60)
+            
+            # Recreate each partition
+            for i, partition in enumerate(layout_info['partitions']):
+                if progress_callback:
+                    progress_callback(77 + i, f"Creating partition {partition['number']}...")
+                
+                print(f"Creating partition {partition['number']}: {partition['start']} - {partition['end']}")
+                
+                result = subprocess.run([
+                    'parted', '-s', target_nbd, 
+                    'mkpart', 'primary',
+                    partition['start'], partition['end']
+                ], capture_output=True, text=True, check=True, timeout=60)
+                
+                if result.stderr:
+                    print(f"Parted stderr for partition {partition['number']}: {result.stderr}")
+            
+            # Wait for partitions to be available
+            print("Waiting for target partitions to be available...")
+            time.sleep(3)
+            subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+            time.sleep(2)
+            
+            # Verify partitions were created on target
+            verify_result = subprocess.run(['lsblk', target_nbd], 
+                                        capture_output=True, text=True, timeout=30)
+            print(f"Target partition layout:\n{verify_result.stdout}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"ERROR in _clone_disk_structure_safe: {e}")
+            raise Exception(f"Failed to clone disk structure: {e}")
+
+    def _clone_partition_data_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
+        """Clone partition data with device verification"""
+        try:
+            print(f"Cloning partition data from {source_nbd} to {target_nbd}")
+            
+            # Verify devices are different
+            if source_nbd == target_nbd:
+                raise Exception(f"Source and target NBD devices cannot be the same: {source_nbd}")
+            
+            total_partitions = len(layout_info['partitions'])
+            print(f"Processing {total_partitions} partitions")
+            
+            for i, partition in enumerate(layout_info['partitions']):
+                partition_num = partition['number']
+                
+                base_progress = 80 + (i * 10 // total_partitions)
+                if progress_callback:
+                    progress_callback(base_progress, f"Cloning partition {partition_num}...")
+                
+                # Try different partition naming schemes for both devices
+                source_part_options = [
+                    f"{source_nbd}p{partition_num}",  # /dev/nbd0p1
+                    f"{source_nbd}{partition_num}"    # /dev/nbd01
+                ]
+                
+                target_part_options = [
+                    f"{target_nbd}p{partition_num}",  # /dev/nbd1p1
+                    f"{target_nbd}{partition_num}"    # /dev/nbd11
+                ]
+                
+                source_part = None
+                target_part = None
+                
+                # Find source partition
+                for src_opt in source_part_options:
+                    if os.path.exists(src_opt):
+                        source_part = src_opt
+                        print(f"Found source partition: {source_part}")
+                        break
+                
+                # Find target partition
+                for tgt_opt in target_part_options:
+                    if os.path.exists(tgt_opt):
+                        target_part = tgt_opt
+                        print(f"Found target partition: {target_part}")
+                        break
+                
+                if not source_part:
+                    print(f"ERROR: Source partition not found for partition {partition_num}")
+                    print(f"Tried: {source_part_options}")
+                    continue
+                
+                if not target_part:
+                    print(f"ERROR: Target partition not found for partition {partition_num}")
+                    print(f"Tried: {target_part_options}")
+                    # Wait a bit more and try again
+                    time.sleep(2)
+                    subprocess.run(['partprobe', target_nbd], check=False)
+                    time.sleep(1)
+                    for tgt_opt in target_part_options:
+                        if os.path.exists(tgt_opt):
+                            target_part = tgt_opt
+                            print(f"Found target partition on retry: {target_part}")
+                            break
+                    
+                    if not target_part:
+                        print(f"SKIP: Could not find target partition {partition_num}")
+                        continue
+                
+                print(f"Cloning partition {partition_num}: {source_part} -> {target_part}")
+                
+                # Get partition size
+                try:
+                    size_result = subprocess.run(['blockdev', '--getsize64', source_part],
+                                            capture_output=True, text=True, check=True, timeout=30)
+                    source_size = int(size_result.stdout.strip())
+                    print(f"Partition {partition_num} size: {QCow2CloneResizer.format_size(source_size)}")
+                except Exception as e:
+                    print(f"Could not get partition size: {e}")
+                    source_size = 0
+                
+                # Clone partition data
+                cmd = [
+                    'dd',
+                    f'if={source_part}',
+                    f'of={target_part}',
+                    'bs=4M',
+                    'conv=notrunc,sync',
+                    'status=progress'
+                ]
+                
+                print(f"Executing: {' '.join(cmd)}")
+                
+                try:
+                    # Calculate reasonable timeout
+                    timeout_seconds = max(300, source_size // (5 * 1024 * 1024))  # 5MB/s minimum
+                    
+                    process = subprocess.Popen(cmd, 
+                                            stdout=subprocess.PIPE, 
+                                            stderr=subprocess.STDOUT,
+                                            text=True)
+                    
+                    start_time = time.time()
+                    while True:
+                        output = process.stdout.readline()
+                        if output == '' and process.poll() is not None:
+                            break
+                        if output and "bytes" in output:
+                            print(f"DD Progress: {output.strip()}")
+                        
+                        if time.time() - start_time > timeout_seconds:
+                            process.kill()
+                            raise subprocess.TimeoutExpired(cmd, timeout_seconds)
+                    
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, cmd)
+                    
+                    print(f"Partition {partition_num} cloned successfully")
+                    
+                except Exception as e:
+                    print(f"ERROR cloning partition {partition_num}: {e}")
+                    continue
+                
+                if progress_callback:
+                    progress_callback(base_progress + 2, f"Partition {partition_num} completed")
+            
+            print("All partitions processed")
+            return True
+            
+        except Exception as e:
+            print(f"ERROR in _clone_partition_data_safe: {e}")
+            raise Exception(f"Failed to clone partition data: {e}")
     
     def _show_final_size_dialog(self, final_layout, partition_changes):
         """Show final size dialog after GParted operations"""
