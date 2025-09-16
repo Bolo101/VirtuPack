@@ -224,14 +224,14 @@ class P2VConverterGUI:
         browse_frame = ttk.Frame(output_frame)
         browse_frame.grid(row=0, column=1)
         
-        browse_btn = ttk.Button(browse_frame, text="Browse...", command=self.browse_output_dir)
+        browse_btn = ttk.Button(browse_frame, text="Browse", command=self.browse_output_dir)
         browse_btn.grid(row=0, column=0, padx=(0, 2))
         
-        mount_btn = ttk.Button(browse_frame, text="Mount Disk...", command=self.mount_disk_dialog)
+        mount_btn = ttk.Button(browse_frame, text="Mount Disk", command=self.mount_disk_dialog)
         mount_btn.grid(row=0, column=1, padx=(0, 2))
         
         # Updated: QCOW2 Clone Resize button with proper tooltip
-        resize_btn = ttk.Button(browse_frame, text="QCOW2 Tools...", command=self.open_qcow2_resizer,
+        resize_btn = ttk.Button(browse_frame, text="QCOW2 Resize", command=self.open_qcow2_resizer,
                             width=12)
         resize_btn.grid(row=0, column=2)
         
