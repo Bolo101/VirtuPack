@@ -1063,7 +1063,7 @@ class QCow2CloneResizer:
                     
                     # Check if file has reasonable size
                     file_stat = os.stat(target_path)
-                    if file_stat.st_size < 1024:  # Less than 1KB is definitely wrong
+                    if file_stat.st_size < 1024: 
                         raise Exception(f"Target image file is too small: {file_stat.st_size} bytes")
                     
                     final_info = QCow2CloneResizer.get_image_info(target_path)
@@ -1373,13 +1373,15 @@ class NewSizeDialog:
 class QCow2CloneResizerGUI:
     """GUI for clone-based resizing with mandatory GParted usage"""
     
-    def __init__(self, root):
-        self.root = root
+    def __init__(self, parent):
+        self.parent = parent
+
+        self.root = tk.Toplevel(parent)
         self.root.title("QCOW2 Clone Resizer - GParted + Safe Cloning")
         
         # Appropriate window size
-        self.root.geometry("800x600")
-        self.root.minsize(750, 550)
+        self.root.attributes("-fullscreen", True)
+        self.root.transient(parent)
         
         self.image_path = tk.StringVar()
         self.image_info = None
@@ -1404,6 +1406,7 @@ class QCow2CloneResizerGUI:
                 return
         
         self.root.destroy()
+        self.parent.destroy()
 
     def setup_ui(self):
         """Setup simplified user interface with single action button"""

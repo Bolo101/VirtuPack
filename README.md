@@ -179,5 +179,3 @@ Replace `src.qcow2` and output file names as needed.
 ├── iso/                # ISO build scripts and assets
 └── README.md           # This file
 ```
-
-***
