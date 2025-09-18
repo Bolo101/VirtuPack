@@ -205,8 +205,14 @@ class DiskMountDialog:
             
             return unmounted_partitions
         
-        except Exception as e:
-            log_error(f"Error getting unmounted partitions: {str(e)}")
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
+            log_error(f"Error processing disk data: {str(e)}")
+            return []
+        except (ImportError, NameError) as e:
+            log_error(f"Error importing required modules or functions: {str(e)}")
+            return []
+        except (RuntimeError, SystemError) as e:
+            log_error(f"System error getting unmounted partitions: {str(e)}")
             return []
     
     def refresh_unmounted_partitions(self):
@@ -236,8 +242,12 @@ class DiskMountDialog:
                 self.partition_listbox.insert(tk.END, "No unmounted partitions with filesystems available")
                 log_warning("No unmounted partitions found")
                 
-        except Exception as e:
-            log_error(f"Error refreshing unmounted partitions: {str(e)}")
+        except (tk.TclError, AttributeError) as e:
+            log_error(f"GUI error refreshing partition list: {str(e)}")
+            self.partition_listbox.delete(0, tk.END)
+            self.partition_listbox.insert(tk.END, "Error loading partition list")
+        except (KeyError, TypeError, ValueError) as e:
+            log_error(f"Data processing error refreshing partitions: {str(e)}")
             self.partition_listbox.delete(0, tk.END)
             self.partition_listbox.insert(tk.END, "Error loading partition list")
     
@@ -361,7 +371,7 @@ class DiskMountDialog:
                     success_text += f"You can now use this location for VM storage."
                     
                     messagebox.showinfo("Mount Successful", success_text, parent=self.dialog)
-                except Exception:
+                except (OSError, IOError, AttributeError, KeyError) as e:
                     messagebox.showinfo("Mount Successful", 
                                       f"Partition mounted successfully!\n\n"
                                       f"Partition: {device_path}\n"
@@ -373,7 +383,7 @@ class DiskMountDialog:
                 self.dialog.destroy()
                 
             else:
-                raise Exception("Mount command succeeded but mount point is not mounted")
+                raise RuntimeError("Mount command succeeded but mount point is not mounted")
         
         except subprocess.TimeoutExpired:
             error_msg = "Mount operation timed out. The partition may not be ready or may require manual intervention."
@@ -389,7 +399,17 @@ class DiskMountDialog:
             error_msg = "Permission denied. You may need to run the application with sudo or check partition permissions."
             messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
         
-        except Exception as e:
+        except (FileNotFoundError, NotADirectoryError) as e:
+            error_msg = f"File system error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+        
+        except OSError as e:
+            error_msg = f"OS error during mount operation: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+        
+        except (RuntimeError, SystemError, ValueError) as e:
             error_msg = f"Unexpected error mounting partition: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
