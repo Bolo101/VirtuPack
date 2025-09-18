@@ -416,7 +416,7 @@ class DiskMountDialog:
         
         finally:
             # Re-enable button
-            self.mount_btn.config(state=tk.NORMAL, text="Mount & Select")
+            self.mount_btn.config(state=tk.NORMAL, text="Select & Mount")
     
     def cancel(self):
         """Cancel the dialog"""
