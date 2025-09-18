@@ -21,8 +21,10 @@ def check_qemu_tools() -> tuple[bool, str]:
     for tool in tools:
         try:
             subprocess.run([tool, '--version'], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except FileNotFoundError:
             missing.append(tool)
+        except subprocess.CalledProcessError as e:
+            missing.append(f"{tool} (error: {e})")
     
     if missing:
         return False, f"Missing required tools: {', '.join(missing)}"
@@ -48,25 +50,34 @@ def verify_vm_image(qcow2_path: str) -> dict:
             'format': info_data.get('format', 'unknown'),
             'compressed': info_data.get('compressed', False)
         }
-    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError, KeyError):
-        # Fallback to file size if qemu-img info fails
-        try:
-            actual_size = os.path.getsize(qcow2_path)
-            return {
-                'success': False,
-                'virtual_size': 0,
-                'actual_size': actual_size,
-                'format': 'qcow2',
-                'compressed': True
-            }
-        except OSError:
-            return {
-                'success': False,
-                'virtual_size': 0,
-                'actual_size': 0,
-                'format': 'unknown',
-                'compressed': False
-            }
+    except subprocess.CalledProcessError as e:
+        log_error(f"qemu-img info failed: {e}")
+    except FileNotFoundError as e:
+        log_error(f"qemu-img not found: {e}")
+    except json.JSONDecodeError as e:
+        log_error(f"Failed to parse qemu-img output: {e}")
+    except KeyError as e:
+        log_error(f"Missing required field in qemu-img output: {e}")
+        
+    # Fallback to file size if qemu-img info fails
+    try:
+        actual_size = os.path.getsize(qcow2_path)
+        return {
+            'success': False,
+            'virtual_size': 0,
+            'actual_size': actual_size,
+            'format': 'qcow2',
+            'compressed': True
+        }
+    except OSError as e:
+        log_error(f"Failed to get file size: {e}")
+        return {
+            'success': False,
+            'virtual_size': 0,
+            'actual_size': 0,
+            'format': 'unknown',
+            'compressed': False
+        }
 
 
 def check_output_space(output_path: str, source_disk: str) -> tuple[bool, str]:
@@ -112,7 +123,11 @@ def check_output_space(output_path: str, source_disk: str) -> tuple[bool, str]:
         
         else:
             # Backward compatibility: source_disk is actually disk size in bytes
-            disk_size = int(source_disk) if isinstance(source_disk, (int, str)) else source_disk
+            try:
+                disk_size = int(source_disk) if isinstance(source_disk, (int, str)) else source_disk
+            except ValueError as e:
+                raise ValueError(f"Invalid disk size value: {e}")
+                
             estimated_size = int(disk_size * 0.5)  # 50% compression ratio
             estimation_method = "50% compression ratio (conservative)"
             
@@ -131,8 +146,12 @@ def check_output_space(output_path: str, source_disk: str) -> tuple[bool, str]:
         
         return has_space, message
         
-    except Exception as e:
-        return False, f"Error checking space: {str(e)}"
+    except OSError as e:
+        return False, f"Error checking space: {e}"
+    except ValueError as e:
+        return False, f"Invalid input value: {e}"
+    except TypeError as e:
+        return False, f"Type error in calculations: {e}"
 
 
 def validate_vm_name(name: str) -> tuple[bool, str]:
@@ -151,7 +170,9 @@ def validate_vm_name(name: str) -> tuple[bool, str]:
         return False, "VM name is too long (max 100 characters)"
     
     # Check for reserved names
-    reserved = ['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9', 'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9']
+    reserved = ['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 
+               'com5', 'com6', 'com7', 'com8', 'com9', 'lpt1', 'lpt2', 'lpt3', 
+               'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9']
     if name.lower() in reserved:
         return False, f"VM name '{name}' is reserved"
     
@@ -182,13 +203,16 @@ def parse_qemu_progress(line: str) -> float:
         if match:
             return float(match.group(1))
             
-    except (ValueError, AttributeError):
-        pass
+    except ValueError as e:
+        log_error(f"Failed to parse progress value: {e}")
+    except AttributeError as e:
+        log_error(f"Failed to match progress pattern: {e}")
     
     return None
 
 
-def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progress_callback=None, stop_flag=None) -> str:
+def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, 
+                       progress_callback=None, stop_flag=None) -> str:
     """
     Convert physical disk to qcow2 VM with sparse allocation (only used data)
     Args:
@@ -268,7 +292,8 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
                 if parsed_progress is not None and parsed_progress > last_progress:
                     last_progress = parsed_progress
                     if progress_callback:
-                        progress_callback(parsed_progress, f"Converting disk data... {parsed_progress:.1f}%")
+                        progress_callback(parsed_progress, 
+                                       f"Converting disk data... {parsed_progress:.1f}%")
                     
                     # Log significant progress milestones
                     if parsed_progress % 10 < 1:  # Every ~10%
@@ -294,7 +319,8 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
                 if error_lines:
                     error_msg += f"\nError output: {chr(10).join(error_lines)}"
             
-            raise subprocess.CalledProcessError(return_code, qemu_convert_cmd, "", remaining_output)
+            raise subprocess.CalledProcessError(return_code, qemu_convert_cmd, 
+                                             "", remaining_output)
         
         log_info("Sparse disk conversion completed")
         
@@ -308,7 +334,7 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
         
         # Step 3: Verify and get final information
         if not os.path.exists(qcow2_path):
-            raise Exception("qcow2 file was not created successfully")
+            raise FileNotFoundError("qcow2 file was not created successfully")
         
         # Get detailed image information
         if progress_callback:
@@ -342,6 +368,21 @@ def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progre
     except KeyboardInterrupt:
         log_error("P2V conversion cancelled by user")
         raise
-    except Exception as e:
-        log_error(f"P2V conversion failed: {str(e)}")
+    except FileNotFoundError as e:
+        log_error(f"Required file or tool not found: {e}")
+        raise
+    except PermissionError as e:
+        log_error(f"Permission denied accessing disk or files: {e}")
+        raise
+    except subprocess.CalledProcessError as e:
+        log_error(f"Command execution failed: {e}")
+        raise
+    except OSError as e:
+        log_error(f"OS error during conversion: {e}")
+        raise
+    except ValueError as e:
+        log_error(f"Invalid value encountered: {e}")
+        raise
+    except RuntimeError as e:
+        log_error(f"Runtime error during conversion: {e}")
         raise
