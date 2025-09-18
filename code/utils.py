@@ -162,8 +162,14 @@ def get_base_device_from_partition(device_path: str) -> str:
         # If no pattern matches, return the original
         return device_path
         
-    except Exception as e:
-        log_error(f"Error processing device path '{device_path}': {str(e)}")
+    except re.error as e:
+        log_error(f"Invalid regex pattern while processing device path '{device_path}': {str(e)}")
+        return device_path
+    except TypeError as e:
+        log_error(f"Invalid device path type provided '{type(device_path)}': {str(e)}")
+        return device_path
+    except ValueError as e:
+        log_error(f"Invalid device path format '{device_path}': {str(e)}")
         return device_path
 
 
@@ -205,14 +211,23 @@ def has_mounted_partitions(device_path: str) -> bool:
                     if partition_path in mounted_devices:
                         return True
         
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            # If we can't check partitions, just check if base device is mounted
-            return device_path in mounted_devices
+        except subprocess.CalledProcessError as e:
+            log_error(f"Error executing lsblk for {device_path}: {e.stderr}")
+            return False
+        except FileNotFoundError as e:
+            log_error(f"lsblk command not found: {str(e)}")
+            return False
         
         return False
         
-    except Exception as e:
-        log_error(f"Error checking mounted partitions for {device_path}: {str(e)}")
+    except OSError as e:
+        log_error(f"OS error checking mounted partitions for {device_path}: {str(e)}")
+        return False
+    except ValueError as e:
+        log_error(f"Invalid device path format while checking mounts: {str(e)}")
+        return False
+    except TypeError as e:
+        log_error(f"Invalid type for device_path parameter: {str(e)}")
         return False
 
 
@@ -526,16 +541,25 @@ def get_disk_info(device: str) -> dict:
             'label': label
         }
         
-    except Exception as e:
-        log_error(f"Error getting disk info for {device}: {str(e)}")
-        return {
-            'device': device,
-            'size_bytes': 0,
-            'size_human': "Unknown",
-            'model': "Unknown",
-            'label': "Unknown"
-        }
-
+    except subprocess.CalledProcessError as e:
+        log_error(f"Command execution failed for {device}: {e.stderr}")
+    except FileNotFoundError as e:
+        log_error(f"Required command not found: {str(e)}")
+    except ValueError as e:
+        log_error(f"Invalid value received while processing disk info for {device}: {str(e)}")
+    except OSError as e:
+        log_error(f"OS error accessing disk {device}: {str(e)}")
+    except TypeError as e:
+        log_error(f"Invalid type provided for disk info parameters: {str(e)}")
+    
+    # Return default values if any error occurred
+    return {
+        'device': device,
+        'size_bytes': 0,
+        'size_human': "Unknown",
+        'model': "Unknown",
+        'label': "Unknown"
+    }
 
 def get_active_disk():
     """
@@ -793,9 +817,14 @@ def get_base_disk(device_name: str) -> str:
         # If no pattern matches, return the original
         return device_name
         
-    except Exception as e:
-        log_error(f"Error processing device name '{device_name}': {str(e)}")
-        return device_name
+    except re.error as e:
+        log_error(f"Invalid regex pattern while processing device name '{device_name}': {str(e)}")
+    except TypeError as e:
+        log_error(f"Invalid type for device_name parameter: {str(e)}")
+    except ValueError as e:
+        log_error(f"Invalid device name format '{device_name}': {str(e)}")
+    
+    return device_name
 
 
 def is_system_disk(device_path: str) -> bool:
@@ -816,6 +845,12 @@ def is_system_disk(device_path: str) -> bool:
             return device_name in active_disks
         
         return False
-    except Exception as e:
-        log_error(f"Error checking if {device_path} is system disk: {str(e)}")
-        return False
+        
+    except TypeError as e:
+        log_error(f"Invalid type for device path '{type(device_path)}': {str(e)}")
+    except ValueError as e:
+        log_error(f"Invalid device path format '{device_path}': {str(e)}")
+    except OSError as e:
+        log_error(f"OS error checking system disk status for {device_path}: {str(e)}")
+    
+    return False
