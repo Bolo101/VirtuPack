@@ -76,28 +76,20 @@ class P2VConverterGUI:
 
     def is_disk_unavailable_for_conversion(self, device_path):
         """
-        Check if a disk is unavailable for conversion due to being active, mounted, or in use
-        Args:
-            device_path: Full device path (e.g., '/dev/sda')
-        Returns:
-            tuple: (is_unavailable, reason_message)
+        Check if a disk is unavailable for conversion
         """
         try:
-            # Check if it's an active/system disk
             if is_system_disk(device_path):
                 return True, "This is an active system disk currently in use"
             
-            # Check if the disk or any of its partitions are mounted
             from utils import has_mounted_partitions
             if has_mounted_partitions(device_path):
                 return True, "This disk has mounted partitions"
             
-            # Additional check for specific mount points that might be from our program
             try:
                 with open('/proc/mounts', 'r') as f:
                     mounts_content = f.read()
                     
-                # Check if any partitions of this disk are mounted
                 device_name = device_path.replace('/dev/', '')
                 
                 for line in mounts_content.split('\n'):
@@ -107,20 +99,32 @@ class P2VConverterGUI:
                             mounted_device = parts[0]
                             mount_point = parts[1]
                             
-                            # Check if this mounted device belongs to our disk
                             if mounted_device.startswith('/dev/') and device_name in mounted_device:
-                                # Skip if it's just the disk itself without partitions
                                 if mounted_device != device_path:
                                     return True, f"Partition {mounted_device} is mounted at {mount_point}"
             
-            except (IOError, OSError) as e:
-                log_warning(f"Could not check mount status: {str(e)}")
+            except IOError as e:
+                log_warning(f"Could not read mount status from /proc/mounts: {str(e)}")
+            except OSError as e:
+                log_warning(f"System error checking mount status: {str(e)}")
             
             return False, "Available for conversion"
-            
-        except Exception as e:
-            log_error(f"Error checking disk availability: {str(e)}")
-            return True, "Unable to verify disk status"
+                
+        except FileNotFoundError as e:
+            log_error(f"Required file or command not found checking disk availability: {str(e)}")
+            return True, "Unable to verify disk status - file not found"
+        except PermissionError as e:
+            log_error(f"Permission denied checking disk availability: {str(e)}")
+            return True, "Unable to verify disk status - permission denied"
+        except subprocess.CalledProcessError as e:
+            log_error(f"Command failed checking disk availability: {str(e)}")
+            return True, "Unable to verify disk status - command failed"
+        except (ValueError, IndexError) as e:
+            log_error(f"Error parsing disk information: {str(e)}")
+            return True, "Unable to verify disk status - data error"
+        except OSError as e:
+            log_error(f"System error checking disk availability: {str(e)}")
+            return True, "Unable to verify disk status - system error"
     
     def create_widgets(self):
         """Create all GUI widgets - Updated version with proper QCOW2 Resizer integration"""
@@ -365,10 +369,34 @@ class P2VConverterGUI:
                 if self.source_var.get():
                     self.root.after(100, self.check_space_requirements)
                     
-        except Exception as e:
-            error_msg = f"Error in mount disk dialog: {str(e)}"
+        except PermissionError as e:
+            error_msg = f"Permission denied accessing disk mount dialog: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Mount Dialog Error", error_msg)
+            messagebox.showerror("Permission Error", error_msg)
+        except OSError as e:
+            error_msg = f"System error in disk mount dialog: {str(e)}"
+            log_error(error_msg) 
+            messagebox.showerror("System Error", error_msg)
+        except ImportError as e:
+            error_msg = f"Missing required module for disk mounting: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Import Error", error_msg)
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Command failed in disk mount dialog: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Command Error", error_msg) 
+        except ValueError as e:
+            error_msg = f"Invalid value in disk mount dialog: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Value Error", error_msg)
+        except (AttributeError, TypeError) as e:
+            error_msg = f"Internal error in disk mount dialog: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Internal Error", error_msg)
+        except tk.TclError as e:
+            error_msg = f"Dialog window error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Dialog Error", error_msg)
     
     def create_status_frame(self):
         """Create the status frame at the bottom"""
@@ -480,27 +508,21 @@ class P2VConverterGUI:
         self.last_log_count = 0
     
     def refresh_disks(self):
-        """Refresh the list of available disks with enhanced status information"""
+        """Refresh the list of available disks"""
         try:
             log_info("Refreshing disk list")
-            
-            # Get list of disks using updated function
             self.current_disks = get_disk_list()
             
             if self.current_disks:
-                # Format disk info for display with improved labeling and status
                 disk_options = []
                 unavailable_count = 0
                 
                 for disk in self.current_disks:
-                    # Create base display string
                     disk_info = f"{disk['device']} ({disk['size']}) - {disk['model']}"
                     
-                    # Add label if available
                     if disk['label'] and disk['label'] != "No Label":
                         disk_info += f" [{disk['label']}]"
                     
-                    # Check availability status
                     is_unavailable, reason = self.is_disk_unavailable_for_conversion(disk['device'])
                     
                     if is_unavailable:
@@ -514,16 +536,13 @@ class P2VConverterGUI:
                     
                     disk_options.append(disk_info)
                 
-                # Update combobox
                 self.source_combo['values'] = disk_options
                 
-                # Clear previous selection if it's no longer valid
                 if self.source_var.get() not in disk_options:
                     self.source_var.set("")
                 
                 log_info(f"Found {len(self.current_disks)} disk(s)")
                 
-                # Update status with availability info
                 available_count = len(self.current_disks) - unavailable_count
                 if unavailable_count > 0:
                     self.status_var.set(f"Found {len(self.current_disks)} disk(s) ({available_count} available, {unavailable_count} unavailable)")
@@ -535,18 +554,33 @@ class P2VConverterGUI:
                 self.status_var.set("No disks found")
                 self.source_combo['values'] = []
                 
-        except (OSError, IOError) as e:
+        except OSError as e:
             error_msg = f"System error refreshing disks: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("System Error", error_msg)
             self.status_var.set("Error refreshing disks")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            error_msg = f"Command execution error refreshing disks: {str(e)}"
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Command execution error: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("Command Error", error_msg)
             self.status_var.set("Error refreshing disks")
-        except (ValueError, KeyError, AttributeError, TypeError) as e:
-            error_msg = f"Data parsing error refreshing disks: {str(e)}"
+        except FileNotFoundError as e:
+            error_msg = f"Required command not found: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Command Error", error_msg)
+            self.status_var.set("Error refreshing disks")
+        except (ValueError, KeyError) as e:
+            error_msg = f"Data parsing error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Data Error", error_msg)
+            self.status_var.set("Error refreshing disks")
+        except PermissionError as e:
+            error_msg = f"Permission denied accessing disk information: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Permission Error", error_msg)
+            self.status_var.set("Error refreshing disks")
+        except AttributeError as e:
+            error_msg = f"Invalid data structure returned: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("Data Error", error_msg)
             self.status_var.set("Error refreshing disks")
@@ -865,34 +899,70 @@ class P2VConverterGUI:
                 completion_text += f"Use 'Resize QCOW2...' button to optimize disk size if needed."
                 
                 self.root.after(0, lambda: messagebox.showinfo("Conversion Complete", completion_text))
-            
+        
+        except FileNotFoundError as e:
+            error_msg = f"Required command or file not found: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Command Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+                
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Command execution failed: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Command Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+                
+        except PermissionError as e:
+            error_msg = f"Permission denied accessing disk or output directory: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Permission Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+                
+        except OSError as e:
+            error_msg = f"System error during disk operation: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("System Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+                
+        except ValueError as e:
+            error_msg = f"Invalid value or parameter: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Value Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+                
+        except TypeError as e:
+            error_msg = f"Type error in conversion process: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Type Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+                
+        except AttributeError as e:
+            error_msg = f"Object attribute error during conversion: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Attribute Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+                
         except KeyboardInterrupt:
             log_warning("P2V conversion cancelled by user")
-        except (OSError, IOError) as e:
-            error_msg = f"System error during P2V conversion: {str(e)}"
+            self.root.after(0, lambda: messagebox.showinfo("Cancelled", 
+                "P2V conversion was cancelled by user"))
+                
+        except MemoryError as e:
+            error_msg = "Insufficient memory to perform conversion"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Conversion Failed", 
+            self.root.after(0, lambda: messagebox.showerror("Memory Error", 
                 f"P2V conversion failed:\n\n{error_msg}"))
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            error_msg = f"Command execution error during P2V conversion: {str(e)}"
+                
+        except Exception as e:
+            error_msg = f"Unexpected error during conversion: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Conversion Failed", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        except (ValueError, TypeError, AttributeError) as e:
-            error_msg = f"Data processing error during P2V conversion: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Conversion Failed", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        except PermissionError as e:
-            error_msg = f"Permission denied during P2V conversion: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Conversion Failed", 
+            self.root.after(0, lambda: messagebox.showerror("Unexpected Error", 
                 f"P2V conversion failed:\n\n{error_msg}"))
         
         finally:
             # Reset UI in main thread
             self.root.after(0, self._reset_ui_after_operation)
-    
+
     def _update_progress(self, percent, status):
         """Update progress bar and status from worker thread"""
         # Ensure percent is within valid range
@@ -978,13 +1048,12 @@ class P2VConverterGUI:
             
             # Show success message with option to open location
             result = messagebox.askyesnocancel("PDF Generated", 
-                                             f"Session log PDF generated successfully!\n\n"
-                                             f"Location: {pdf_path}\n\n"
-                                             f"Would you like to open the containing folder?")
+                                            f"Session log PDF generated successfully!\n\n"
+                                            f"Location: {pdf_path}\n\n"
+                                            f"Would you like to open the containing folder?")
             
             if result:  # Yes - open folder
                 try:
-                    import subprocess
                     import platform
                     folder_path = os.path.dirname(pdf_path)
                     
@@ -994,37 +1063,38 @@ class P2VConverterGUI:
                         subprocess.run(["open", folder_path])
                     elif platform.system() == "Windows":
                         subprocess.run(["explorer", folder_path])
-                except (OSError, subprocess.CalledProcessError, FileNotFoundError) as e:
-                    log_warning(f"Could not open folder: {str(e)}")
+                except FileNotFoundError as e:
+                    log_warning(f"Folder not found: {str(e)}")
+                    messagebox.showerror("Error", f"Could not find folder: {str(e)}")
+                except subprocess.CalledProcessError as e:
+                    log_warning(f"Failed to open folder: {str(e)}")
+                    messagebox.showerror("Error", f"Failed to open folder: {str(e)}")
+                except OSError as e:
+                    log_warning(f"System error opening folder: {str(e)}")
+                    messagebox.showerror("Error", f"System error opening folder: {str(e)}")
             
             log_info(f"Session PDF generated: {pdf_path}")
             
         except ValueError as e:
-            # Handle case where no session logs are available
             log_warning(f"Cannot generate session PDF: {str(e)}")
-            messagebox.showwarning("No Session Data", 
-                                 f"Cannot generate session PDF:\n\n{str(e)}")
-        except (PermissionError, OSError, IOError) as e:
-            error_msg = f"Failed to generate session PDF: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("PDF Generation Error", 
-                               f"Failed to generate PDF:\n\n{error_msg}")
+            messagebox.showerror("PDF Generation Error", f"Cannot generate session PDF:\n\n{str(e)}")
+        except PermissionError as e:
+            log_error(f"Permission denied: {str(e)}")
+            messagebox.showerror("Permission Error", f"Permission denied generating PDF:\n\n{str(e)}")
+        except OSError as e:
+            log_error(f"System error generating PDF: {str(e)}")
+            messagebox.showerror("System Error", f"System error generating PDF:\n\n{str(e)}")
         except ImportError as e:
-            error_msg = f"Missing required module for PDF generation: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("PDF Generation Error", 
-                               f"Missing dependency:\n\n{error_msg}")
-        except (AttributeError, TypeError, KeyError) as e:
-            error_msg = f"Unexpected error generating session PDF: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("PDF Generation Error", 
-                               f"Unexpected error:\n\n{error_msg}")
-        
+            log_error(f"Missing required module: {str(e)}")
+            messagebox.showerror("Module Error", f"Missing required module:\n\n{str(e)}")
+        except (AttributeError, TypeError) as e:
+            log_error(f"Internal error generating PDF: {str(e)}")
+            messagebox.showerror("Internal Error", f"Internal error generating PDF:\n\n{str(e)}")
         finally:
             # Re-enable button and reset status
             self.session_pdf_btn.config(state=tk.NORMAL)
             self.status_var.set("Ready")
-    
+        
     def generate_log_file_pdf(self):
         """Generate PDF from complete log file"""
         try:
