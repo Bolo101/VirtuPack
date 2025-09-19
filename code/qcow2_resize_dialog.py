@@ -93,8 +93,16 @@ class QCow2CloneResizer:
                 'format': data.get('format', 'unknown'),
                 'compressed': data.get('compressed', False)
             }
-        except Exception as e:
-            raise Exception(f"Failed to analyze image: {e}")
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"qemu-img failed to analyze image: {e}")
+        except subprocess.TimeoutExpired:
+            raise Exception(f"qemu-img timed out while analyzing image: {image_path}")
+        except json.JSONDecodeError as e:
+            raise Exception(f"Failed to parse qemu-img JSON output: {e}")
+        except FileNotFoundError:
+            raise Exception(f"Image file not found: {image_path}")
+        except PermissionError:
+            raise Exception(f"Permission denied accessing image: {image_path}")
     
     @staticmethod
     def setup_nbd_device(image_path, progress_callback=None, exclude_devices=None):
@@ -139,8 +147,10 @@ class QCow2CloneResizer:
                 except subprocess.TimeoutExpired:
                     print(f"Device {device} check timed out, assuming busy")
                     device_available = False
-                except Exception as e:
-                    print(f"Error checking {device} with qemu-nbd --list: {e}")
+                except FileNotFoundError:
+                    print(f"qemu-nbd not found for checking {device}")
+                except subprocess.SubprocessError as e:
+                    print(f"Subprocess error checking {device} with qemu-nbd --list: {e}")
                     # Continue with other checks
                 
                 if not device_available:
@@ -159,8 +169,13 @@ class QCow2CloneResizer:
                             print(f"Device {device} has size {size}, appears connected")
                             device_available = False
                     
-                except Exception as e:
-                    print(f"Error checking {device} size: {e}")
+                except ValueError as e:
+                    print(f"Error parsing size for {device}: {e}")
+                    # This is actually good - means device is likely free
+                except FileNotFoundError:
+                    print(f"blockdev command not found for checking {device}")
+                except subprocess.SubprocessError as e:
+                    print(f"Subprocess error checking {device} size: {e}")
                     # This is actually good - means device is likely free
                 
                 if not device_available:
@@ -179,8 +194,10 @@ class QCow2CloneResizer:
                             print(f"Device {device} has partitions: {lines}")
                             device_available = False
                     
-                except Exception as e:
-                    print(f"Error checking {device} with lsblk: {e}")
+                except FileNotFoundError:
+                    print(f"lsblk command not found for checking {device}")
+                except subprocess.SubprocessError as e:
+                    print(f"Subprocess error checking {device} with lsblk: {e}")
                 
                 if device_available:
                     nbd_device = device
@@ -199,8 +216,12 @@ class QCow2CloneResizer:
                             print(f"Force disconnecting {device}...")
                             subprocess.run(['qemu-nbd', '--disconnect', device], 
                                         capture_output=True, timeout=5, check=False)
-                        except:
-                            pass
+                        except subprocess.TimeoutExpired:
+                            print(f"Timeout while disconnecting {device}")
+                        except subprocess.SubprocessError as e:
+                            print(f"Subprocess error disconnecting {device}: {e}")
+                        except FileNotFoundError:
+                            print(f"qemu-nbd not found for disconnecting {device}")
                 
                 # Wait and try again
                 time.sleep(3)
@@ -258,11 +279,21 @@ class QCow2CloneResizer:
                             nbd_device = alt_device
                             print(f"Successfully connected to {alt_device}")
                             break
-                        except Exception as alt_e:
-                            print(f"Alternative device {alt_device} also failed: {alt_e}")
+                        except subprocess.CalledProcessError as alt_e:
+                            print(f"Alternative device {alt_device} connection failed: {alt_e}")
+                            continue
+                        except subprocess.TimeoutExpired:
+                            print(f"Alternative device {alt_device} connection timed out")
+                            continue
+                        except FileNotFoundError:
+                            print(f"qemu-nbd not found for alternative device {alt_device}")
                             continue
                 else:
                     raise Exception(f"Could not connect to any NBD device. Last error: {error_details}")
+            except subprocess.TimeoutExpired:
+                raise Exception(f"NBD connection timed out for device {nbd_device}")
+            except FileNotFoundError:
+                raise Exception("qemu-nbd command not found")
             
             # Wait for device to be ready
             print(f"Waiting for {nbd_device} to be ready...")
@@ -284,8 +315,12 @@ class QCow2CloneResizer:
                         if result.stdout.strip():
                             print(f"Device info:\n{result.stdout}")
                         break
-                except Exception as e:
-                    print(f"Attempt {attempt + 1}: Device check failed: {e}")
+                except subprocess.TimeoutExpired:
+                    print(f"Attempt {attempt + 1}: Device check timed out")
+                except FileNotFoundError:
+                    print(f"Attempt {attempt + 1}: lsblk command not found")
+                except subprocess.SubprocessError as e:
+                    print(f"Attempt {attempt + 1}: Device check subprocess error: {e}")
                 
                 if attempt == max_attempts - 1:
                     print(f"Warning: NBD device setup may be incomplete after {max_attempts} attempts")
@@ -293,9 +328,15 @@ class QCow2CloneResizer:
             
             return nbd_device
             
-        except Exception as e:
-            print(f"ERROR in setup_nbd_device: {e}")
-            raise Exception(f"Failed to setup NBD device: {e}")
+        except FileNotFoundError:
+            print(f"ERROR: Required command not found during NBD setup")
+            raise Exception("Required system commands not available for NBD setup")
+        except PermissionError:
+            print(f"ERROR: Permission denied during NBD setup")
+            raise Exception("Permission denied - run as root or with sudo")
+        except OSError as e:
+            print(f"ERROR: System error during NBD setup: {e}")
+            raise Exception(f"System error during NBD setup: {e}")
 
     @staticmethod
     def cleanup_nbd_device(nbd_device):
@@ -327,8 +368,11 @@ class QCow2CloneResizer:
                 except subprocess.TimeoutExpired:
                     print(f"Disconnect attempt {attempt + 1} timed out")
                     time.sleep(2)
-                except Exception as e:
-                    print(f"Disconnect attempt {attempt + 1} error: {e}")
+                except FileNotFoundError:
+                    print(f"Disconnect attempt {attempt + 1}: qemu-nbd command not found")
+                    time.sleep(2)
+                except subprocess.SubprocessError as e:
+                    print(f"Disconnect attempt {attempt + 1} subprocess error: {e}")
                     time.sleep(2)
             
             if not success:
@@ -339,8 +383,12 @@ class QCow2CloneResizer:
                     subprocess.run(['pkill', '-f', f'qemu-nbd.*{nbd_device}'], 
                                 check=False, timeout=10)
                     time.sleep(2)
-                except:
-                    pass
+                except subprocess.TimeoutExpired:
+                    print("pkill command timed out")
+                except FileNotFoundError:
+                    print("pkill command not found")
+                except subprocess.SubprocessError as e:
+                    print(f"pkill subprocess error: {e}")
             
             # Final verification
             time.sleep(2)
@@ -351,11 +399,17 @@ class QCow2CloneResizer:
                     print(f"NBD device {nbd_device} appears to be disconnected")
                 else:
                     print(f"Warning: {nbd_device} may still be connected")
-            except:
-                print(f"NBD device {nbd_device} disconnect status unknown")
+            except subprocess.TimeoutExpired:
+                print(f"NBD device {nbd_device} disconnect verification timed out")
+            except FileNotFoundError:
+                print(f"lsblk command not found for verification")
+            except subprocess.SubprocessError as e:
+                print(f"NBD device {nbd_device} disconnect verification subprocess error: {e}")
                 
-        except Exception as e:
-            print(f"Error in cleanup_nbd_device: {e}")
+        except OSError as e:
+            print(f"OS error in cleanup_nbd_device: {e}")
+        except PermissionError:
+            print(f"Permission error in cleanup_nbd_device")
 
     # Also need a simple helper to check if a specific NBD device is actually free
     @staticmethod
@@ -372,8 +426,12 @@ class QCow2CloneResizer:
                                     capture_output=True, text=True, timeout=3, check=False)
                 if result.returncode == 0 and int(result.stdout.strip()) > 0:
                     return False
-            except:
-                pass
+            except ValueError as e:
+                print(f"Error parsing blockdev size for {device_path}: {e}")
+            except FileNotFoundError:
+                print(f"blockdev command not found for {device_path}")
+            except subprocess.SubprocessError as e:
+                print(f"blockdev subprocess error for {device_path}: {e}")
             
             # 2. Does qemu-nbd think it's connected?
             try:
@@ -381,8 +439,12 @@ class QCow2CloneResizer:
                                     capture_output=True, text=True, timeout=3, check=False)
                 if result.returncode == 0:
                     return False
-            except:
-                pass
+            except subprocess.TimeoutExpired:
+                print(f"qemu-nbd list timed out for {device_path}")
+            except FileNotFoundError:
+                print(f"qemu-nbd command not found for {device_path}")
+            except subprocess.SubprocessError as e:
+                print(f"qemu-nbd list subprocess error for {device_path}: {e}")
             
             # 3. Does lsblk show partitions?
             try:
@@ -392,13 +454,21 @@ class QCow2CloneResizer:
                     lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
                     if len(lines) > 1:
                         return False
-            except:
-                pass
+            except FileNotFoundError:
+                print(f"lsblk command not found for {device_path}")
+            except subprocess.SubprocessError as e:
+                print(f"lsblk subprocess error for {device_path}: {e}")
             
             return True
             
-        except Exception as e:
-            print(f"Error checking if {device_path} is free: {e}")
+        except FileNotFoundError:
+            print(f"Device file not found: {device_path}")
+            return False
+        except PermissionError:
+            print(f"Permission denied checking if {device_path} is free")
+            return False
+        except OSError as e:
+            print(f"OS error checking if {device_path} is free: {e}")
             return False
     
     @staticmethod
@@ -525,8 +595,16 @@ class QCow2CloneResizer:
                 'partition_count': len(partitions)
             }
             
-        except Exception as e:
-            raise Exception(f"Failed to analyze partition layout: {e}")
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"parted command failed: {e}")
+        except subprocess.TimeoutExpired:
+            raise Exception(f"parted command timed out for device {nbd_device}")
+        except FileNotFoundError:
+            raise Exception("parted command not found")
+        except ValueError as e:
+            raise Exception(f"Failed to parse partition information: {e}")
+        except IndexError as e:
+            raise Exception(f"Unexpected parted output format: {e}")
     
     @staticmethod
     def launch_gparted(nbd_device):
@@ -557,8 +635,11 @@ class QCow2CloneResizer:
                             return True
                         except subprocess.TimeoutExpired:
                             raise Exception("GParted operation timed out (1 hour limit)")
-                        except Exception as e:
-                            print(f"Failed with {cmd[0]}: {e}")
+                        except subprocess.CalledProcessError as e:
+                            print(f"Failed with {cmd[0]}: return code {e.returncode}")
+                            continue
+                        except FileNotFoundError:
+                            print(f"Command {cmd[0]} not found")
                             continue
                 
                 print("Warning: No privilege escalation found, trying direct launch")
@@ -569,8 +650,12 @@ class QCow2CloneResizer:
             
         except subprocess.TimeoutExpired:
             raise Exception("GParted operation timed out (1 hour limit)")
-        except Exception as e:
-            raise Exception(f"Could not launch GParted: {e}")
+        except FileNotFoundError:
+            raise Exception("GParted command not found")
+        except PermissionError:
+            raise Exception("Permission denied launching GParted")
+        except OSError as e:
+            raise Exception(f"System error launching GParted: {e}")
     
     @staticmethod
     def create_new_qcow2_image(target_path, size_bytes, progress_callback=None):
@@ -631,7 +716,11 @@ class QCow2CloneResizer:
             raise Exception(error_msg)
         except subprocess.TimeoutExpired:
             raise Exception("Image creation timed out (10 minutes)")
-        except Exception as e:
+        except FileNotFoundError:
+            raise Exception("qemu-img command not found")
+        except PermissionError:
+            raise Exception(f"Permission denied creating image: {target_path}")
+        except OSError as e:
             print(f"ERROR creating image: {e}")
             raise Exception(f"Failed to create image: {e}")
     
@@ -712,9 +801,18 @@ class QCow2CloneResizer:
             
             return True
             
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             print(f"ERROR in clone_disk_structure: {e}")
             raise Exception(f"Failed to clone structure: {e}")
+        except subprocess.TimeoutExpired:
+            raise Exception("Disk structure cloning timed out")
+        except FileNotFoundError:
+            raise Exception("Required command not found for disk structure cloning")
+        except PermissionError:
+            raise Exception("Permission denied during disk structure cloning")
+        except OSError as e:
+            print(f"ERROR in clone_disk_structure: {e}")
+            raise Exception(f"System error during disk structure cloning: {e}")
     
     @staticmethod
     def clone_partition_data(source_nbd, target_nbd, layout_info, progress_callback=None):
@@ -776,8 +874,12 @@ class QCow2CloneResizer:
                                                capture_output=True, text=True, check=True)
                     source_size = int(size_result.stdout.strip())
                     print(f"Source partition {partition_num} size: {QCow2CloneResizer.format_size(source_size)}")
-                except Exception as e:
+                except subprocess.CalledProcessError as e:
                     print(f"Could not get source partition size: {e}")
+                except ValueError as e:
+                    print(f"Could not parse source partition size: {e}")
+                except FileNotFoundError:
+                    print(f"blockdev command not found for partition size check")
                 
                 # Clone partition with dd
                 cmd = [
@@ -816,8 +918,11 @@ class QCow2CloneResizer:
                 except subprocess.CalledProcessError as e:
                     print(f"ERROR cloning partition {partition_num}: {e}")
                     continue
-                except Exception as e:
-                    print(f"Unexpected error cloning partition {partition_num}: {e}")
+                except FileNotFoundError:
+                    print(f"dd command not found for cloning partition {partition_num}")
+                    continue
+                except OSError as e:
+                    print(f"System error cloning partition {partition_num}: {e}")
                     continue
             
             if progress_callback:
@@ -826,9 +931,12 @@ class QCow2CloneResizer:
             print("All partitions processed successfully")
             return True
             
-        except Exception as e:
+        except ValueError as e:
             print(f"ERROR in clone_partition_data: {e}")
             raise Exception(f"Failed to clone data: {e}")
+        except OSError as e:
+            print(f"ERROR in clone_partition_data: {e}")
+            raise Exception(f"System error during partition cloning: {e}")
     
     @staticmethod
     def clone_to_new_image(source_path, target_path, new_size_bytes, progress_callback=None):
@@ -915,7 +1023,7 @@ class QCow2CloneResizer:
             
             return True
             
-        except Exception as e:
+        except FileNotFoundError as e:
             print(f"ERROR in clone_to_new_image: {e}")
             if source_nbd:
                 try:
@@ -936,15 +1044,68 @@ class QCow2CloneResizer:
                 except:
                     pass
             
-            raise e
+            raise Exception(f"Required command not found: {e}")
+        except PermissionError as e:
+            print(f"ERROR in clone_to_new_image: {e}")
+            if source_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                except:
+                    pass
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    print(f"Removing incomplete target file: {target_path}")
+                    os.remove(target_path)
+                except:
+                    pass
+            
+            raise Exception(f"Permission denied: {e}")
+        except OSError as e:
+            print(f"ERROR in clone_to_new_image: {e}")
+            if source_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                except:
+                    pass
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    print(f"Removing incomplete target file: {target_path}")
+                    os.remove(target_path)
+                except:
+                    pass
+            
+            raise Exception(f"System error: {e}")
     
     @staticmethod
     def create_backup(image_path):
         """Create backup of image"""
-        backup_path = f"{image_path}.backup.{int(time.time())}"
-        print(f"Creating backup: {image_path} -> {backup_path}")
-        shutil.copy2(image_path, backup_path)
-        return backup_path
+        try:
+            backup_path = f"{image_path}.backup.{int(time.time())}"
+            print(f"Creating backup: {image_path} -> {backup_path}")
+            shutil.copy2(image_path, backup_path)
+            return backup_path
+        except FileNotFoundError:
+            raise Exception(f"Source image not found: {image_path}")
+        except PermissionError:
+            raise Exception(f"Permission denied creating backup")
+        except OSError as e:
+            raise Exception(f"System error creating backup: {e}")
+        except shutil.Error as e:
+            raise Exception(f"Copy error creating backup: {e}")
     
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
                                         existing_source_nbd, layout_info, progress_callback=None):
@@ -1011,8 +1172,12 @@ class QCow2CloneResizer:
                                             capture_output=True, check=True, timeout=15)
                 print(f"Source device size: {source_check.stdout.strip()} bytes")
                 print(f"Target device size: {target_check.stdout.strip()} bytes")
-            except Exception as e:
+            except subprocess.CalledProcessError as e:
                 raise Exception(f"Device accessibility check failed: {e}")
+            except subprocess.TimeoutExpired:
+                raise Exception(f"Device accessibility check timed out")
+            except FileNotFoundError:
+                raise Exception(f"blockdev command not found for accessibility check")
             
             # Step 3: Clone disk structure
             if progress_callback:
@@ -1076,15 +1241,25 @@ class QCow2CloneResizer:
                     
                     return True
                     
-                except Exception as verify_error:
-                    print(f"Verification attempt {verify_attempt + 1} failed: {verify_error}")
+                except FileNotFoundError as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed - file not found: {verify_error}")
                     if verify_attempt == 2:  # Last attempt
-                        raise Exception(f"Target image verification failed: {verify_error}")
+                        raise Exception(f"Target image verification failed - file not found: {verify_error}")
+                    time.sleep(3)
+                except PermissionError as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed - permission denied: {verify_error}")
+                    if verify_attempt == 2:  # Last attempt
+                        raise Exception(f"Target image verification failed - permission denied: {verify_error}")
+                    time.sleep(3)
+                except OSError as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed - system error: {verify_error}")
+                    if verify_attempt == 2:  # Last attempt
+                        raise Exception(f"Target image verification failed - system error: {verify_error}")
                     time.sleep(3)
             
             return True
             
-        except Exception as e:
+        except FileNotFoundError as e:
             print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
             import traceback
             traceback.print_exc()
@@ -1094,8 +1269,8 @@ class QCow2CloneResizer:
                 try:
                     print(f"Emergency cleanup of target NBD: {target_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except Exception as cleanup_error:
-                    print(f"Error cleaning up target NBD: {cleanup_error}")
+                except:
+                    pass
             
             # Clean up partial target file
             if target_path and os.path.exists(target_path):
@@ -1104,10 +1279,82 @@ class QCow2CloneResizer:
                     print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
                     os.remove(target_path)
                     print("Incomplete target file removed successfully")
-                except Exception as file_error:
+                except OSError as file_error:
                     print(f"Could not remove incomplete file: {file_error}")
             
-            raise e
+            raise Exception(f"Required command not found: {e}")
+        except PermissionError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise Exception(f"Permission denied: {e}")
+        except OSError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise Exception(f"System error: {e}")
+        except ValueError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise Exception(f"Invalid value error: {e}")
 
 
 class NewSizeDialog:
@@ -1163,180 +1410,261 @@ class NewSizeDialog:
             
             # Wait for the dialog to complete
             self.dialog.wait_window()
-        except Exception as e:
-            print(f"Dialog wait error: {e}")
+        except tk.TclError as e:
+            print(f"Dialog wait TCL error: {e}")
+            self.result = None
+        except AttributeError as e:
+            print(f"Dialog wait attribute error: {e}")
+            self.result = None
+        except RuntimeError as e:
+            print(f"Dialog wait runtime error: {e}")
+            self.result = None
+        except OSError as e:
+            print(f"Dialog wait system error: {e}")
             self.result = None
     
     # Fix for NewSizeDialog.setup_ui method - Replace lines 795-940 in your code
 
     def setup_ui(self):
         """Setup dialog UI with scrollable content"""
-        # Create main container
-        main_container = ttk.Frame(self.dialog)
-        main_container.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # Create scrollable frame
-        canvas = tk.Canvas(main_container)
-        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Pack scrollable components
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Enable mouse wheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        
-        # Main content in scrollable frame
-        content_frame = ttk.Frame(scrollable_frame, padding="15")
-        content_frame.pack(fill="both", expand=True)
-        
-        # Title
-        title = ttk.Label(content_frame, text="Create New Image - Final Size Selection", 
-                        font=("Arial", 16, "bold"))
-        title.pack(pady=(0, 15))
-        
-        # GParted Changes Summary
-        changes_frame = ttk.LabelFrame(content_frame, text="GParted Partition Changes", padding="10")
-        changes_frame.pack(fill="x", pady=(0, 15))
-        
-        changes_info = "GParted operations completed successfully!\n\n"
-        changes_info += f"Partition modifications: {self.partition_changes}\n\n"
-        
-        if self.final_layout_info['partitions']:
-            changes_info += "Final partition layout:\n"
-            for i, part in enumerate(self.final_layout_info['partitions']):
-                changes_info += f"  Partition {part['number']}: {part['start']} - {part['end']} ({part['size']})\n"
-        
-        changes_label = ttk.Label(changes_frame, text=changes_info, justify="left", font=("Arial", 9))
-        changes_label.pack()
-        
-        # Size Requirements
-        status_frame = ttk.LabelFrame(content_frame, text="Size Requirements", padding="10")
-        status_frame.pack(fill="x", pady=(0, 15))
-        
-        last_partition_end = self.final_layout_info['last_partition_end_bytes']
-        min_size_with_buffer = self.final_layout_info['required_minimum_bytes']
-        
-        current_info = f"Original Image Size: {QCow2CloneResizer.format_size(self.original_size)}\n"
-        current_info += f"Last Partition Ends At: {QCow2CloneResizer.format_size(last_partition_end)}\n"
-        current_info += f"Required New Size: {QCow2CloneResizer.format_size(min_size_with_buffer)} (partition end + 200MB buffer)\n\n"
-        
-        if min_size_with_buffer < self.original_size:
-            saved = self.original_size - min_size_with_buffer
-            current_info += f"Space Savings: {QCow2CloneResizer.format_size(saved)} "
-            current_info += f"({(saved/self.original_size*100):.1f}% reduction)"
-        elif min_size_with_buffer > self.original_size:
-            added = min_size_with_buffer - self.original_size
-            current_info += f"Additional Space Needed: {QCow2CloneResizer.format_size(added)}"
-        else:
-            current_info += f"Same space requirements as original"
-        
-        status_label = ttk.Label(status_frame, text=current_info, justify="left", font=("Arial", 9))
-        status_label.pack()
-        
-        # Size Selection
-        size_frame = ttk.LabelFrame(content_frame, text="New Image Size Selection", padding="10")
-        size_frame.pack(fill="x", pady=(0, 15))
-        
-        self.choice = tk.StringVar(value="calculated")
-        
-        # Option 1: Use calculated size (recommended)
-        calc_frame = ttk.Frame(size_frame)
-        calc_frame.pack(fill="x", pady=2)
-        calc_radio = ttk.Radiobutton(calc_frame, text=f"Use Calculated Size: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
-                                    variable=self.choice, value="calculated")
-        calc_radio.pack(side="left")
-        ttk.Label(calc_frame, text="(RECOMMENDED)", font=("Arial", 8, "bold"), foreground="green").pack(side="left", padx=(5, 0))
-        
-        # Option 2: Same as original (if sufficient)
-        if self.original_size >= min_size_with_buffer:
-            ttk.Radiobutton(size_frame, text=f"Keep Original Size: {QCow2CloneResizer.format_size(self.original_size)} (no space savings)", 
-                        variable=self.choice, value="original").pack(anchor="w", pady=2)
-        else:
-            # Original is too small
-            shortage = min_size_with_buffer - self.original_size
-            ttk.Label(size_frame, text=f"Original size insufficient - needs {QCow2CloneResizer.format_size(shortage)} more space", 
-                    foreground="red", font=("Arial", 8)).pack(anchor="w", pady=2)
-        
-        # Option 3: Custom size
-        custom_frame = ttk.Frame(size_frame)
-        custom_frame.pack(fill="x", pady=(8, 0))
-        
-        ttk.Radiobutton(custom_frame, text="Custom size:", 
-                    variable=self.choice, value="custom").pack(side="left")
-        
-        # Default custom size
-        default_gb = max(1, int(min_size_with_buffer / (1024**3)) + 1)
-        self.custom_size = tk.StringVar(value=f"{default_gb}G")
-        custom_entry = ttk.Entry(custom_frame, textvariable=self.custom_size, width=12, font=("Arial", 9))
-        custom_entry.pack(side="left", padx=(10, 10))
-        
-        ttk.Label(custom_frame, text="(e.g. 100G, 512M, 2T)", font=("Arial", 8)).pack(side="left")
-        
-        # Show minimum size warning
-        warning_frame = ttk.Frame(size_frame)
-        warning_frame.pack(fill="x", pady=(8, 0))
-        ttk.Label(warning_frame, text=f"WARNING: Minimum size required: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
-                font=("Arial", 8), foreground="orange").pack(anchor="w")
-        
-        # What Happens Next
-        exp_frame = ttk.LabelFrame(content_frame, text="What Happens Next", padding="10")
-        exp_frame.pack(fill="x", pady=(0, 20))
-        
-        explanation = ("1. Create new empty image with selected size (using preallocation=metadata)\n"
-                    "2. Copy partition table structure from current image\n"
-                    "3. Clone each partition with all your GParted changes\n"
-                    "4. Preserve bootloader and all modifications\n\n"
-                    "All your partition resizing and changes will be preserved.")
-        
-        exp_label = ttk.Label(exp_frame, text=explanation, wraplength=500, justify="left", font=("Arial", 9))
-        exp_label.pack()
-        
-        # Buttons outside scrollable area, always visible
-        button_container = ttk.Frame(main_container)
-        button_container.pack(fill="x", pady=(10, 0))
-        
-        # Separator line
-        separator = ttk.Separator(button_container, orient="horizontal")
-        separator.pack(fill="x", pady=(0, 10))
-        
-        # Buttons frame
-        button_frame = ttk.Frame(button_container)
-        button_frame.pack(fill="x")
-        
-        # FIXED: Create buttons without ipadx/ipady parameters
-        create_btn = ttk.Button(button_frame, text="Create New Optimized Image", 
-                            command=self.create_new)
-        create_btn.pack(side="right", padx=(10, 0), pady=5)
-        
-        cancel_btn = ttk.Button(button_frame, text="Skip Cloning", 
-                            command=self.skip_cloning)
-        cancel_btn.pack(side="right", pady=5)
-        
-        # Add keyboard shortcuts
-        self.dialog.bind('<Return>', lambda e: self.create_new())
-        self.dialog.bind('<Escape>', lambda e: self.skip_cloning())
-        
-        # Focus on the create button
-        create_btn.focus_set()
+        try:
+            # Create main container
+            main_container = ttk.Frame(self.dialog)
+            main_container.pack(fill="both", expand=True, padx=10, pady=10)
+            
+            # Create scrollable frame
+            canvas = tk.Canvas(main_container)
+            scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+            scrollable_frame = ttk.Frame(canvas)
+            
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+            
+            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+            
+            # Pack scrollable components
+            canvas.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            
+            # Enable mouse wheel scrolling
+            def _on_mousewheel(event):
+                try:
+                    canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+                except tk.TclError as e:
+                    print(f"Mouse wheel scroll TCL error: {e}")
+                except AttributeError as e:
+                    print(f"Mouse wheel scroll attribute error: {e}")
+                except ValueError as e:
+                    print(f"Mouse wheel scroll value error: {e}")
+            
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            
+            # Main content in scrollable frame
+            content_frame = ttk.Frame(scrollable_frame, padding="15")
+            content_frame.pack(fill="both", expand=True)
+            
+            # Title
+            title = ttk.Label(content_frame, text="Create New Image - Final Size Selection", 
+                            font=("Arial", 16, "bold"))
+            title.pack(pady=(0, 15))
+            
+            # GParted Changes Summary
+            changes_frame = ttk.LabelFrame(content_frame, text="GParted Partition Changes", padding="10")
+            changes_frame.pack(fill="x", pady=(0, 15))
+            
+            changes_info = "GParted operations completed successfully!\n\n"
+            changes_info += f"Partition modifications: {self.partition_changes}\n\n"
+            
+            if self.final_layout_info['partitions']:
+                changes_info += "Final partition layout:\n"
+                for i, part in enumerate(self.final_layout_info['partitions']):
+                    changes_info += f"  Partition {part['number']}: {part['start']} - {part['end']} ({part['size']})\n"
+            
+            changes_label = ttk.Label(changes_frame, text=changes_info, justify="left", font=("Arial", 9))
+            changes_label.pack()
+            
+            # Size Requirements
+            status_frame = ttk.LabelFrame(content_frame, text="Size Requirements", padding="10")
+            status_frame.pack(fill="x", pady=(0, 15))
+            
+            last_partition_end = self.final_layout_info['last_partition_end_bytes']
+            min_size_with_buffer = self.final_layout_info['required_minimum_bytes']
+            
+            current_info = f"Original Image Size: {QCow2CloneResizer.format_size(self.original_size)}\n"
+            current_info += f"Last Partition Ends At: {QCow2CloneResizer.format_size(last_partition_end)}\n"
+            current_info += f"Required New Size: {QCow2CloneResizer.format_size(min_size_with_buffer)} (partition end + 200MB buffer)\n\n"
+            
+            if min_size_with_buffer < self.original_size:
+                saved = self.original_size - min_size_with_buffer
+                current_info += f"Space Savings: {QCow2CloneResizer.format_size(saved)} "
+                current_info += f"({(saved/self.original_size*100):.1f}% reduction)"
+            elif min_size_with_buffer > self.original_size:
+                added = min_size_with_buffer - self.original_size
+                current_info += f"Additional Space Needed: {QCow2CloneResizer.format_size(added)}"
+            else:
+                current_info += f"Same space requirements as original"
+            
+            status_label = ttk.Label(status_frame, text=current_info, justify="left", font=("Arial", 9))
+            status_label.pack()
+            
+            # Size Selection
+            size_frame = ttk.LabelFrame(content_frame, text="New Image Size Selection", padding="10")
+            size_frame.pack(fill="x", pady=(0, 15))
+            
+            self.choice = tk.StringVar(value="calculated")
+            
+            # Option 1: Use calculated size (recommended)
+            calc_frame = ttk.Frame(size_frame)
+            calc_frame.pack(fill="x", pady=2)
+            calc_radio = ttk.Radiobutton(calc_frame, text=f"Use Calculated Size: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
+                                        variable=self.choice, value="calculated")
+            calc_radio.pack(side="left")
+            ttk.Label(calc_frame, text="(RECOMMENDED)", font=("Arial", 8, "bold"), foreground="green").pack(side="left", padx=(5, 0))
+            
+            # Option 2: Same as original (if sufficient)
+            if self.original_size >= min_size_with_buffer:
+                ttk.Radiobutton(size_frame, text=f"Keep Original Size: {QCow2CloneResizer.format_size(self.original_size)} (no space savings)", 
+                            variable=self.choice, value="original").pack(anchor="w", pady=2)
+            else:
+                # Original is too small
+                shortage = min_size_with_buffer - self.original_size
+                ttk.Label(size_frame, text=f"Original size insufficient - needs {QCow2CloneResizer.format_size(shortage)} more space", 
+                        foreground="red", font=("Arial", 8)).pack(anchor="w", pady=2)
+            
+            # Option 3: Custom size
+            custom_frame = ttk.Frame(size_frame)
+            custom_frame.pack(fill="x", pady=(8, 0))
+            
+            ttk.Radiobutton(custom_frame, text="Custom size:", 
+                        variable=self.choice, value="custom").pack(side="left")
+            
+            # Default custom size
+            default_gb = max(1, int(min_size_with_buffer / (1024**3)) + 1)
+            self.custom_size = tk.StringVar(value=f"{default_gb}G")
+            custom_entry = ttk.Entry(custom_frame, textvariable=self.custom_size, width=12, font=("Arial", 9))
+            custom_entry.pack(side="left", padx=(10, 10))
+            
+            ttk.Label(custom_frame, text="(e.g. 100G, 512M, 2T)", font=("Arial", 8)).pack(side="left")
+            
+            # Show minimum size warning
+            warning_frame = ttk.Frame(size_frame)
+            warning_frame.pack(fill="x", pady=(8, 0))
+            ttk.Label(warning_frame, text=f"WARNING: Minimum size required: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
+                    font=("Arial", 8), foreground="orange").pack(anchor="w")
+            
+            # What Happens Next
+            exp_frame = ttk.LabelFrame(content_frame, text="What Happens Next", padding="10")
+            exp_frame.pack(fill="x", pady=(0, 20))
+            
+            explanation = ("1. Create new empty image with selected size (using preallocation=metadata)\n"
+                        "2. Copy partition table structure from current image\n"
+                        "3. Clone each partition with all your GParted changes\n"
+                        "4. Preserve bootloader and all modifications\n\n"
+                        "All your partition resizing and changes will be preserved.")
+            
+            exp_label = ttk.Label(exp_frame, text=explanation, wraplength=500, justify="left", font=("Arial", 9))
+            exp_label.pack()
+            
+            # Buttons outside scrollable area, always visible
+            button_container = ttk.Frame(main_container)
+            button_container.pack(fill="x", pady=(10, 0))
+            
+            # Separator line
+            separator = ttk.Separator(button_container, orient="horizontal")
+            separator.pack(fill="x", pady=(0, 10))
+            
+            # Buttons frame
+            button_frame = ttk.Frame(button_container)
+            button_frame.pack(fill="x")
+            
+            # FIXED: Create buttons without ipadx/ipady parameters
+            create_btn = ttk.Button(button_frame, text="Create New Optimized Image", 
+                                command=self.create_new)
+            create_btn.pack(side="right", padx=(10, 0), pady=5)
+            
+            cancel_btn = ttk.Button(button_frame, text="Skip Cloning", 
+                                command=self.skip_cloning)
+            cancel_btn.pack(side="right", pady=5)
+            
+            # Add keyboard shortcuts
+            self.dialog.bind('<Return>', lambda e: self.create_new())
+            self.dialog.bind('<Escape>', lambda e: self.skip_cloning())
+            
+            # Focus on the create button
+            create_btn.focus_set()
+            
+        except tk.TclError as e:
+            print(f"UI setup TCL error: {e}")
+            # Fallback: create minimal UI
+            self._create_fallback_ui()
+        except AttributeError as e:
+            print(f"UI setup attribute error: {e}")
+            self._create_fallback_ui()
+        except ValueError as e:
+            print(f"UI setup value error: {e}")
+            self._create_fallback_ui()
+        except KeyError as e:
+            print(f"UI setup key error - missing layout info: {e}")
+            self._create_fallback_ui()
+        except TypeError as e:
+            print(f"UI setup type error: {e}")
+            self._create_fallback_ui()
+        except OSError as e:
+            print(f"UI setup system error: {e}")
+            self._create_fallback_ui()
+    
+    def _create_fallback_ui(self):
+        """Create minimal fallback UI if main UI setup fails"""
+        try:
+            # Simple fallback interface
+            fallback_frame = ttk.Frame(self.dialog, padding="20")
+            fallback_frame.pack(fill="both", expand=True)
+            
+            ttk.Label(fallback_frame, text="Dialog Error - Using Fallback Interface", 
+                     font=("Arial", 12, "bold"), foreground="red").pack(pady=(0, 20))
+            
+            ttk.Label(fallback_frame, text="Use calculated minimum size?", 
+                     font=("Arial", 10)).pack(pady=(0, 20))
+            
+            button_frame = ttk.Frame(fallback_frame)
+            button_frame.pack(fill="x")
+            
+            ttk.Button(button_frame, text="Yes - Create New Image", 
+                      command=self._fallback_create).pack(side="right", padx=(10, 0))
+            ttk.Button(button_frame, text="No - Skip Cloning", 
+                      command=self.skip_cloning).pack(side="right")
+            
+        except tk.TclError as e:
+            print(f"Fallback UI creation failed: {e}")
+            self.result = None
+        except AttributeError as e:
+            print(f"Fallback UI attribute error: {e}")
+            self.result = None
+    
+    def _fallback_create(self):
+        """Fallback create method using minimum size"""
+        try:
+            self.result = self.final_layout_info['required_minimum_bytes']
+            self.dialog.quit()
+            self.dialog.destroy()
+        except KeyError as e:
+            print(f"Fallback create key error: {e}")
+            self.result = None
+            self.skip_cloning()
+        except AttributeError as e:
+            print(f"Fallback create attribute error: {e}")
+            self.result = None
+            self.skip_cloning()
     
     def create_new(self):
         """Create new image with selected size"""
-        choice = self.choice.get()
-        min_size = self.final_layout_info['required_minimum_bytes']
-        
         try:
+            choice = self.choice.get()
+            min_size = self.final_layout_info['required_minimum_bytes']
+            
             if choice == "calculated":
                 new_size = min_size
             elif choice == "original":
@@ -1362,13 +1690,39 @@ class NewSizeDialog:
             
         except ValueError as e:
             messagebox.showerror("Invalid Size", f"Error parsing size: {e}")
+        except KeyError as e:
+            messagebox.showerror("Data Error", f"Missing layout information: {e}")
+        except AttributeError as e:
+            messagebox.showerror("Interface Error", f"Dialog interface error: {e}")
+        except tk.TclError as e:
+            print(f"Create new TCL error: {e}")
+            # Try to set result anyway
+            try:
+                self.result = self.final_layout_info['required_minimum_bytes']
+                self.dialog.quit()
+                self.dialog.destroy()
+            except:
+                self.result = None
+        except TypeError as e:
+            messagebox.showerror("Type Error", f"Data type error: {e}")
+        except OverflowError as e:
+            messagebox.showerror("Size Error", f"Size value too large: {e}")
     
     def skip_cloning(self):
         """Skip cloning - keep original image with changes"""
-        self.result = None
-        self.dialog.quit()
-        self.dialog.destroy()
-
+        try:
+            self.result = None
+            self.dialog.quit()
+            self.dialog.destroy()
+        except tk.TclError as e:
+            print(f"Skip cloning TCL error: {e}")
+            self.result = None
+        except AttributeError as e:
+            print(f"Skip cloning attribute error: {e}")
+            self.result = None
+        except RuntimeError as e:
+            print(f"Skip cloning runtime error: {e}")
+            self.result = None
 
 class QCow2CloneResizerGUI:
     """GUI for clone-based resizing with mandatory GParted usage"""
@@ -1583,9 +1937,21 @@ class QCow2CloneResizerGUI:
             self.update_progress(0, "Analysis complete - Ready for GParted + Clone process")
             self.status_label.config(text="Image analyzed - Ready to start GParted + Clone process")
             
-        except Exception as e:
-            messagebox.showerror("Analysis Failed", f"Failed to analyze image:\n\n{e}")
-            self.update_progress(0, "Analysis failed")
+        except FileNotFoundError:
+            messagebox.showerror("File Not Found", f"Image file not found: {path}")
+            self.update_progress(0, "Analysis failed - file not found")
+        except PermissionError:
+            messagebox.showerror("Permission Denied", f"Permission denied accessing image file: {path}")
+            self.update_progress(0, "Analysis failed - permission denied")
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Command Failed", f"qemu-img analysis failed:\n\n{e}")
+            self.update_progress(0, "Analysis failed - command error")
+        except json.JSONDecodeError:
+            messagebox.showerror("Parse Error", f"Failed to parse image analysis results")
+            self.update_progress(0, "Analysis failed - parse error")
+        except OSError as e:
+            messagebox.showerror("System Error", f"System error during image analysis:\n\n{e}")
+            self.update_progress(0, "Analysis failed - system error")
     
     def display_image_info(self):
         """Display image information"""
@@ -1652,9 +2018,18 @@ class QCow2CloneResizerGUI:
             
             messagebox.showinfo("Backup Complete", backup_msg)
             
-        except Exception as e:
-            self.update_progress(0, "Backup failed")
-            messagebox.showerror("Backup Failed", f"Could not create backup:\n\n{e}")
+        except FileNotFoundError:
+            self.update_progress(0, "Backup failed - file not found")
+            messagebox.showerror("File Not Found", f"Could not find source image:\n{path}")
+        except PermissionError:
+            self.update_progress(0, "Backup failed - permission denied")
+            messagebox.showerror("Permission Denied", f"Permission denied creating backup")
+        except shutil.Error as e:
+            self.update_progress(0, "Backup failed - copy error")
+            messagebox.showerror("Copy Error", f"Could not copy file during backup:\n{e}")
+        except OSError as e:
+            self.update_progress(0, "Backup failed - system error")
+            messagebox.showerror("System Error", f"System error creating backup:\n{e}")
     
     def start_gparted_resize(self):
         """Start GParted + clone resize operation"""
@@ -1797,7 +2172,7 @@ class QCow2CloneResizerGUI:
             dialog_completed = self.dialog_result_event.wait(timeout=300)  # 5 minute timeout
             
             if not dialog_completed:
-                raise Exception("Size selection dialog timed out - please try again")
+                raise RuntimeError("Size selection dialog timed out - please try again")
             
             new_size = self.dialog_result_value
             print(f"Dialog completed. New size selected: {new_size}")
@@ -1885,9 +2260,15 @@ class QCow2CloneResizerGUI:
                                 f"Active file: {image_path}\n"
                                 f"Original saved: {old_path}\n\n"
                                 f"Your VM will use the new optimized image automatically.")
-                        except Exception as e:
-                            messagebox.showerror("Replace Error", 
-                                f"Could not replace file:\n{e}")
+                        except FileNotFoundError as e:
+                            messagebox.showerror("File Replace Error", 
+                                f"Could not find file during replacement:\n{e}")
+                        except PermissionError as e:
+                            messagebox.showerror("Permission Error", 
+                                f"Permission denied during file replacement:\n{e}")
+                        except OSError as e:
+                            messagebox.showerror("System Error", 
+                                f"System error during file replacement:\n{e}")
                 
                 self.root.after(0, show_success_messages)
             else:
@@ -1900,13 +2281,46 @@ class QCow2CloneResizerGUI:
                     f"No additional cloning performed.\n\n"
                     f"Your virtual machine can use the modified image directly."))
             
-        except Exception as e:
-            error_msg = f"GPARTED + CLONE OPERATION FAILED\n\n{e}\n\nPlease check console output for more details."
-            self.log(f"Operation failed: {e}")
+        except FileNotFoundError as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - File Not Found\n\n{e}\n\nPlease check that all files exist."
+            self.log(f"Operation failed - file not found: {e}")
             print(f"ERROR in _gparted_clone_worker: {e}")
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("Operation Failed", error_msg))
+            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+        except PermissionError as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - Permission Denied\n\n{e}\n\nRun as root or with sudo."
+            self.log(f"Operation failed - permission denied: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
+        except subprocess.CalledProcessError as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - Command Error\n\n{e}\n\nCheck that all required tools are installed."
+            self.log(f"Operation failed - command error: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Command Failed", error_msg))
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - Timeout\n\n{e}\n\nOperation took too long to complete."
+            self.log(f"Operation failed - timeout: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Operation Timeout", error_msg))
+        except RuntimeError as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - Runtime Error\n\n{e}\n\nInternal operation error."
+            self.log(f"Operation failed - runtime error: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Runtime Error", error_msg))
+        except OSError as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - System Error\n\n{e}\n\nSystem resource or device error."
+            self.log(f"Operation failed - system error: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+        except ValueError as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - Invalid Value\n\n{e}\n\nInvalid parameter or data format."
+            self.log(f"Operation failed - value error: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Invalid Value", error_msg))
+        except ImportError as e:
+            error_msg = f"GPARTED + CLONE OPERATION FAILED - Missing Module\n\n{e}\n\nRequired Python module not available."
+            self.log(f"Operation failed - import error: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Module Error", error_msg))
         
         finally:
             # ONLY NOW cleanup the source NBD device
@@ -1914,8 +2328,14 @@ class QCow2CloneResizerGUI:
                 try:
                     print(f"Final cleanup of NBD device: {source_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                except Exception as e:
-                    print(f"Error cleaning up NBD device: {e}")
+                except subprocess.CalledProcessError as cleanup_e:
+                    print(f"Error cleaning up NBD device - command failed: {cleanup_e}")
+                except subprocess.TimeoutExpired:
+                    print(f"Error cleaning up NBD device - timeout")
+                except FileNotFoundError:
+                    print(f"Error cleaning up NBD device - qemu-nbd not found")
+                except OSError as cleanup_e:
+                    print(f"Error cleaning up NBD device - system error: {cleanup_e}")
             self.root.after(0, self.reset_ui)
 
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
@@ -1933,7 +2353,7 @@ class QCow2CloneResizerGUI:
             # Verification: is new size sufficient?
             min_required = layout_info['required_minimum_bytes']
             if new_size_bytes < min_required:
-                raise Exception(
+                raise ValueError(
                     f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
                     f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
                 )
@@ -1947,20 +2367,48 @@ class QCow2CloneResizerGUI:
             print("Creating new QCOW2 image...")
             QCow2CloneResizer.create_new_qcow2_image(target_path, new_size_bytes, progress_callback)
             
-            # Step 2: Mount new image with delay to avoid NBD conflicts
+            # Verify image was created
+            if not os.path.exists(target_path):
+                raise FileNotFoundError(f"Failed to create target image: {target_path}")
+            
+            # Step 2: Mount new image with enhanced device selection
             if progress_callback:
-                progress_callback(70, "Preparing target image...")
+                progress_callback(70, "Mounting target image...")
             
             print("Waiting before mounting target image...")
-            time.sleep(3)  # Give time for filesystem operations to complete
+            time.sleep(5)  # Longer wait to ensure filesystem stability
             
-            print("Setting up target NBD device...")
-            target_nbd = QCow2CloneResizer.setup_nbd_device(target_path)
+            # Enhanced NBD device selection with explicit exclusions
+            print(f"Setting up target NBD device (excluding {existing_source_nbd})...")
+            exclude_devices = [existing_source_nbd]
+            
+            target_nbd = QCow2CloneResizer.setup_nbd_device(
+                target_path, 
+                progress_callback=None, 
+                exclude_devices=exclude_devices
+            )
             print(f"Target NBD device: {target_nbd}")
             
-            # Verify both NBD devices are different
+            # Verify devices are different
             if existing_source_nbd == target_nbd:
-                raise Exception(f"Source and target NBD devices are the same: {existing_source_nbd}")
+                raise ValueError(f"CRITICAL ERROR: Source and target NBD devices are identical: {existing_source_nbd}")
+            
+            print(f"NBD devices verified: source={existing_source_nbd}, target={target_nbd}")
+            
+            # Additional verification - check if devices are actually accessible
+            try:
+                source_check = subprocess.run(['blockdev', '--getsize64', existing_source_nbd], 
+                                            capture_output=True, check=True, timeout=15)
+                target_check = subprocess.run(['blockdev', '--getsize64', target_nbd], 
+                                            capture_output=True, check=True, timeout=15)
+                print(f"Source device size: {source_check.stdout.strip()} bytes")
+                print(f"Target device size: {target_check.stdout.strip()} bytes")
+            except subprocess.CalledProcessError as e:
+                raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Device accessibility check failed: {e}")
+            except subprocess.TimeoutExpired:
+                raise subprocess.TimeoutExpired(e.cmd, e.timeout, f"Device accessibility check timed out")
+            except FileNotFoundError:
+                raise FileNotFoundError(f"blockdev command not found for accessibility check")
             
             # Step 3: Clone disk structure
             if progress_callback:
@@ -1969,56 +2417,239 @@ class QCow2CloneResizerGUI:
             print("Cloning disk structure...")
             self._clone_disk_structure_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
             
-            # Step 4: Clone partition data
+            # Step 4: Clone partition data with enhanced error handling
             if progress_callback:
                 progress_callback(80, "Cloning partition data...")
             
             print("Cloning partition data...")
-            self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+            clone_success = False
+            try:
+                self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+                clone_success = True
+            except FileNotFoundError as clone_error:
+                print(f"Partition cloning failed - file not found: {clone_error}")
+                raise clone_error
+            except PermissionError as clone_error:
+                print(f"Partition cloning failed - permission denied: {clone_error}")
+                raise clone_error
+            except subprocess.CalledProcessError as clone_error:
+                print(f"Partition cloning failed - command error: {clone_error}")
+                raise clone_error
+            except OSError as clone_error:
+                print(f"Partition cloning failed - system error: {clone_error}")
+                raise clone_error
+            except ValueError as clone_error:
+                print(f"Partition cloning failed - value error: {clone_error}")
+                raise clone_error
+            
+            if not clone_success:
+                raise RuntimeError("Partition cloning did not complete successfully")
             
             if progress_callback:
                 progress_callback(95, "Finalizing and cleaning up...")
             
+            # Final sync before cleanup
+            print("Performing final filesystem sync...")
+            subprocess.run(['sync'], check=False, timeout=60)
+            time.sleep(3)
+            
             # Cleanup target NBD device
-            print("Cleaning up target NBD device...")
+            print(f"Cleaning up target NBD device: {target_nbd}")
             if target_nbd:
                 QCow2CloneResizer.cleanup_nbd_device(target_nbd)
                 target_nbd = None
             
-            # Final verification
-            if not os.path.exists(target_path):
-                raise Exception(f"Target image was not created: {target_path}")
-            
-            final_info = QCow2CloneResizer.get_image_info(target_path)
-            print(f"Clone operation completed successfully!")
-            print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
-            print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
-            
-            if progress_callback:
-                progress_callback(100, "Clone complete!")
+            # Final verification with retry
+            print("Verifying target image...")
+            for verify_attempt in range(3):
+                try:
+                    time.sleep(2)  # Wait for filesystem operations to complete
+                    
+                    if not os.path.exists(target_path):
+                        raise FileNotFoundError(f"Target image file not found: {target_path}")
+                    
+                    # Check if file has reasonable size
+                    file_stat = os.stat(target_path)
+                    if file_stat.st_size < 1024: 
+                        raise ValueError(f"Target image file is too small: {file_stat.st_size} bytes")
+                    
+                    final_info = QCow2CloneResizer.get_image_info(target_path)
+                    print(f"Clone operation completed successfully!")
+                    print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
+                    print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
+                    
+                    if progress_callback:
+                        progress_callback(100, "Clone complete!")
+                    
+                    return True
+                    
+                except FileNotFoundError as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed - file not found: {verify_error}")
+                    if verify_attempt == 2:  # Last attempt
+                        raise FileNotFoundError(f"Target image verification failed - file not found: {verify_error}")
+                    time.sleep(3)
+                except PermissionError as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed - permission denied: {verify_error}")
+                    if verify_attempt == 2:  # Last attempt
+                        raise PermissionError(f"Target image verification failed - permission denied: {verify_error}")
+                    time.sleep(3)
+                except OSError as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed - system error: {verify_error}")
+                    if verify_attempt == 2:  # Last attempt
+                        raise OSError(f"Target image verification failed - system error: {verify_error}")
+                    time.sleep(3)
+                except ValueError as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed - value error: {verify_error}")
+                    if verify_attempt == 2:  # Last attempt
+                        raise ValueError(f"Target image verification failed - value error: {verify_error}")
+                    time.sleep(3)
             
             return True
             
-        except Exception as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+        except FileNotFoundError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - file not found: {e}")
+            import traceback
+            traceback.print_exc()
             
             # Cleanup target NBD on error
             if target_nbd:
                 try:
                     print(f"Emergency cleanup of target NBD: {target_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except Exception as cleanup_error:
-                    print(f"Error cleaning up target NBD: {cleanup_error}")
+                except:
+                    pass
             
             # Clean up partial target file
             if target_path and os.path.exists(target_path):
                 try:
-                    print(f"Removing incomplete target file: {target_path}")
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
                     os.remove(target_path)
-                except Exception as file_error:
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
                     print(f"Could not remove incomplete file: {file_error}")
             
-            raise e
+            raise FileNotFoundError(f"Required file not found: {e}")
+        except PermissionError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - permission denied: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise PermissionError(f"Permission denied: {e}")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - command failed: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Command failed: {e}")
+        except ValueError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - invalid value: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise ValueError(f"Invalid value: {e}")
+        except RuntimeError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - runtime error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise RuntimeError(f"Runtime error: {e}")
+        except OSError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - system error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Cleanup target NBD on error
+            if target_nbd:
+                try:
+                    print(f"Emergency cleanup of target NBD: {target_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except:
+                    pass
+            
+            # Clean up partial target file
+            if target_path and os.path.exists(target_path):
+                try:
+                    file_size = os.path.getsize(target_path)
+                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
+                    os.remove(target_path)
+                    print("Incomplete target file removed successfully")
+                except OSError as file_error:
+                    print(f"Could not remove incomplete file: {file_error}")
+            
+            raise OSError(f"System error: {e}")
     
     def _execute_dd_with_retry(self, cmd, timeout=300, max_retries=3):
         """Execute dd command with retries and better error handling"""
@@ -2082,8 +2713,13 @@ class QCow2CloneResizerGUI:
                 if attempt < max_retries - 1:
                     print(f"Retrying in 5 seconds...")
                     time.sleep(5)
-            except Exception as e:
-                print(f"DD attempt {attempt + 1} failed with exception: {e}")
+            except FileNotFoundError:
+                print(f"DD attempt {attempt + 1} failed - dd command not found")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in 3 seconds...")
+                    time.sleep(3)
+            except OSError as e:
+                print(f"DD attempt {attempt + 1} failed with system error: {e}")
                 if attempt < max_retries - 1:
                     print(f"Retrying in 3 seconds...")
                     time.sleep(3)
@@ -2098,7 +2734,7 @@ class QCow2CloneResizerGUI:
             
             # Verify devices are different
             if source_nbd == target_nbd:
-                raise Exception(f"Source and target NBD devices cannot be the same: {source_nbd}")
+                raise ValueError(f"Source and target NBD devices cannot be the same: {source_nbd}")
             
             if progress_callback:
                 progress_callback(76, "Copying partition table...")
@@ -2170,9 +2806,24 @@ class QCow2CloneResizerGUI:
             
             return True
             
-        except Exception as e:
-            print(f"ERROR in _clone_disk_structure_safe: {e}")
-            raise Exception(f"Failed to clone disk structure: {e}")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR in _clone_disk_structure_safe - command failed: {e}")
+            raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Failed to clone disk structure: {e}")
+        except subprocess.TimeoutExpired as e:
+            print(f"ERROR in _clone_disk_structure_safe - timeout: {e}")
+            raise subprocess.TimeoutExpired(e.cmd, e.timeout, f"Disk structure cloning timed out: {e}")
+        except FileNotFoundError as e:
+            print(f"ERROR in _clone_disk_structure_safe - command not found: {e}")
+            raise FileNotFoundError(f"Required command not found for disk structure cloning: {e}")
+        except PermissionError as e:
+            print(f"ERROR in _clone_disk_structure_safe - permission denied: {e}")
+            raise PermissionError(f"Permission denied during disk structure cloning: {e}")
+        except ValueError as e:
+            print(f"ERROR in _clone_disk_structure_safe - invalid value: {e}")
+            raise ValueError(f"Invalid parameter for disk structure cloning: {e}")
+        except OSError as e:
+            print(f"ERROR in _clone_disk_structure_safe - system error: {e}")
+            raise OSError(f"System error during disk structure cloning: {e}")
 
     def _clone_partition_data_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
         """Clone partition data with enhanced error handling and verification"""
@@ -2181,7 +2832,7 @@ class QCow2CloneResizerGUI:
             
             # Verify devices are different
             if source_nbd == target_nbd:
-                raise Exception(f"Source and target NBD devices cannot be the same: {source_nbd}")
+                raise ValueError(f"Source and target NBD devices cannot be the same: {source_nbd}")
             
             total_partitions = len(layout_info['partitions'])
             print(f"Processing {total_partitions} partitions")
@@ -2249,8 +2900,14 @@ class QCow2CloneResizerGUI:
                                 source_part = src_opt
                                 print(f"Found accessible source partition: {source_part}")
                                 break
-                            except:
+                            except subprocess.CalledProcessError:
                                 print(f"Partition {src_opt} exists but not accessible")
+                                continue
+                            except subprocess.TimeoutExpired:
+                                print(f"Partition {src_opt} check timed out")
+                                continue
+                            except FileNotFoundError:
+                                print(f"blockdev command not found for {src_opt}")
                                 continue
                     
                     if source_part:
@@ -2271,8 +2928,14 @@ class QCow2CloneResizerGUI:
                                 target_part = tgt_opt
                                 print(f"Found accessible target partition: {target_part}")
                                 break
-                            except:
+                            except subprocess.CalledProcessError:
                                 print(f"Partition {tgt_opt} exists but not accessible")
+                                continue
+                            except subprocess.TimeoutExpired:
+                                print(f"Partition {tgt_opt} check timed out")
+                                continue
+                            except FileNotFoundError:
+                                print(f"blockdev command not found for {tgt_opt}")
                                 continue
                     
                     if target_part:
@@ -2314,8 +2977,18 @@ class QCow2CloneResizerGUI:
                     copy_blocks = copy_size // (4 * 1024 * 1024)  # 4MB blocks
                     copy_remainder = copy_size % (4 * 1024 * 1024)
                     
-                except Exception as e:
-                    print(f"Could not get partition sizes: {e}")
+                except subprocess.CalledProcessError as e:
+                    print(f"Could not get partition sizes - command failed: {e}")
+                    # Fallback: copy without count (full partition)
+                    copy_blocks = None
+                    copy_remainder = 0
+                except ValueError as e:
+                    print(f"Could not parse partition sizes - invalid value: {e}")
+                    # Fallback: copy without count (full partition)
+                    copy_blocks = None
+                    copy_remainder = 0
+                except FileNotFoundError:
+                    print(f"Could not get partition sizes - blockdev not found")
                     # Fallback: copy without count (full partition)
                     copy_blocks = None
                     copy_remainder = 0
@@ -2391,11 +3064,26 @@ class QCow2CloneResizerGUI:
             print("All partitions processed")
             return True
             
-        except Exception as e:
-            print(f"ERROR in _clone_partition_data_safe: {e}")
+        except ValueError as e:
+            print(f"ERROR in _clone_partition_data_safe - invalid value: {e}")
             import traceback
             traceback.print_exc()
-            raise Exception(f"Failed to clone partition data: {e}")
+            raise ValueError(f"Failed to clone partition data - invalid value: {e}")
+        except FileNotFoundError as e:
+            print(f"ERROR in _clone_partition_data_safe - file not found: {e}")
+            import traceback
+            traceback.print_exc()
+            raise FileNotFoundError(f"Failed to clone partition data - file not found: {e}")
+        except PermissionError as e:
+            print(f"ERROR in _clone_partition_data_safe - permission denied: {e}")
+            import traceback
+            traceback.print_exc()
+            raise PermissionError(f"Failed to clone partition data - permission denied: {e}")
+        except OSError as e:
+            print(f"ERROR in _clone_partition_data_safe - system error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise OSError(f"Failed to clone partition data - system error: {e}")
     
     def _show_final_size_dialog(self, final_layout, partition_changes):
         """Show final size dialog after GParted operations"""
@@ -2406,11 +3094,29 @@ class QCow2CloneResizerGUI:
             self.dialog_result_value = dialog.result
             print(f"Dialog result: {self.dialog_result_value}")
             self.dialog_result_event.set()
-        except Exception as e:
-            self.log(f"Final size dialog error: {e}")
-            print(f"ERROR in _show_final_size_dialog: {e}")
-            import traceback
-            traceback.print_exc()
+        except ImportError as e:
+            self.log(f"Final size dialog error - missing module: {e}")
+            print(f"ERROR in _show_final_size_dialog - import error: {e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except AttributeError as e:
+            self.log(f"Final size dialog error - attribute error: {e}")
+            print(f"ERROR in _show_final_size_dialog - attribute error: {e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except TypeError as e:
+            self.log(f"Final size dialog error - type error: {e}")
+            print(f"ERROR in _show_final_size_dialog - type error: {e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except ValueError as e:
+            self.log(f"Final size dialog error - value error: {e}")
+            print(f"ERROR in _show_final_size_dialog - value error: {e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except OSError as e:
+            self.log(f"Final size dialog error - system error: {e}")
+            print(f"ERROR in _show_final_size_dialog - system error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
     
@@ -2511,6 +3217,15 @@ def main():
         root.mainloop()
     except KeyboardInterrupt:
         print("\nApplication interrupted by user")
+    except ImportError as e:
+        print(f"\nImport error: {e}")
+        print("Please ensure all required Python modules are installed")
+    except OSError as e:
+        print(f"\nSystem error: {e}")
+        print("Check system resources and permissions")
+    except RuntimeError as e:
+        print(f"\nRuntime error: {e}")
+        print("Application encountered an internal error")
     
     print("Application closed - Goodbye!")
 
