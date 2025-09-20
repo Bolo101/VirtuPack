@@ -102,7 +102,7 @@ cp -r "$CODE_DIR"/* config/includes.chroot/usr/local/bin/
 chmod +x config/includes.chroot/usr/local/bin/*
 
 # Create symbolic link 'de' -> main.py
-ln -s /usr/local/bin/main.py config/includes.chroot/usr/local/bin/de
+ln -s /usr/local/bin/main.py config/includes.chroot/usr/local/bin/d2q
 
 # Allow sudo without password
 echo "Configuring sudo to be passwordless..."
@@ -136,9 +136,9 @@ mkdir -p config/includes.chroot/usr/share/applications/
 cat << EOF > config/includes.chroot/usr/share/applications/secure_disk_eraser.desktop
 [Desktop Entry]
 Version=1.0
-Name=Secure Disk Eraser
+Name=Disk 2 Qcow2
 Comment=Securely erase disks and partitions
-Exec=sudo /usr/local/bin/de
+Exec=sudo /usr/local/bin/d2q
 Icon=drive-harddisk
 Terminal=true
 Type=Application
@@ -154,9 +154,9 @@ mkdir -p config/includes.chroot/etc/xdg/autostart/
 cat << EOF > config/includes.chroot/etc/xdg/autostart/disk-eraser.desktop
 [Desktop Entry]
 Type=Application
-Name=Disk Eraser
+Name=Disk 2 Qcow2
 Comment=Start Disk Eraser automatically in live mode
-Exec=sudo /usr/local/bin/de
+Exec=sudo /usr/local/bin/d2q
 Terminal=true
 Icon=drive-harddisk
 Categories=System;Security;
@@ -174,14 +174,14 @@ fi
 
 # Display information about the disk eraser
 echo "Secure Disk Eraser"
-echo "Type 'sudo de' to use the Secure Disk Eraser program"
+echo "Type 'sudo d2q' to use the Secure Disk Eraser program"
 
 # Check if we're in live mode
 if grep -q "boot=live" /proc/cmdline; then
     # Only auto-start in terminals when in live mode
     if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
         echo "Live mode detected. Starting disk eraser..."
-        sudo /usr/local/bin/de
+        sudo /usr/local/bin/d2q
     fi
 fi
 EOF
