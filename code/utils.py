@@ -4,9 +4,9 @@ import re
 import time
 import os
 import shutil
-import json
 from log_handler import log_error, log_info
 from pathlib import Path
+
 
 def run_command(command_list: list[str], raise_on_error: bool = True) -> str:
     try:
@@ -28,6 +28,7 @@ def run_command(command_list: list[str], raise_on_error: bool = True) -> str:
         log_error("Operation interrupted by user (Ctrl+C)")
         print("\nOperation interrupted by user (Ctrl+C)")
         sys.exit(130)  # Standard exit code for SIGINT
+
 
 def run_command_with_progress(command_list: list[str], progress_callback=None, stop_flag=None) -> str:
     """Run command with progress monitoring and cancellation support"""
@@ -70,6 +71,33 @@ def run_command_with_progress(command_list: list[str], progress_callback=None, s
         log_error("Operation interrupted by user")
         raise
 
+
+def format_bytes(bytes_count: int) -> str:
+    """Convert bytes to human readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if bytes_count < 1024.0:
+            return f"{bytes_count:.1f} {unit}"
+        bytes_count /= 1024.0
+    return f"{bytes_count:.1f} PB"
+
+
+def get_directory_space(path: str) -> dict:
+    """
+    Get available space information for a directory
+    Returns dict with 'total', 'used', 'free' in bytes
+    """
+    try:
+        stat = shutil.disk_usage(path)
+        return {
+            'total': stat.total,
+            'used': stat.total - stat.free,
+            'free': stat.free
+        }
+    except OSError as e:
+        log_error(f"Error getting disk space for {path}: {str(e)}")
+        return {'total': 0, 'used': 0, 'free': 0}
+
+
 def get_disk_label(device: str) -> str:
     """
     Get the label of a disk device using lsblk.
@@ -87,11 +115,127 @@ def get_disk_label(device: str) -> str:
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "Unknown"
 
+
+def get_mounted_devices() -> set:
+    """
+    Get set of currently mounted device paths and their base disks
+    Returns both partition paths and base disk paths
+    """
+    mounted_devices = set()
+    try:
+        with open('/proc/mounts', 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 1 and parts[0].startswith('/dev/'):
+                    device = parts[0]
+                    mounted_devices.add(device)
+                    # Also add base disk name for partition checking
+                    base_device = get_base_device_from_partition(device)
+                    if base_device != device:
+                        mounted_devices.add(base_device)
+    except (IOError, OSError) as e:
+        log_error(f"Could not read /proc/mounts: {str(e)}")
+    
+    return mounted_devices
+
+
+def get_base_device_from_partition(device_path: str) -> str:
+    """
+    Get the base device from a partition path
+    Examples: 
+        '/dev/sda1' -> '/dev/sda'
+        '/dev/nvme0n1p1' -> '/dev/nvme0n1'
+        '/dev/sda' -> '/dev/sda' (unchanged)
+    """
+    try:
+        # Handle nvme devices (e.g., /dev/nvme0n1p1 -> /dev/nvme0n1)
+        if 'nvme' in device_path and 'p' in device_path:
+            match = re.match(r'(/dev/nvme\d+n\d+)', device_path)
+            if match:
+                return match.group(1)
+        
+        # Handle traditional devices (e.g., /dev/sda1 -> /dev/sda)
+        match = re.match(r'(/dev/[a-zA-Z]+)', device_path)
+        if match:
+            return match.group(1)
+        
+        # If no pattern matches, return the original
+        return device_path
+        
+    except re.error as e:
+        log_error(f"Invalid regex pattern while processing device path '{device_path}': {str(e)}")
+        return device_path
+    except TypeError as e:
+        log_error(f"Invalid device path type provided '{type(device_path)}': {str(e)}")
+        return device_path
+    except ValueError as e:
+        log_error(f"Invalid device path format '{device_path}': {str(e)}")
+        return device_path
+
+
+def has_mounted_partitions(device_path: str) -> bool:
+    """
+    Check if a disk has any mounted partitions
+    Args:
+        device_path: Path to device (e.g., /dev/sda)
+    Returns:
+        bool: True if any partition is mounted, False otherwise
+    """
+    try:
+        mounted_devices = get_mounted_devices()
+        
+        # Check if the device itself is mounted
+        if device_path in mounted_devices:
+            return True
+        
+        # Get all partitions for this device
+        try:
+            result = subprocess.run(['lsblk', '-n', '-o', 'NAME', device_path], 
+                                  capture_output=True, text=True, check=True)
+            
+            lines = result.stdout.strip().split('\n')
+            device_name = device_path.replace('/dev/', '')
+            
+            for line in lines:
+                if line.strip():
+                    partition_name = line.strip()
+                    # Remove tree characters from lsblk output
+                    partition_name = partition_name.lstrip('â"œâ"€â""â"‚ â"€')
+                    partition_path = f"/dev/{partition_name}"
+                    
+                    # Skip the main device line
+                    if partition_name == device_name:
+                        continue
+                        
+                    # Check if this partition is mounted
+                    if partition_path in mounted_devices:
+                        return True
+        
+        except subprocess.CalledProcessError as e:
+            log_error(f"Error executing lsblk for {device_path}: {e.stderr}")
+            return False
+        except FileNotFoundError as e:
+            log_error(f"lsblk command not found: {str(e)}")
+            return False
+        
+        return False
+        
+    except OSError as e:
+        log_error(f"OS error checking mounted partitions for {device_path}: {str(e)}")
+        return False
+    except ValueError as e:
+        log_error(f"Invalid device path format while checking mounts: {str(e)}")
+        return False
+    except TypeError as e:
+        log_error(f"Invalid type for device_path parameter: {str(e)}")
+        return False
+
+
 def get_disk_list() -> list[dict]:
     """
     Get list of available disks as structured data.
     Returns a list of dictionaries with disk information.
-    Each dictionary contains: 'device', 'size', 'model', 'size_bytes', 'label', and 'is_active'.
+    Each dictionary contains: 'device', 'size', 'model', 'size_bytes', 'label', 'is_active', and 'is_mounted'.
     """
     try:
         # Use more explicit column specification with -o option and -n to skip header
@@ -141,13 +285,18 @@ def get_disk_list() -> list[dict]:
                 # Check if this disk is active (system disk)
                 is_active = device in active_disk_names
                 
+                # Check if this disk has mounted partitions
+                device_path = f"/dev/{device}"
+                is_mounted = has_mounted_partitions(device_path)
+                
                 disks.append({
-                    "device": f"/dev/{device}",
+                    "device": device_path,
                     "size": size_human,
                     "size_bytes": size_bytes,
                     "model": model,
                     "label": label,
-                    "is_active": is_active
+                    "is_active": is_active,
+                    "is_mounted": is_mounted
                 })
         return disks
     except FileNotFoundError as e:
@@ -163,29 +312,143 @@ def get_disk_list() -> list[dict]:
         log_error("Disk listing interrupted by user")
         return []
 
-def format_bytes(bytes_count: int) -> str:
-    """Convert bytes to human readable format"""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if bytes_count < 1024.0:
-            return f"{bytes_count:.1f} {unit}"
-        bytes_count /= 1024.0
-    return f"{bytes_count:.1f} PB"
 
-def get_directory_space(path: str) -> dict:
+def check_filesystem(device_path: str) -> str:
+    """Check if device has a mountable filesystem and return filesystem type"""
+    try:
+        # Check for filesystem using lsblk
+        result = subprocess.run(['lsblk', '-n', '-o', 'FSTYPE', device_path], 
+                              capture_output=True, text=True, check=True)
+        
+        filesystems = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+        
+        # Common mountable filesystems
+        mountable_fs = ['ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'ntfs', 'fat32', 'vfat', 'exfat']
+        
+        for fs in filesystems:
+            if fs.lower() in mountable_fs:
+                return fs
+        
+        return None
+    
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def mount_disk(device_path: str, mount_point: str, filesystem_type: str = None) -> bool:
     """
-    Get available space information for a directory
-    Returns dict with 'total', 'used', 'free' in bytes
+    Mount a disk to a specified mount point
+    
+    Args:
+        device_path: Path to device (e.g., /dev/sdb1)
+        mount_point: Directory to mount to
+        filesystem_type: Optional filesystem type
+    
+    Returns:
+        bool: True if mount successful, False otherwise
     """
     try:
-        stat = shutil.disk_usage(path)
-        return {
-            'total': stat.total,
-            'used': stat.total - stat.free,
-            'free': stat.free
-        }
-    except OSError as e:
-        log_error(f"Error getting disk space for {path}: {str(e)}")
-        return {'total': 0, 'used': 0, 'free': 0}
+        # Create mount point if it doesn't exist
+        os.makedirs(mount_point, exist_ok=True)
+        
+        # Build mount command
+        mount_cmd = ['sudo', 'mount']
+        
+        if filesystem_type:
+            if filesystem_type.lower() == 'ntfs':
+                mount_cmd.extend(['-t', 'ntfs-3g'])
+            else:
+                mount_cmd.extend(['-t', filesystem_type])
+        
+        mount_cmd.extend([device_path, mount_point])
+        
+        # Execute mount command
+        result = subprocess.run(mount_cmd, capture_output=True, text=True, check=True)
+        
+        # Verify mount was successful
+        if os.path.ismount(mount_point):
+            log_info(f"Successfully mounted {device_path} to {mount_point}")
+            return True
+        else:
+            log_error(f"Mount command succeeded but {mount_point} is not mounted")
+            return False
+    
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to mount {device_path}: {e.stderr if e.stderr else str(e)}"
+        log_error(error_msg)
+        return False
+    
+    except PermissionError as e:
+        log_error(f"Permission denied mounting {device_path}: {str(e)}")
+        return False
+    
+    except Exception as e:
+        log_error(f"Unexpected error mounting {device_path}: {str(e)}")
+        return False
+
+
+def unmount_disk(mount_point: str) -> bool:
+    """
+    Unmount a disk from specified mount point
+    
+    Args:
+        mount_point: Directory to unmount
+    
+    Returns:
+        bool: True if unmount successful, False otherwise
+    """
+    try:
+        # Execute unmount command
+        result = subprocess.run(['sudo', 'umount', mount_point], 
+                              capture_output=True, text=True, check=True)
+        
+        # Verify unmount was successful
+        if not os.path.ismount(mount_point):
+            log_info(f"Successfully unmounted {mount_point}")
+            return True
+        else:
+            log_error(f"Unmount command succeeded but {mount_point} is still mounted")
+            return False
+    
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to unmount {mount_point}: {e.stderr if e.stderr else str(e)}"
+        log_error(error_msg)
+        return False
+    
+    except Exception as e:
+        log_error(f"Unexpected error unmounting {mount_point}: {str(e)}")
+        return False
+
+
+def get_unmounted_disks() -> list[dict]:
+    """
+    Get list of unmounted disks suitable for mounting
+    Returns list of disk dictionaries with additional 'has_filesystem' field
+    """
+    try:
+        # Get all disks
+        all_disks = get_disk_list()
+        unmounted_disks = []
+        
+        # Filter out mounted and system disks
+        for disk in all_disks:
+            device_path = disk['device']
+            
+            # Skip if it's a system/active disk or mounted disk
+            if disk.get('is_active', False) or disk.get('is_mounted', False) or is_system_disk(device_path):
+                continue
+            
+            # Check if disk has a filesystem we can mount
+            has_filesystem = check_filesystem(device_path)
+            disk['has_filesystem'] = has_filesystem
+            unmounted_disks.append(disk)
+        
+        return unmounted_disks
+    
+    except Exception as e:
+        log_error(f"Error getting unmounted disks: {str(e)}")
+        return []
+
 
 def get_disk_usage_info(device: str) -> dict:
     """
@@ -252,269 +515,6 @@ def get_disk_usage_info(device: str) -> dict:
         'usage_percent': 0
     }
 
-def check_output_space(output_path: str, source_disk: str) -> tuple[bool, str]:
-    """
-    Improved space checking that considers actual disk usage
-    Args:
-        output_path: Path to output directory
-        source_disk: Path to source disk or disk size in bytes (for backward compatibility)
-    Returns:
-        tuple: (has_enough_space, message)
-    """
-    try:
-        # Ensure directory exists
-        os.makedirs(output_path, exist_ok=True)
-        
-        # Get output directory space
-        space_info = get_directory_space(output_path)
-        
-        # Handle both disk path and size inputs for backward compatibility
-        if isinstance(source_disk, str) and source_disk.startswith('/dev/'):
-            # It's a disk path - get disk info and usage
-            disk_info = get_disk_info(source_disk)
-            disk_size = disk_info['size_bytes']
-            usage_info = get_disk_usage_info(source_disk)
-            
-            if usage_info['used'] > 0:
-                # Use actual filesystem usage + 30% overhead for metadata/compression variation
-                estimated_size = int(usage_info['used'] * 1.3)
-                estimation_method = "filesystem usage + 30% overhead"
-            else:
-                # Fallback to conservative estimate (50% of disk size)
-                estimated_size = int(disk_size * 0.5)
-                estimation_method = "50% of total disk size (conservative)"
-            
-            message = (
-                f"Source disk size: {format_bytes(disk_size)}\n"
-                f"Available output space: {format_bytes(space_info['free'])}\n"
-                f"Estimated VM size: {format_bytes(estimated_size)} ({estimation_method})\n"
-            )
-            
-            if usage_info['used'] > 0:
-                message += f"Filesystem usage: {format_bytes(usage_info['used'])} ({usage_info['usage_percent']:.1f}%)\n"
-        
-        else:
-            # Backward compatibility: source_disk is actually disk size in bytes
-            disk_size = int(source_disk) if isinstance(source_disk, (int, str)) else source_disk
-            estimated_size = int(disk_size * 0.5)  # 50% compression ratio
-            estimation_method = "50% compression ratio (conservative)"
-            
-            message = (
-                f"Source disk size: {format_bytes(disk_size)}\n"
-                f"Available output space: {format_bytes(space_info['free'])}\n"
-                f"Estimated VM size: {format_bytes(estimated_size)} ({estimation_method})\n"
-            )
-        
-        # Add additional 10% safety margin
-        required_space = int(estimated_size * 1.1)
-        has_space = space_info['free'] >= required_space
-        
-        message += f"Required space (with 10% margin): {format_bytes(required_space)}\n"
-        message += f"Status: {'✅ Sufficient space' if has_space else '❌ Insufficient space'}"
-        
-        return has_space, message
-        
-    except Exception as e:
-        return False, f"Error checking space: {str(e)}"
-
-def check_qemu_tools() -> tuple[bool, str]:
-    """Check if required QEMU tools are available"""
-    tools = ['qemu-img', 'dd']
-    missing = []
-    
-    for tool in tools:
-        try:
-            subprocess.run([tool, '--version'], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            missing.append(tool)
-    
-    if missing:
-        return False, f"Missing required tools: {', '.join(missing)}"
-    return True, "All required tools available"
-
-def verify_vm_image(qcow2_path: str) -> dict:
-    """
-    Verify and get information about a qcow2 VM image
-    Returns dict with verification results and image information
-    """
-    try:
-        # Use qemu-img info to get image details
-        result = subprocess.run(['qemu-img', 'info', '--output=json', qcow2_path], 
-                               capture_output=True, text=True, check=True)
-        
-        info_data = json.loads(result.stdout)
-        
-        return {
-            'success': True,
-            'virtual_size': info_data.get('virtual-size', 0),
-            'actual_size': info_data.get('actual-size', 0),
-            'format': info_data.get('format', 'unknown'),
-            'compressed': info_data.get('compressed', False)
-        }
-    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError, KeyError):
-        # Fallback to file size if qemu-img info fails
-        try:
-            actual_size = os.path.getsize(qcow2_path)
-            return {
-                'success': False,
-                'virtual_size': 0,
-                'actual_size': actual_size,
-                'format': 'qcow2',
-                'compressed': True
-            }
-        except OSError:
-            return {
-                'success': False,
-                'virtual_size': 0,
-                'actual_size': 0,
-                'format': 'unknown',
-                'compressed': False
-            }
-
-def create_vm_from_disk(source_disk: str, output_path: str, vm_name: str, progress_callback=None, stop_flag=None) -> str:
-    """
-    Convert physical disk to qcow2 VM with sparse allocation (only used data)
-    Args:
-        source_disk: Path to source disk (e.g., /dev/sda)
-        output_path: Directory to save VM files
-        vm_name: Name for the VM files
-        progress_callback: Function to call for progress updates
-        stop_flag: Function that returns True if operation should stop
-    Returns:
-        str: Path to created qcow2 file
-    """
-    try:
-        # Create output directory
-        os.makedirs(output_path, exist_ok=True)
-        
-        # Generate file paths
-        qcow2_path = os.path.join(output_path, f"{vm_name}.qcow2")
-        temp_qcow2_path = os.path.join(output_path, f"{vm_name}_temp.qcow2")
-        
-        log_info(f"Starting P2V conversion: {source_disk} -> {qcow2_path}")
-        
-        # Get original disk size
-        disk_info = get_disk_info(source_disk)
-        original_size = disk_info['size_bytes']
-        
-        log_info(f"Original disk size: {format_bytes(original_size)}")
-        
-        # Step 1: Convert directly from physical disk to qcow2 with sparse allocation
-        log_info("Step 1: Converting disk with sparse allocation...")
-        if progress_callback:
-            progress_callback(10, "Starting sparse disk conversion...")
-        
-        # Convert directly from physical disk to qcow2 with sparse and compression
-        qemu_convert_cmd = [
-            'qemu-img', 'convert',
-            '-f', 'raw',                    # Input format
-            '-O', 'qcow2',                  # Output format  
-            '-c',                           # Compress
-            '-S', '4k',                     # Skip empty sectors (4k blocks)
-            '-p',                           # Show progress
-            source_disk,                    # Input device
-            temp_qcow2_path                # Temporary output
-        ]
-        
-        log_info(f"Running command: {' '.join(qemu_convert_cmd)}")
-        
-        # Run qemu-img convert with monitoring
-        process = subprocess.Popen(qemu_convert_cmd, stderr=subprocess.PIPE, 
-                                 stdout=subprocess.PIPE, text=True, bufsize=1)
-        
-        last_progress = 0
-        while process.poll() is None:
-            if stop_flag and stop_flag():
-                process.terminate()
-                process.wait()
-                # Clean up files
-                for temp_file in [temp_qcow2_path]:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                raise KeyboardInterrupt("Operation cancelled by user")
-            
-            # Try to parse progress from stderr
-            if process.stderr and process.stderr.readable():
-                try:
-                    # Non-blocking read
-                    import select
-                    if select.select([process.stderr], [], [], 0)[0]:
-                        line = process.stderr.readline()
-                        if line and '(' in line and '%' in line:
-                            # Extract percentage from qemu-img progress output
-                            import re
-                            match = re.search(r'\((\d+\.\d+)/100%\)', line)
-                            if match:
-                                current_progress = int(10 + float(match.group(1)) * 0.8)  # Scale to 10-90%
-                                if current_progress > last_progress:
-                                    last_progress = current_progress
-                                    if progress_callback:
-                                        progress_callback(current_progress, "Converting disk data...")
-                except:
-                    pass  # Ignore errors in progress parsing
-            
-            if progress_callback and last_progress == 0:
-                progress_callback(50, "Converting disk data...")
-            
-            time.sleep(2)
-        
-        stdout, stderr = process.communicate()
-        
-        if process.returncode != 0:
-            # Clean up on failure
-            if os.path.exists(temp_qcow2_path):
-                os.remove(temp_qcow2_path)
-            error_msg = f"qemu-img convert failed with return code {process.returncode}"
-            if stderr:
-                error_msg += f"\nError output: {stderr}"
-            raise subprocess.CalledProcessError(process.returncode, qemu_convert_cmd, stdout, stderr)
-        
-        log_info("Sparse disk conversion completed")
-        
-        # Step 2: Move temporary file to final location
-        log_info("Step 2: Finalizing VM image...")
-        if progress_callback:
-            progress_callback(95, "Finalizing VM image...")
-        
-        # Move the converted file to final location
-        os.rename(temp_qcow2_path, qcow2_path)
-        
-        # Step 3: Verify and get final information
-        if not os.path.exists(qcow2_path):
-            raise Exception("qcow2 file was not created successfully")
-        
-        # Get detailed image information
-        verification_info = verify_vm_image(qcow2_path)
-        
-        if verification_info['success']:
-            actual_size = verification_info['actual_size']
-            virtual_size = verification_info['virtual_size']
-            
-            log_info(f"P2V conversion completed successfully")
-            log_info(f"Output file: {qcow2_path}")
-            log_info(f"Virtual disk size: {format_bytes(virtual_size)}")
-            log_info(f"Actual file size: {format_bytes(actual_size)}")
-            
-            if virtual_size > 0:
-                space_saved = virtual_size - actual_size
-                savings_percent = (space_saved / virtual_size * 100)
-                log_info(f"Space saved: {format_bytes(space_saved)} ({savings_percent:.1f}%)")
-        else:
-            log_info(f"P2V conversion completed - file created: {qcow2_path}")
-            actual_size = os.path.getsize(qcow2_path)
-            log_info(f"Final file size: {format_bytes(actual_size)}")
-        
-        if progress_callback:
-            progress_callback(100, "Conversion completed successfully!")
-        
-        return qcow2_path
-        
-    except KeyboardInterrupt:
-        log_error("P2V conversion cancelled by user")
-        raise
-    except Exception as e:
-        log_error(f"P2V conversion failed: {str(e)}")
-        raise
 
 def get_disk_info(device: str) -> dict:
     """Get detailed information about a disk"""
@@ -541,37 +541,25 @@ def get_disk_info(device: str) -> dict:
             'label': label
         }
         
-    except Exception as e:
-        log_error(f"Error getting disk info for {device}: {str(e)}")
-        return {
-            'device': device,
-            'size_bytes': 0,
-            'size_human': "Unknown",
-            'model': "Unknown",
-            'label': "Unknown"
-        }
-
-def validate_vm_name(name: str) -> tuple[bool, str]:
-    """Validate VM name for filesystem compatibility"""
-    if not name:
-        return False, "VM name cannot be empty"
+    except subprocess.CalledProcessError as e:
+        log_error(f"Command execution failed for {device}: {e.stderr}")
+    except FileNotFoundError as e:
+        log_error(f"Required command not found: {str(e)}")
+    except ValueError as e:
+        log_error(f"Invalid value received while processing disk info for {device}: {str(e)}")
+    except OSError as e:
+        log_error(f"OS error accessing disk {device}: {str(e)}")
+    except TypeError as e:
+        log_error(f"Invalid type provided for disk info parameters: {str(e)}")
     
-    # Check for invalid characters
-    invalid_chars = '<>:"/\\|?*'
-    for char in invalid_chars:
-        if char in name:
-            return False, f"VM name contains invalid character: {char}"
-    
-    # Check length
-    if len(name) > 100:
-        return False, "VM name is too long (max 100 characters)"
-    
-    # Check for reserved names
-    reserved = ['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9', 'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9']
-    if name.lower() in reserved:
-        return False, f"VM name '{name}' is reserved"
-    
-    return True, "Valid name"
+    # Return default values if any error occurred
+    return {
+        'device': device,
+        'size_bytes': 0,
+        'size_human': "Unknown",
+        'model': "Unknown",
+        'label': "Unknown"
+    }
 
 def get_active_disk():
     """
@@ -730,6 +718,7 @@ def get_active_disk():
         log_error("Insufficient memory to process device information")
         return None
 
+
 def get_physical_drives_for_logical_volumes(active_devices: list) -> set:
     """
     Map logical volumes (LVM, etc.) to their underlying physical drives.
@@ -804,6 +793,7 @@ def get_physical_drives_for_logical_volumes(active_devices: list) -> set:
     
     return physical_drives
 
+
 def get_base_disk(device_name: str) -> str:
     """
     Extract base disk name from a device name.
@@ -827,9 +817,15 @@ def get_base_disk(device_name: str) -> str:
         # If no pattern matches, return the original
         return device_name
         
-    except Exception as e:
-        log_error(f"Error processing device name '{device_name}': {str(e)}")
-        return device_name
+    except re.error as e:
+        log_error(f"Invalid regex pattern while processing device name '{device_name}': {str(e)}")
+    except TypeError as e:
+        log_error(f"Invalid type for device_name parameter: {str(e)}")
+    except ValueError as e:
+        log_error(f"Invalid device name format '{device_name}': {str(e)}")
+    
+    return device_name
+
 
 def is_system_disk(device_path: str) -> bool:
     """
@@ -849,6 +845,12 @@ def is_system_disk(device_path: str) -> bool:
             return device_name in active_disks
         
         return False
-    except Exception as e:
-        log_error(f"Error checking if {device_path} is system disk: {str(e)}")
-        return False
+        
+    except TypeError as e:
+        log_error(f"Invalid type for device path '{type(device_path)}': {str(e)}")
+    except ValueError as e:
+        log_error(f"Invalid device path format '{device_path}': {str(e)}")
+    except OSError as e:
+        log_error(f"OS error checking system disk status for {device_path}: {str(e)}")
+    
+    return False
