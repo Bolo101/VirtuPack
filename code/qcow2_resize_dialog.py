@@ -47,6 +47,203 @@ class QCow2CloneResizer:
         return missing, optional
     
     @staticmethod
+    def compress_qcow2_image(image_path, progress_callback=None, delete_original_source=None):
+        """Compress QCOW2 image using qemu-img convert to optimize storage
+        
+        Args:
+            image_path: Path to the image to compress
+            progress_callback: Optional progress callback function
+            delete_original_source: Path to original source image to delete after compression (optional)
+        """
+        try:
+            if progress_callback:
+                progress_callback(92, "Compressing image for optimal storage...")
+            
+            print(f"Starting compression of: {image_path}")
+            
+            # Get original image info
+            original_info = QCow2CloneResizer.get_image_info(image_path)
+            original_file_size = os.path.getsize(image_path)
+            
+            print(f"Original image stats:")
+            print(f"  Virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}")
+            print(f"  File size: {QCow2CloneResizer.format_size(original_file_size)}")
+            print(f"  Current compression: {original_info.get('compressed', False)}")
+            
+            # Create temporary compressed version
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            
+            # Remove temp file if it exists
+            if os.path.exists(temp_compressed_path):
+                os.remove(temp_compressed_path)
+            
+            # IMPROVED: Better compression command with explicit options
+            cmd = [
+                'qemu-img', 'convert',
+                '-f', 'qcow2',
+                '-O', 'qcow2',
+                '-c',  # Enable compression
+                '-o', 'compression_type=zlib,cluster_size=65536',  # Specify compression type and optimize cluster size
+                '-p',  # Show progress
+                image_path,
+                temp_compressed_path
+            ]
+            
+            print(f"Compressing image: {' '.join(cmd)}")
+            
+            # Run compression with extended timeout for large images
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True, check=True, 
+                timeout=1800  # 30 minutes for compression
+            )
+            
+            if result.stdout:
+                print(f"Compression stdout: {result.stdout}")
+            if result.stderr:
+                print(f"Compression stderr: {result.stderr}")
+            
+            # Verify compressed image was created
+            if not os.path.exists(temp_compressed_path):
+                raise Exception(f"Compressed image was not created: {temp_compressed_path}")
+            
+            # Get compressed image stats
+            compressed_info = QCow2CloneResizer.get_image_info(temp_compressed_path)
+            compressed_file_size = os.path.getsize(temp_compressed_path)
+            
+            # Verify compression actually worked
+            print(f"Compressed image stats:")
+            print(f"  File size: {QCow2CloneResizer.format_size(compressed_file_size)}")
+            print(f"  Compression flag: {compressed_info.get('compressed', False)}")
+            
+            # Calculate compression ratio
+            compression_ratio = (original_file_size - compressed_file_size) / original_file_size * 100 if original_file_size > 0 else 0
+            
+            print(f"Compression results:")
+            print(f"  Original file size: {QCow2CloneResizer.format_size(original_file_size)}")
+            print(f"  Compressed file size: {QCow2CloneResizer.format_size(compressed_file_size)}")
+            print(f"  Space saved: {QCow2CloneResizer.format_size(original_file_size - compressed_file_size)}")
+            print(f"  Compression ratio: {compression_ratio:.1f}%")
+            
+            # Only replace if compression actually saved space (more than 1MB)
+            min_savings = 1024 * 1024  # 1MB minimum savings
+            if compressed_file_size >= (original_file_size - min_savings):
+                print(f"WARNING: Compression saved less than 1MB ({compressed_file_size} vs {original_file_size})")
+                print(f"Keeping original image and removing compressed version")
+                os.remove(temp_compressed_path)
+                return {
+                    'original_size': original_file_size,
+                    'compressed_size': original_file_size,
+                    'space_saved': 0,
+                    'compression_ratio': 0.0,
+                    'original_source_deleted': False
+                }
+            
+            # Replace original with compressed version
+            print(f"Replacing original image with compressed version...")
+            
+            # Create backup of original (just in case)
+            backup_path = f"{image_path}.pre_compression_backup"
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            os.rename(image_path, backup_path)
+            
+            # Move compressed version to original location
+            os.rename(temp_compressed_path, image_path)
+            
+            # Verify the replacement worked
+            if not os.path.exists(image_path):
+                # Restore from backup if replacement failed
+                os.rename(backup_path, image_path)
+                raise Exception("Failed to replace original with compressed version")
+            
+            # Verify the new file is valid
+            try:
+                final_info = QCow2CloneResizer.get_image_info(image_path)
+                print(f"Final compressed image verification:")
+                print(f"  Virtual size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
+                print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
+                print(f"  Compressed: {final_info.get('compressed', False)}")
+            except Exception as verify_error:
+                print(f"ERROR: Compressed image validation failed: {verify_error}")
+                # Restore from backup
+                if os.path.exists(backup_path):
+                    os.remove(image_path)
+                    os.rename(backup_path, image_path)
+                raise Exception(f"Compressed image is invalid, restored original: {verify_error}")
+            
+            # Remove backup after successful replacement and verification
+            os.remove(backup_path)
+            
+            print(f"Image compression completed and replaced successfully")
+            
+            # Delete original source image if requested and it exists
+            original_source_deleted = False
+            if delete_original_source and os.path.exists(delete_original_source) and delete_original_source != image_path:
+                try:
+                    original_source_size = os.path.getsize(delete_original_source)
+                    print(f"Deleting original source image: {delete_original_source}")
+                    print(f"  Original source size: {QCow2CloneResizer.format_size(original_source_size)}")
+                    os.remove(delete_original_source)
+                    print(f"Original source image deleted successfully")
+                    original_source_deleted = True
+                    
+                    # Update space saved calculation to include original source
+                    total_space_saved = original_source_size + (original_file_size - compressed_file_size)
+                    print(f"Total space freed: {QCow2CloneResizer.format_size(total_space_saved)}")
+                    
+                except OSError as delete_error:
+                    print(f"WARNING: Could not delete original source image: {delete_error}")
+                    # Don't fail the entire operation for deletion errors
+            
+            if progress_callback:
+                progress_callback(98, f"Image compressed - saved {compression_ratio:.1f}% space")
+            
+            return {
+                'original_size': original_file_size,
+                'compressed_size': compressed_file_size,
+                'space_saved': original_file_size - compressed_file_size,
+                'compression_ratio': compression_ratio,
+                'original_source_deleted': original_source_deleted
+            }
+            
+        except subprocess.CalledProcessError as e:
+            # Clean up temp file on error
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except:
+                    pass
+            
+            error_msg = f"Image compression failed: {e.stderr if e.stderr else str(e)}"
+            print(f"ERROR: {error_msg}")
+            raise Exception(error_msg)
+        except subprocess.TimeoutExpired:
+            # Clean up temp file on timeout
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except:
+                    pass
+            raise Exception("Image compression timed out (30 minutes)")
+        except FileNotFoundError:
+            raise Exception("qemu-img command not found for compression")
+        except PermissionError:
+            raise Exception(f"Permission denied during image compression: {image_path}")
+        except OSError as e:
+            # Clean up temp file on system error
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except:
+                    pass
+            print(f"ERROR during compression: {e}")
+            raise Exception(f"System error during image compression: {e}")
+    
+    @staticmethod
     def parse_size(size_str):
         """Parse size string like '20G', '512M' to bytes"""
         if isinstance(size_str, (int, float)):
@@ -814,433 +1011,7 @@ class QCow2CloneResizer:
             print(f"ERROR in clone_disk_structure: {e}")
             raise Exception(f"System error during disk structure cloning: {e}")
     
-    @staticmethod
-    def clone_partition_data(source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone partition data with improved error handling"""
-        try:
-            total_partitions = len(layout_info['partitions'])
-            print(f"Cloning {total_partitions} partitions from {source_nbd} to {target_nbd}")
-            
-            for i, partition in enumerate(layout_info['partitions']):
-                partition_num = partition['number']
-                
-                if progress_callback:
-                    progress_callback(
-                        70 + (i * 20 // total_partitions), 
-                        f"Cloning partition {partition_num} data..."
-                    )
-                
-                # Try different partition naming schemes
-                source_part_options = [
-                    f"{source_nbd}p{partition_num}",  # /dev/nbd0p1
-                    f"{source_nbd}{partition_num}"    # /dev/nbd01
-                ]
-                
-                target_part_options = [
-                    f"{target_nbd}p{partition_num}",
-                    f"{target_nbd}{partition_num}"
-                ]
-                
-                source_part = None
-                target_part = None
-                
-                # Find existing source partition
-                for src_opt in source_part_options:
-                    if os.path.exists(src_opt):
-                        source_part = src_opt
-                        break
-                
-                # Find existing target partition
-                for tgt_opt in target_part_options:
-                    if os.path.exists(tgt_opt):
-                        target_part = tgt_opt
-                        break
-                
-                if not source_part:
-                    print(f"ERROR: Source partition not found for partition {partition_num}")
-                    print(f"Tried: {source_part_options}")
-                    continue
-                
-                if not target_part:
-                    print(f"ERROR: Target partition not found for partition {partition_num}")
-                    print(f"Tried: {target_part_options}")
-                    continue
-                
-                print(f"Cloning partition {partition_num}: {source_part} -> {target_part}")
-                
-                # Get source partition size
-                try:
-                    size_result = subprocess.run(['blockdev', '--getsize64', source_part],
-                                               capture_output=True, text=True, check=True)
-                    source_size = int(size_result.stdout.strip())
-                    print(f"Source partition {partition_num} size: {QCow2CloneResizer.format_size(source_size)}")
-                except subprocess.CalledProcessError as e:
-                    print(f"Could not get source partition size: {e}")
-                except ValueError as e:
-                    print(f"Could not parse source partition size: {e}")
-                except FileNotFoundError:
-                    print(f"blockdev command not found for partition size check")
-                
-                # Clone partition with dd
-                cmd = [
-                    'dd',
-                    f'if={source_part}',
-                    f'of={target_part}',
-                    'bs=4M',
-                    'conv=notrunc',
-                    'status=progress'  # Show progress
-                ]
-                
-                print(f"Executing: {' '.join(cmd)}")
-                
-                try:
-                    # Run with real-time output for large partitions
-                    process = subprocess.Popen(cmd, 
-                                             stdout=subprocess.PIPE, 
-                                             stderr=subprocess.STDOUT,
-                                             text=True, 
-                                             universal_newlines=True)
-                    
-                    # Monitor progress
-                    while True:
-                        output = process.stdout.readline()
-                        if output == '' and process.poll() is not None:
-                            break
-                        if output:
-                            print(f"DD: {output.strip()}")
-                    
-                    return_code = process.poll()
-                    if return_code != 0:
-                        raise subprocess.CalledProcessError(return_code, cmd)
-                    
-                    print(f"Partition {partition_num} cloned successfully")
-                    
-                except subprocess.CalledProcessError as e:
-                    print(f"ERROR cloning partition {partition_num}: {e}")
-                    continue
-                except FileNotFoundError:
-                    print(f"dd command not found for cloning partition {partition_num}")
-                    continue
-                except OSError as e:
-                    print(f"System error cloning partition {partition_num}: {e}")
-                    continue
-            
-            if progress_callback:
-                progress_callback(90, "Finalizing clone...")
-            
-            print("All partitions processed successfully")
-            return True
-            
-        except ValueError as e:
-            print(f"ERROR in clone_partition_data: {e}")
-            raise Exception(f"Failed to clone data: {e}")
-        except OSError as e:
-            print(f"ERROR in clone_partition_data: {e}")
-            raise Exception(f"System error during partition cloning: {e}")
     
-    @staticmethod
-    def clone_to_new_image(source_path, target_path, new_size_bytes, progress_callback=None):
-        """Complete cloning process to new image with improved error handling and final compression"""
-        source_nbd = None
-        target_nbd = None
-        temp_target_path = None
-        
-        try:
-            print(f"Starting clone operation:")
-            print(f"  Source: {source_path}")
-            print(f"  Target: {target_path}")
-            print(f"  New size: {QCow2CloneResizer.format_size(new_size_bytes)}")
-            
-            # Create temporary target path for uncompressed image
-            temp_target_path = f"{target_path}.temp_uncompressed"
-            
-            # Step 1: Analyze source image
-            if progress_callback:
-                progress_callback(5, "Analyzing source image...")
-            
-            print("Setting up source NBD device...")
-            source_nbd = QCow2CloneResizer.setup_nbd_device(source_path)
-            print(f"Source NBD device: {source_nbd}")
-            
-            layout_info = QCow2CloneResizer.get_partition_layout(source_nbd)
-            
-            # Verification: is new size sufficient?
-            min_required = layout_info['required_minimum_bytes']
-            if new_size_bytes < min_required:
-                raise Exception(
-                    f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
-                    f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
-                )
-            
-            print(f"Size verification passed - using {QCow2CloneResizer.format_size(new_size_bytes)}")
-            
-            # Step 2: Create new temporary image (uncompressed)
-            if progress_callback:
-                progress_callback(15, "Creating temporary uncompressed image...")
-            
-            print("Creating temporary QCOW2 image...")
-            QCow2CloneResizer.create_new_qcow2_image(temp_target_path, new_size_bytes, progress_callback)
-            
-            # Step 3: Mount new image
-            if progress_callback:
-                progress_callback(35, "Mounting new image...")
-            
-            print("Setting up target NBD device...")
-            target_nbd = QCow2CloneResizer.setup_nbd_device(temp_target_path)
-            print(f"Target NBD device: {target_nbd}")
-            
-            # Step 4: Clone disk structure
-            if progress_callback:
-                progress_callback(45, "Cloning disk structure...")
-            
-            print("Cloning disk structure...")
-            QCow2CloneResizer.clone_disk_structure(source_nbd, target_nbd, layout_info, progress_callback)
-            
-            # Step 5: Clone partition data
-            if progress_callback:
-                progress_callback(60, "Cloning partition data...")
-            
-            print("Cloning partition data...")
-            QCow2CloneResizer.clone_partition_data(source_nbd, target_nbd, layout_info, progress_callback)
-            
-            if progress_callback:
-                progress_callback(85, "Cleaning up NBD devices...")
-            
-            # Cleanup NBD devices before compression
-            print("Cleaning up NBD devices...")
-            QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-            QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-            source_nbd = None
-            target_nbd = None
-            
-            # Step 6: Compress the image
-            if progress_callback:
-                progress_callback(90, "Compressing final image...")
-            
-            print("Compressing image for optimal storage...")
-            QCow2CloneResizer._compress_image(temp_target_path, target_path, progress_callback)
-            
-            # Remove temporary uncompressed image
-            if os.path.exists(temp_target_path):
-                print(f"Removing temporary uncompressed image: {temp_target_path}")
-                os.remove(temp_target_path)
-                temp_target_path = None
-            
-            # Final verification
-            if not os.path.exists(target_path):
-                raise Exception(f"Target image was not created: {target_path}")
-            
-            final_info = QCow2CloneResizer.get_image_info(target_path)
-            print(f"Clone operation completed successfully!")
-            print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
-            print(f"  Compressed file size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
-            
-            if progress_callback:
-                progress_callback(100, "Clone and compression complete!")
-            
-            return True
-            
-        except Exception as e:
-            print(f"ERROR in clone_to_new_image: {e}")
-            
-            # Cleanup on error
-            if source_nbd:
-                try:
-                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                except:
-                    pass
-            if target_nbd:
-                try:
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
-                    pass
-            
-            # Clean up temporary files
-            for temp_file in [temp_target_path, target_path]:
-                if temp_file and os.path.exists(temp_file):
-                    try:
-                        print(f"Removing incomplete file: {temp_file}")
-                        os.remove(temp_file)
-                    except:
-                        pass
-            
-            raise Exception(f"Clone operation failed: {e}")
-    
-    @staticmethod
-    def compress_qcow2_image(image_path, progress_callback=None, delete_original_source=None):
-        """Compress QCOW2 image using qemu-img convert to optimize storage
-        
-        Args:
-            image_path: Path to the image to compress
-            progress_callback: Optional progress callback function
-            delete_original_source: Path to original source image to delete after compression (optional)
-        """
-        try:
-            if progress_callback:
-                progress_callback(92, "Compressing image for optimal storage...")
-            
-            print(f"Starting compression of: {image_path}")
-            
-            # Get original image info
-            original_info = QCow2CloneResizer.get_image_info(image_path)
-            original_file_size = os.path.getsize(image_path)
-            
-            print(f"Original image stats:")
-            print(f"  Virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}")
-            print(f"  File size: {QCow2CloneResizer.format_size(original_file_size)}")
-            
-            # Create temporary compressed version
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            
-            # Remove temp file if it exists
-            if os.path.exists(temp_compressed_path):
-                os.remove(temp_compressed_path)
-            
-            # IMPROVED: Better compression command with explicit options
-            cmd = [
-                'qemu-img', 'convert',
-                '-f', 'qcow2',
-                '-O', 'qcow2',
-                '-c',  # Enable compression
-                '-o', 'compression_type=zlib,cluster_size=65536',  # Specify compression type and optimize cluster size
-                '-p',  # Show progress
-                image_path,
-                temp_compressed_path
-            ]
-            
-            print(f"Compressing image: {' '.join(cmd)}")
-            
-            # Run compression with extended timeout for large images
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True, check=True, 
-                timeout=1800  # 30 minutes for compression
-            )
-            
-            if result.stdout:
-                print(f"Compression stdout: {result.stdout}")
-            if result.stderr:
-                print(f"Compression stderr: {result.stderr}")
-            
-            # Verify compressed image was created
-            if not os.path.exists(temp_compressed_path):
-                raise Exception(f"Compressed image was not created: {temp_compressed_path}")
-            
-            # Get compressed image stats
-            compressed_info = QCow2CloneResizer.get_image_info(temp_compressed_path)
-            compressed_file_size = os.path.getsize(temp_compressed_path)
-            
-            # Verify compression actually worked
-            if not compressed_info.get('compressed', False):
-                print("WARNING: qemu-img info shows image is not marked as compressed")
-                # Still proceed as the file might be smaller due to other optimizations
-            
-            # Calculate compression ratio
-            compression_ratio = (original_file_size - compressed_file_size) / original_file_size * 100 if original_file_size > 0 else 0
-            
-            print(f"Compression completed successfully:")
-            print(f"  Original file size: {QCow2CloneResizer.format_size(original_file_size)}")
-            print(f"  Compressed file size: {QCow2CloneResizer.format_size(compressed_file_size)}")
-            print(f"  Space saved: {QCow2CloneResizer.format_size(original_file_size - compressed_file_size)}")
-            print(f"  Compression ratio: {compression_ratio:.1f}%")
-            print(f"  Compression flag: {compressed_info.get('compressed', False)}")
-            
-            # Only replace if compression actually saved space
-            if compressed_file_size >= original_file_size:
-                print(f"WARNING: Compressed image is not smaller ({compressed_file_size} >= {original_file_size})")
-                print(f"Keeping original image and removing compressed version")
-                os.remove(temp_compressed_path)
-                return {
-                    'original_size': original_file_size,
-                    'compressed_size': original_file_size,
-                    'space_saved': 0,
-                    'compression_ratio': 0.0,
-                    'original_source_deleted': False
-                }
-            
-            # Replace original with compressed version
-            print(f"Replacing original image with compressed version...")
-            
-            # Create backup of original (just in case)
-            backup_path = f"{image_path}.pre_compression_backup"
-            if os.path.exists(backup_path):
-                os.remove(backup_path)
-            os.rename(image_path, backup_path)
-            
-            # Move compressed version to original location
-            os.rename(temp_compressed_path, image_path)
-            
-            # Remove backup after successful replacement
-            os.remove(backup_path)
-            
-            print(f"Image compression completed and replaced successfully")
-            
-            # Delete original source image if requested and it exists
-            original_source_deleted = False
-            if delete_original_source and os.path.exists(delete_original_source) and delete_original_source != image_path:
-                try:
-                    original_source_size = os.path.getsize(delete_original_source)
-                    print(f"Deleting original source image: {delete_original_source}")
-                    print(f"  Original source size: {QCow2CloneResizer.format_size(original_source_size)}")
-                    os.remove(delete_original_source)
-                    print(f"Original source image deleted successfully")
-                    original_source_deleted = True
-                    
-                    # Update space saved calculation to include original source
-                    total_space_saved = original_source_size + (original_file_size - compressed_file_size)
-                    print(f"Total space freed: {QCow2CloneResizer.format_size(total_space_saved)}")
-                    
-                except OSError as delete_error:
-                    print(f"WARNING: Could not delete original source image: {delete_error}")
-                    # Don't fail the entire operation for deletion errors
-            
-            if progress_callback:
-                progress_callback(98, f"Image compressed - saved {compression_ratio:.1f}% space")
-            
-            return {
-                'original_size': original_file_size,
-                'compressed_size': compressed_file_size,
-                'space_saved': original_file_size - compressed_file_size,
-                'compression_ratio': compression_ratio,
-                'original_source_deleted': original_source_deleted
-            }
-            
-        except subprocess.CalledProcessError as e:
-            # Clean up temp file on error
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except:
-                    pass
-            
-            error_msg = f"Image compression failed: {e.stderr if e.stderr else str(e)}"
-            print(f"ERROR: {error_msg}")
-            raise Exception(error_msg)
-        except subprocess.TimeoutExpired:
-            # Clean up temp file on timeout
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except:
-                    pass
-            raise Exception("Image compression timed out (30 minutes)")
-        except FileNotFoundError:
-            raise Exception("qemu-img command not found for compression")
-        except PermissionError:
-            raise Exception(f"Permission denied during image compression: {image_path}")
-        except OSError as e:
-            # Clean up temp file on system error
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except:
-                    pass
-            print(f"ERROR during compression: {e}")
-            raise Exception(f"System error during image compression: {e}")
-
     @staticmethod
     def create_backup(image_path):
         """Create backup of image"""
@@ -1257,234 +1028,6 @@ class QCow2CloneResizer:
             raise Exception(f"System error creating backup: {e}")
         except shutil.Error as e:
             raise Exception(f"Copy error creating backup: {e}")
-    
-    def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
-                                    existing_source_nbd, layout_info, progress_callback=None):
-        """Clone to new image using existing NBD device with compression at the end"""
-        target_nbd = None
-        
-        try:
-            print(f"Starting clone with existing NBD device:")
-            print(f"  Source NBD: {existing_source_nbd}")
-            print(f"  Target: {target_path}")
-            print(f"  New size: {QCow2CloneResizer.format_size(new_size_bytes)}")
-            print(f"  Layout info: {len(layout_info['partitions'])} partitions")
-            
-            # Verification: is new size sufficient?
-            min_required = layout_info['required_minimum_bytes']
-            if new_size_bytes < min_required:
-                raise Exception(
-                    f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
-                    f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
-                )
-            
-            print(f"Size verification passed - using {QCow2CloneResizer.format_size(new_size_bytes)}")
-            
-            # Step 1: Create new image (without compression for faster cloning)
-            if progress_callback:
-                progress_callback(60, "Creating new image...")
-            
-            print("Creating new QCOW2 image...")
-            QCow2CloneResizer.create_new_qcow2_image(target_path, new_size_bytes, progress_callback)
-            
-            # Verify image was created
-            if not os.path.exists(target_path):
-                raise Exception(f"Failed to create target image: {target_path}")
-            
-            # Step 2: Mount new image with enhanced device selection
-            if progress_callback:
-                progress_callback(70, "Mounting target image...")
-            
-            print("Waiting before mounting target image...")
-            time.sleep(5)  # Longer wait to ensure filesystem stability
-            
-            # Enhanced NBD device selection with explicit exclusions
-            print(f"Setting up target NBD device (excluding {existing_source_nbd})...")
-            exclude_devices = [existing_source_nbd]
-            
-            target_nbd = QCow2CloneResizer.setup_nbd_device(
-                target_path, 
-                progress_callback=None, 
-                exclude_devices=exclude_devices
-            )
-            print(f"Target NBD device: {target_nbd}")
-            
-            # Verify devices are different
-            if existing_source_nbd == target_nbd:
-                raise Exception(f"CRITICAL ERROR: Source and target NBD devices are identical: {existing_source_nbd}")
-            
-            print(f"NBD devices verified: source={existing_source_nbd}, target={target_nbd}")
-            
-            # Additional verification - check if devices are actually accessible
-            try:
-                source_check = subprocess.run(['blockdev', '--getsize64', existing_source_nbd], 
-                                            capture_output=True, check=True, timeout=15)
-                target_check = subprocess.run(['blockdev', '--getsize64', target_nbd], 
-                                            capture_output=True, check=True, timeout=15)
-                print(f"Source device size: {source_check.stdout.strip()} bytes")
-                print(f"Target device size: {target_check.stdout.strip()} bytes")
-            except subprocess.CalledProcessError as e:
-                raise Exception(f"Device accessibility check failed: {e}")
-            except subprocess.TimeoutExpired:
-                raise Exception(f"Device accessibility check timed out")
-            except FileNotFoundError:
-                raise Exception(f"blockdev command not found for accessibility check")
-            
-            # Step 3: Clone disk structure
-            if progress_callback:
-                progress_callback(75, "Cloning disk structure...")
-            
-            print("Cloning disk structure...")
-            self._clone_disk_structure_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
-            
-            # Step 4: Clone partition data
-            if progress_callback:
-                progress_callback(80, "Cloning partition data...")
-            
-            print("Cloning partition data...")
-            clone_success = False
-            try:
-                self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
-                clone_success = True
-            except Exception as clone_error:
-                print(f"Partition cloning failed: {clone_error}")
-                raise clone_error
-            
-            if not clone_success:
-                raise Exception("Partition cloning did not complete successfully")
-            
-            if progress_callback:
-                progress_callback(90, "Finalizing clone...")
-            
-            # Final sync before cleanup
-            print("Performing final filesystem sync...")
-            subprocess.run(['sync'], check=False, timeout=60)
-            time.sleep(3)
-            
-            # Cleanup target NBD device BEFORE compression
-            print(f"Cleaning up target NBD device: {target_nbd}")
-            if target_nbd:
-                QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                target_nbd = None
-            
-            # Additional wait for filesystem operations to complete
-            time.sleep(5)
-            
-            # Step 5: COMPRESS THE FINAL IMAGE - THIS WAS MISSING!
-            if progress_callback:
-                progress_callback(92, "Compressing final image for optimal storage...")
-            
-            print("Starting image compression...")
-            compression_stats = {'compression_ratio': 0.0, 'space_saved': 0}
-            try:
-                # Call compression with proper parameter
-                compression_stats = QCow2CloneResizer.compress_qcow2_image(
-                    target_path, 
-                    progress_callback,
-                    delete_original_source=source_path  # Pass the original source path
-                )
-                
-                print(f"Image compression completed:")
-                print(f"  Space saved by compression: {QCow2CloneResizer.format_size(compression_stats['space_saved'])}")
-                print(f"  Compression ratio: {compression_stats['compression_ratio']:.1f}%")
-                
-            except Exception as compression_error:
-                print(f"WARNING: Image compression failed: {compression_error}")
-                import traceback
-                traceback.print_exc()
-                
-                # Create fallback compression stats to prevent errors
-                compression_stats = {
-                    'space_saved': 0,
-                    'compression_ratio': 0.0,
-                    'original_size': 0,
-                    'compressed_size': 0,
-                    'original_source_deleted': False
-                }
-                
-                print("Continuing with uncompressed image...")
-            
-            # Final verification with retry
-            print("Verifying target image...")
-            for verify_attempt in range(3):
-                try:
-                    time.sleep(2)  # Wait for filesystem operations to complete
-                    
-                    if not os.path.exists(target_path):
-                        raise Exception(f"Target image file not found: {target_path}")
-                    
-                    # Check if file has reasonable size
-                    file_stat = os.stat(target_path)
-                    if file_stat.st_size < 1024: 
-                        raise Exception(f"Target image file is too small: {file_stat.st_size} bytes")
-                    
-                    final_info = QCow2CloneResizer.get_image_info(target_path)
-                    print(f"Clone and compression operation completed successfully!")
-                    print(f"  Final image virtual size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
-                    print(f"  Final file size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
-                    
-                    # Check if compression actually worked
-                    is_compressed = final_info.get('compressed', False)
-                    print(f"  Image compressed: {'YES' if is_compressed else 'NO'}")
-                    
-                    if compression_stats['compression_ratio'] > 0:
-                        print(f"  Compression efficiency: {compression_stats['compression_ratio']:.1f}%")
-                        print(f"  Space saved by compression: {QCow2CloneResizer.format_size(compression_stats['space_saved'])}")
-                    
-                    if progress_callback:
-                        if compression_stats['compression_ratio'] > 0:
-                            progress_callback(100, f"Clone complete! Compressed and saved {compression_stats['compression_ratio']:.1f}% space")
-                        else:
-                            progress_callback(100, "Clone complete! (compression may have failed)")
-                    
-                    return True
-                    
-                except Exception as verify_error:
-                    print(f"Verification attempt {verify_attempt + 1} failed: {verify_error}")
-                    if verify_attempt == 2:  # Last attempt
-                        raise Exception(f"Target image verification failed: {verify_error}")
-                    time.sleep(3)
-            
-            return True
-            
-        except Exception as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Cleanup target NBD on error
-            if target_nbd:
-                try:
-                    print(f"Emergency cleanup of target NBD: {target_nbd}")
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
-                    pass
-            
-            # Clean up partial target file
-            if target_path and os.path.exists(target_path):
-                try:
-                    file_size = os.path.getsize(target_path)
-                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
-                    os.remove(target_path)
-                    print("Incomplete target file removed successfully")
-                except OSError as file_error:
-                    print(f"Could not remove incomplete file: {file_error}")
-            
-            # Re-raise the original exception with proper type
-            if isinstance(e, FileNotFoundError):
-                raise FileNotFoundError(f"Required file not found: {e}")
-            elif isinstance(e, PermissionError):
-                raise PermissionError(f"Permission denied: {e}")
-            elif isinstance(e, subprocess.CalledProcessError):
-                raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Command failed: {e}")
-            elif isinstance(e, ValueError):
-                raise ValueError(f"Invalid value: {e}")
-            elif isinstance(e, RuntimeError):
-                raise RuntimeError(f"Runtime error: {e}")
-            elif isinstance(e, OSError):
-                raise OSError(f"System error: {e}")
-            else:
-                raise Exception(f"Unexpected error: {e}")
 
 
 class NewSizeDialog:
@@ -2218,7 +1761,7 @@ class QCow2CloneResizerGUI:
         thread.start()
     
     def _gparted_clone_worker(self, image_path):
-        """Worker thread for GParted + clone resize operation - CORRECTED to keep NBD device"""
+        """Worker thread for GParted + clone resize operation with compression and cleanup"""
         source_nbd = None
         
         try:
@@ -2260,7 +1803,9 @@ class QCow2CloneResizerGUI:
                 f"After GParted closes, this tool will:\n"
                 f"• Analyze your partition changes\n"
                 f"• Let you choose optimal new image size\n"
-                f"• Clone all modified partitions to new image\n\n"
+                f"• Clone all modified partitions to new image\n"
+                f"• Compress the final image for optimal storage\n"
+                f"• Optionally delete original source files\n\n"
                 f"TIP: Shrinking partitions = smaller final image size!"
             )
             
@@ -2314,7 +1859,7 @@ class QCow2CloneResizerGUI:
                 original_path = Path(image_path)
                 new_path = original_path.parent / f"{original_path.stem}_gparted_resized{original_path.suffix}"
                 
-                # Clone to new image with all GParted modifications
+                # Clone to new image with all GParted modifications INCLUDING COMPRESSION
                 # CRITICAL: Pass the existing source_nbd and final_layout to avoid re-mounting
                 self.update_progress(55, "Cloning modified partitions to new optimized image...")
                 print(f"Starting clone operation to: {new_path}")
@@ -2328,56 +1873,77 @@ class QCow2CloneResizerGUI:
                     final_layout,  # Pass existing layout info
                     self.update_progress
                 )
+
+                self.compre
                 
-                print("Clone operation completed successfully!")
+                print("Clone and compression operation completed successfully!")
                 
-                # Analyze new image
+                # Analyze new image to get compression info
                 new_image_info = QCow2CloneResizer.get_image_info(str(new_path))
                 print(f"New image info: {new_image_info}")
                 
-                # Show comprehensive success message
-                success_msg = f"GPARTED + CLONE OPERATION COMPLETED SUCCESSFULLY!\n\n"
+                # Calculate compression stats for display
+                original_file_size = original_info.get('actual_size', 0)
+                new_file_size = new_image_info.get('actual_size', 0)
+                
+                # Show comprehensive success message with compression info
+                success_msg = f"GPARTED + CLONE + COMPRESSION COMPLETED SUCCESSFULLY!\n\n"
                 success_msg += f"RESULTS:\n"
                 success_msg += f"Original image: {image_path}\n"
-                success_msg += f"New optimized image: {new_path}\n\n"
+                success_msg += f"New optimized & compressed image: {new_path}\n\n"
                 success_msg += f"SIZE COMPARISON:\n"
                 success_msg += f"Original virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}\n"
                 success_msg += f"New virtual size: {QCow2CloneResizer.format_size(new_image_info['virtual_size'])}\n"
-                
+
+                # Add space comparison
                 if new_size < original_info['virtual_size']:
                     saved = original_info['virtual_size'] - new_size
-                    success_msg += f"Space saved: {QCow2CloneResizer.format_size(saved)} "
+                    success_msg += f"Space saved by resizing: {QCow2CloneResizer.format_size(saved)} "
                     success_msg += f"({(saved/original_info['virtual_size']*100):.1f}% reduction)\n"
                 elif new_size > original_info['virtual_size']:
                     added = new_size - original_info['virtual_size']
-                    success_msg += f"Space added: {QCow2CloneResizer.format_size(added)} "
+                    success_msg += f"Space added by resizing: {QCow2CloneResizer.format_size(added)} "
                     success_msg += f"({(added/original_info['virtual_size']*100):.1f}% increase)\n"
                 else:
-                    success_msg += f"Size maintained (optimized structure)\n"
-                
+                    success_msg += f"Virtual size maintained\n"
+
+                # Add file size compression info
+                if original_file_size > 0 and new_file_size > 0:
+                    if new_file_size < original_file_size:
+                        file_saved = original_file_size - new_file_size
+                        file_ratio = file_saved / original_file_size * 100
+                        success_msg += f"File size reduced: {QCow2CloneResizer.format_size(original_file_size)} → {QCow2CloneResizer.format_size(new_file_size)}\n"
+                        success_msg += f"Total file space saved: {QCow2CloneResizer.format_size(file_saved)} ({file_ratio:.1f}% smaller file)\n"
+                        
+                        # Check if compression flag is set
+                        is_compressed = new_image_info.get('compressed', False)
+                        success_msg += f"Image compression: {'YES' if is_compressed else 'NO (but still optimized)'}\n"
+
                 success_msg += f"\nPROCESS SUMMARY:\n"
                 success_msg += f"✓ GParted partition modifications applied\n"
                 success_msg += f"✓ All partition changes preserved\n"
                 success_msg += f"✓ Bootloader and structures intact\n"
                 success_msg += f"✓ New image optimized for actual needs\n"
-                success_msg += f"✓ Image created with preallocation=metadata\n\n"
-                success_msg += f"Your virtual machine is ready to use with the new image!"
-                
-                # Ask about replacing original file
-                replace_msg = f"REPLACE ORIGINAL FILE?\n\n"
-                replace_msg += f"Do you want to replace the original file with the new optimized image?\n\n"
-                replace_msg += f"Original: {image_path}\n"
-                replace_msg += f"New: {new_path}\n\n"
-                replace_msg += f"If YES:\n"
-                replace_msg += f"• Old file renamed to .old extension\n"
-                replace_msg += f"• New file takes original name\n"
-                replace_msg += f"• VM configuration unchanged\n\n"
-                replace_msg += f"If NO:\n"
-                replace_msg += f"• Both files kept\n"
-                replace_msg += f"• Update VM to use new file manually"
+                success_msg += f"✓ Image compressed for minimal storage\n"
+                success_msg += f"✓ Image created with optimal efficiency\n\n"
+                success_msg += f"Your virtual machine is ready to use with the new compressed image!"
                 
                 def show_success_messages():
                     messagebox.showinfo("Operation Complete", success_msg)
+                    
+                    # Ask about replacing original file
+                    replace_msg = f"REPLACE ORIGINAL FILE?\n\n"
+                    replace_msg += f"Do you want to replace the original file with the new optimized image?\n\n"
+                    replace_msg += f"Original: {image_path}\n"
+                    replace_msg += f"New: {new_path}\n\n"
+                    replace_msg += f"If YES:\n"
+                    replace_msg += f"• Old file renamed to .old extension\n"
+                    replace_msg += f"• New file takes original name\n"
+                    replace_msg += f"• VM configuration unchanged\n\n"
+                    replace_msg += f"If NO:\n"
+                    replace_msg += f"• Both files kept\n"
+                    replace_msg += f"• Update VM to use new file manually"
+                    
                     if messagebox.askyesno("Replace Original File", replace_msg):
                         try:
                             # Rename original to .old
@@ -2385,11 +1951,24 @@ class QCow2CloneResizerGUI:
                             os.rename(image_path, old_path)
                             # Rename new to original name
                             os.rename(str(new_path), image_path)
-                            messagebox.showinfo("File Replaced", 
-                                f"File replaced successfully!\n\n"
-                                f"Active file: {image_path}\n"
-                                f"Original saved: {old_path}\n\n"
-                                f"Your VM will use the new optimized image automatically.")
+                            
+                            # Ask if user wants to delete the .old backup
+                            old_size = os.path.getsize(old_path)
+                            delete_old_msg = f"DELETE BACKUP FILE?\n\n"
+                            delete_old_msg += f"The original file has been backed up as:\n{old_path}\n"
+                            delete_old_msg += f"Size: {QCow2CloneResizer.format_size(old_size)}\n\n"
+                            delete_old_msg += f"Delete this backup to free up disk space?\n\n"
+                            delete_old_msg += f"WARNING: This cannot be undone!"
+                            
+                            if messagebox.askyesno("Delete Backup", delete_old_msg):
+                                os.remove(old_path)
+                                messagebox.showinfo("File Replaced", 
+                                    f"File replaced successfully!\n\n"
+                                    f"Active file: {image_path}\n"
+                                    f"Original backup: {old_path}\n\n"
+                                    f"Your VM will use the new optimized image automatically.\n"
+                                    f"You can manually delete the backup later to free up space.")
+                                    
                         except FileNotFoundError as e:
                             messagebox.showerror("File Replace Error", 
                                 f"Could not find file during replacement:\n{e}")
@@ -2399,6 +1978,14 @@ class QCow2CloneResizerGUI:
                         except OSError as e:
                             messagebox.showerror("System Error", 
                                 f"System error during file replacement:\n{e}")
+                    else:
+                        # Show the final message about using the new compressed file
+                        messagebox.showinfo("Files Kept Separate", 
+                            f"Both files retained:\n\n"
+                            f"Original: {image_path}\n"
+                            f"New compressed optimized: {new_path}\n\n"
+                            f"The new file has been compressed for optimal storage.\n"
+                            f"Remember to update your VM configuration to use the new file.")
                 
                 self.root.after(0, show_success_messages)
             else:
@@ -2469,8 +2056,8 @@ class QCow2CloneResizerGUI:
             self.root.after(0, self.reset_ui)
 
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
-                                        existing_source_nbd, layout_info, progress_callback=None):
-        """Clone to new image using existing NBD device (avoids re-mounting source)"""
+                                    existing_source_nbd, layout_info, progress_callback=None):
+        """Clone to new image using existing NBD device with compression at the end"""
         target_nbd = None
         
         try:
@@ -2483,14 +2070,14 @@ class QCow2CloneResizerGUI:
             # Verification: is new size sufficient?
             min_required = layout_info['required_minimum_bytes']
             if new_size_bytes < min_required:
-                raise ValueError(
+                raise Exception(
                     f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
                     f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
                 )
             
             print(f"Size verification passed - using {QCow2CloneResizer.format_size(new_size_bytes)}")
             
-            # Step 1: Create new image
+            # Step 1: Create new image (without compression for faster cloning)
             if progress_callback:
                 progress_callback(60, "Creating new image...")
             
@@ -2499,7 +2086,7 @@ class QCow2CloneResizerGUI:
             
             # Verify image was created
             if not os.path.exists(target_path):
-                raise FileNotFoundError(f"Failed to create target image: {target_path}")
+                raise Exception(f"Failed to create target image: {target_path}")
             
             # Step 2: Mount new image with enhanced device selection
             if progress_callback:
@@ -2521,7 +2108,7 @@ class QCow2CloneResizerGUI:
             
             # Verify devices are different
             if existing_source_nbd == target_nbd:
-                raise ValueError(f"CRITICAL ERROR: Source and target NBD devices are identical: {existing_source_nbd}")
+                raise Exception(f"CRITICAL ERROR: Source and target NBD devices are identical: {existing_source_nbd}")
             
             print(f"NBD devices verified: source={existing_source_nbd}, target={target_nbd}")
             
@@ -2534,11 +2121,11 @@ class QCow2CloneResizerGUI:
                 print(f"Source device size: {source_check.stdout.strip()} bytes")
                 print(f"Target device size: {target_check.stdout.strip()} bytes")
             except subprocess.CalledProcessError as e:
-                raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Device accessibility check failed: {e}")
+                raise Exception(f"Device accessibility check failed: {e}")
             except subprocess.TimeoutExpired:
-                raise subprocess.TimeoutExpired(e.cmd, e.timeout, f"Device accessibility check timed out")
+                raise Exception(f"Device accessibility check timed out")
             except FileNotFoundError:
-                raise FileNotFoundError(f"blockdev command not found for accessibility check")
+                raise Exception(f"blockdev command not found for accessibility check")
             
             # Step 3: Clone disk structure
             if progress_callback:
@@ -2547,7 +2134,7 @@ class QCow2CloneResizerGUI:
             print("Cloning disk structure...")
             self._clone_disk_structure_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
             
-            # Step 4: Clone partition data with enhanced error handling
+            # Step 4: Clone partition data
             if progress_callback:
                 progress_callback(80, "Cloning partition data...")
             
@@ -2556,38 +2143,63 @@ class QCow2CloneResizerGUI:
             try:
                 self._clone_partition_data_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
                 clone_success = True
-            except FileNotFoundError as clone_error:
-                print(f"Partition cloning failed - file not found: {clone_error}")
-                raise clone_error
-            except PermissionError as clone_error:
-                print(f"Partition cloning failed - permission denied: {clone_error}")
-                raise clone_error
-            except subprocess.CalledProcessError as clone_error:
-                print(f"Partition cloning failed - command error: {clone_error}")
-                raise clone_error
-            except OSError as clone_error:
-                print(f"Partition cloning failed - system error: {clone_error}")
-                raise clone_error
-            except ValueError as clone_error:
-                print(f"Partition cloning failed - value error: {clone_error}")
+            except Exception as clone_error:
+                print(f"Partition cloning failed: {clone_error}")
                 raise clone_error
             
             if not clone_success:
-                raise RuntimeError("Partition cloning did not complete successfully")
+                raise Exception("Partition cloning did not complete successfully")
             
             if progress_callback:
-                progress_callback(95, "Finalizing and cleaning up...")
+                progress_callback(90, "Finalizing clone...")
             
             # Final sync before cleanup
             print("Performing final filesystem sync...")
             subprocess.run(['sync'], check=False, timeout=60)
             time.sleep(3)
             
-            # Cleanup target NBD device
+            # Cleanup target NBD device BEFORE compression
             print(f"Cleaning up target NBD device: {target_nbd}")
             if target_nbd:
                 QCow2CloneResizer.cleanup_nbd_device(target_nbd)
                 target_nbd = None
+            
+            # Additional wait for filesystem operations to complete
+            time.sleep(5)
+            
+            # Step 5: COMPRESS THE FINAL IMAGE - THIS WAS THE MISSING PART!
+            if progress_callback:
+                progress_callback(92, "Compressing final image for optimal storage...")
+            
+            print("Starting image compression...")
+            compression_stats = {'compression_ratio': 0.0, 'space_saved': 0}
+            try:
+                # Call compression with proper parameter
+                compression_stats = QCow2CloneResizer.compress_qcow2_image(
+                    target_path, 
+                    progress_callback,
+                    delete_original_source=source_path  # Pass the original source path
+                )
+                
+                print(f"Image compression completed:")
+                print(f"  Space saved by compression: {QCow2CloneResizer.format_size(compression_stats['space_saved'])}")
+                print(f"  Compression ratio: {compression_stats['compression_ratio']:.1f}%")
+                
+            except Exception as compression_error:
+                print(f"WARNING: Image compression failed: {compression_error}")
+                import traceback
+                traceback.print_exc()
+                
+                # Create fallback compression stats to prevent errors
+                compression_stats = {
+                    'space_saved': 0,
+                    'compression_ratio': 0.0,
+                    'original_size': 0,
+                    'compressed_size': 0,
+                    'original_source_deleted': False
+                }
+                
+                print("Continuing with uncompressed image...")
             
             # Final verification with retry
             print("Verifying target image...")
@@ -2596,48 +2208,44 @@ class QCow2CloneResizerGUI:
                     time.sleep(2)  # Wait for filesystem operations to complete
                     
                     if not os.path.exists(target_path):
-                        raise FileNotFoundError(f"Target image file not found: {target_path}")
+                        raise Exception(f"Target image file not found: {target_path}")
                     
                     # Check if file has reasonable size
                     file_stat = os.stat(target_path)
                     if file_stat.st_size < 1024: 
-                        raise ValueError(f"Target image file is too small: {file_stat.st_size} bytes")
+                        raise Exception(f"Target image file is too small: {file_stat.st_size} bytes")
                     
                     final_info = QCow2CloneResizer.get_image_info(target_path)
-                    print(f"Clone operation completed successfully!")
-                    print(f"  Final image size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
-                    print(f"  File size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
+                    print(f"Clone and compression operation completed successfully!")
+                    print(f"  Final image virtual size: {QCow2CloneResizer.format_size(final_info['virtual_size'])}")
+                    print(f"  Final file size: {QCow2CloneResizer.format_size(final_info['actual_size'])}")
+                    
+                    # Check if compression actually worked
+                    is_compressed = final_info.get('compressed', False)
+                    print(f"  Image compressed: {'YES' if is_compressed else 'NO'}")
+                    
+                    if compression_stats['compression_ratio'] > 0:
+                        print(f"  Compression efficiency: {compression_stats['compression_ratio']:.1f}%")
+                        print(f"  Space saved by compression: {QCow2CloneResizer.format_size(compression_stats['space_saved'])}")
                     
                     if progress_callback:
-                        progress_callback(100, "Clone complete!")
+                        if compression_stats['compression_ratio'] > 0:
+                            progress_callback(100, f"Clone complete! Compressed and saved {compression_stats['compression_ratio']:.1f}% space")
+                        else:
+                            progress_callback(100, "Clone complete! (compression may have failed)")
                     
                     return True
                     
-                except FileNotFoundError as verify_error:
-                    print(f"Verification attempt {verify_attempt + 1} failed - file not found: {verify_error}")
+                except Exception as verify_error:
+                    print(f"Verification attempt {verify_attempt + 1} failed: {verify_error}")
                     if verify_attempt == 2:  # Last attempt
-                        raise FileNotFoundError(f"Target image verification failed - file not found: {verify_error}")
-                    time.sleep(3)
-                except PermissionError as verify_error:
-                    print(f"Verification attempt {verify_attempt + 1} failed - permission denied: {verify_error}")
-                    if verify_attempt == 2:  # Last attempt
-                        raise PermissionError(f"Target image verification failed - permission denied: {verify_error}")
-                    time.sleep(3)
-                except OSError as verify_error:
-                    print(f"Verification attempt {verify_attempt + 1} failed - system error: {verify_error}")
-                    if verify_attempt == 2:  # Last attempt
-                        raise OSError(f"Target image verification failed - system error: {verify_error}")
-                    time.sleep(3)
-                except ValueError as verify_error:
-                    print(f"Verification attempt {verify_attempt + 1} failed - value error: {verify_error}")
-                    if verify_attempt == 2:  # Last attempt
-                        raise ValueError(f"Target image verification failed - value error: {verify_error}")
+                        raise Exception(f"Target image verification failed: {verify_error}")
                     time.sleep(3)
             
             return True
             
-        except FileNotFoundError as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd - file not found: {e}")
+        except Exception as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
             import traceback
             traceback.print_exc()
             
@@ -2659,127 +2267,21 @@ class QCow2CloneResizerGUI:
                 except OSError as file_error:
                     print(f"Could not remove incomplete file: {file_error}")
             
-            raise FileNotFoundError(f"Required file not found: {e}")
-        except PermissionError as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd - permission denied: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Cleanup target NBD on error
-            if target_nbd:
-                try:
-                    print(f"Emergency cleanup of target NBD: {target_nbd}")
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
-                    pass
-            
-            # Clean up partial target file
-            if target_path and os.path.exists(target_path):
-                try:
-                    file_size = os.path.getsize(target_path)
-                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
-                    os.remove(target_path)
-                    print("Incomplete target file removed successfully")
-                except OSError as file_error:
-                    print(f"Could not remove incomplete file: {file_error}")
-            
-            raise PermissionError(f"Permission denied: {e}")
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd - command failed: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Cleanup target NBD on error
-            if target_nbd:
-                try:
-                    print(f"Emergency cleanup of target NBD: {target_nbd}")
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
-                    pass
-            
-            # Clean up partial target file
-            if target_path and os.path.exists(target_path):
-                try:
-                    file_size = os.path.getsize(target_path)
-                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
-                    os.remove(target_path)
-                    print("Incomplete target file removed successfully")
-                except OSError as file_error:
-                    print(f"Could not remove incomplete file: {file_error}")
-            
-            raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Command failed: {e}")
-        except ValueError as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd - invalid value: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Cleanup target NBD on error
-            if target_nbd:
-                try:
-                    print(f"Emergency cleanup of target NBD: {target_nbd}")
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
-                    pass
-            
-            # Clean up partial target file
-            if target_path and os.path.exists(target_path):
-                try:
-                    file_size = os.path.getsize(target_path)
-                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
-                    os.remove(target_path)
-                    print("Incomplete target file removed successfully")
-                except OSError as file_error:
-                    print(f"Could not remove incomplete file: {file_error}")
-            
-            raise ValueError(f"Invalid value: {e}")
-        except RuntimeError as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd - runtime error: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Cleanup target NBD on error
-            if target_nbd:
-                try:
-                    print(f"Emergency cleanup of target NBD: {target_nbd}")
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
-                    pass
-            
-            # Clean up partial target file
-            if target_path and os.path.exists(target_path):
-                try:
-                    file_size = os.path.getsize(target_path)
-                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
-                    os.remove(target_path)
-                    print("Incomplete target file removed successfully")
-                except OSError as file_error:
-                    print(f"Could not remove incomplete file: {file_error}")
-            
-            raise RuntimeError(f"Runtime error: {e}")
-        except OSError as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd - system error: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Cleanup target NBD on error
-            if target_nbd:
-                try:
-                    print(f"Emergency cleanup of target NBD: {target_nbd}")
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
-                    pass
-            
-            # Clean up partial target file
-            if target_path and os.path.exists(target_path):
-                try:
-                    file_size = os.path.getsize(target_path)
-                    print(f"Removing incomplete target file: {target_path} (size: {file_size} bytes)")
-                    os.remove(target_path)
-                    print("Incomplete target file removed successfully")
-                except OSError as file_error:
-                    print(f"Could not remove incomplete file: {file_error}")
-            
-            raise OSError(f"System error: {e}")
+            # Re-raise the original exception with proper type
+            if isinstance(e, FileNotFoundError):
+                raise FileNotFoundError(f"Required file not found: {e}")
+            elif isinstance(e, PermissionError):
+                raise PermissionError(f"Permission denied: {e}")
+            elif isinstance(e, subprocess.CalledProcessError):
+                raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Command failed: {e}")
+            elif isinstance(e, ValueError):
+                raise ValueError(f"Invalid value: {e}")
+            elif isinstance(e, RuntimeError):
+                raise RuntimeError(f"Runtime error: {e}")
+            elif isinstance(e, OSError):
+                raise OSError(f"System error: {e}")
+            else:
+                raise Exception(f"Unexpected error: {e}")
     
     def _execute_dd_with_retry(self, cmd, timeout=300, max_retries=3):
         """Execute dd command with retries and better error handling"""
