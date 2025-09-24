@@ -103,7 +103,7 @@ class DiskMountDialog:
         cancel_btn.pack(side=tk.RIGHT, padx=(10, 0))
         
         # Mount & Select button (initially disabled)
-        self.mount_btn = ttk.Button(button_frame, text="Mount & Select", 
+        self.mount_btn = ttk.Button(button_frame, text="Select & Mount", 
                                    command=self.mount_and_select, state=tk.DISABLED)
         self.mount_btn.pack(side=tk.RIGHT)
         
