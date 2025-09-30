@@ -1681,7 +1681,7 @@ class QCow2CloneResizerGUI:
         thread.start()
     
     def _gparted_clone_worker(self, image_path):
-        """Worker thread for GParted + clone resize operation - version corrigée"""
+        """Worker thread for GParted + clone resize operation - version avec gestion d'erreurs complète"""
         source_nbd = None
         
         try:
@@ -1775,7 +1775,7 @@ class QCow2CloneResizerGUI:
                     source_nbd,
                     final_layout,
                     self.update_progress,
-                    compress=False  # PAS de compression pendant le clonage
+                    compress=False
                 )
                 
                 print("Clone operation completed successfully!")
@@ -1795,8 +1795,40 @@ class QCow2CloneResizerGUI:
                         delete_original_source=None
                     )
                     print(f"Compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
-                except Exception as compression_error:
-                    print(f"WARNING: Image compression failed: {compression_error}")
+                except FileNotFoundError as compression_error:
+                    print(f"ERROR: Compression failed - file not found: {compression_error}")
+                    compression_stats = {
+                        'space_saved': 0,
+                        'compression_ratio': 0.0,
+                        'original_size': 0,
+                        'compressed_size': 0,
+                    }
+                except PermissionError as compression_error:
+                    print(f"ERROR: Compression failed - permission denied: {compression_error}")
+                    compression_stats = {
+                        'space_saved': 0,
+                        'compression_ratio': 0.0,
+                        'original_size': 0,
+                        'compressed_size': 0,
+                    }
+                except subprocess.CalledProcessError as compression_error:
+                    print(f"ERROR: Compression failed - command error: {compression_error}")
+                    compression_stats = {
+                        'space_saved': 0,
+                        'compression_ratio': 0.0,
+                        'original_size': 0,
+                        'compressed_size': 0,
+                    }
+                except subprocess.TimeoutExpired as compression_error:
+                    print(f"ERROR: Compression failed - timeout: {compression_error}")
+                    compression_stats = {
+                        'space_saved': 0,
+                        'compression_ratio': 0.0,
+                        'original_size': 0,
+                        'compressed_size': 0,
+                    }
+                except OSError as compression_error:
+                    print(f"ERROR: Compression failed - system error: {compression_error}")
                     compression_stats = {
                         'space_saved': 0,
                         'compression_ratio': 0.0,
@@ -1812,15 +1844,15 @@ class QCow2CloneResizerGUI:
                 # Show completion dialog with comparison between SOURCE and FINAL
                 print("Showing completion dialog...")
                 self.root.after(0, lambda: self._show_completion_and_replacement_dialog(
-                    image_path,           # source_path (original)
-                    str(final_path),      # final_path (compressed)
-                    str(intermediate_path), # intermediate_path (to delete)
-                    original_info,        # original_info
-                    original_source_size, # original_source_size
-                    final_image_info,     # final_image_info
-                    final_image_size,     # final_image_size
-                    new_size,             # new_size
-                    compression_stats     # compression_stats
+                    image_path,
+                    str(final_path),
+                    str(intermediate_path),
+                    original_info,
+                    original_source_size,
+                    final_image_info,
+                    final_image_size,
+                    new_size,
+                    compression_stats
                 ))
                 
             else:
@@ -1835,21 +1867,67 @@ class QCow2CloneResizerGUI:
                     f"{image_path}\n\n"
                     f"All GParted modifications have been discarded."))
             
-        except Exception as e:
-            error_msg = f"GPARTED + CLONE OPERATION FAILED\n\n{e}"
-            self.log(f"Operation failed: {e}")
-            print(f"ERROR in _gparted_clone_worker: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Operation Failed", error_msg))
+        except FileNotFoundError as e:
+            error_msg = f"OPERATION FAILED - File Not Found\n\n{e}\n\nCheck file paths and permissions."
+            self.log(f"Operation failed - file not found: {e}")
+            print(f"ERROR in _gparted_clone_worker - file not found: {e}")
+            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+        except PermissionError as e:
+            error_msg = f"OPERATION FAILED - Permission Denied\n\n{e}\n\nRun as root or with sudo."
+            self.log(f"Operation failed - permission denied: {e}")
+            print(f"ERROR in _gparted_clone_worker - permission denied: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
+        except subprocess.CalledProcessError as e:
+            error_msg = f"OPERATION FAILED - Command Error\n\n{e}\n\nCommand: {e.cmd}\nReturn code: {e.returncode}"
+            self.log(f"Operation failed - command error: {e}")
+            print(f"ERROR in _gparted_clone_worker - command error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Command Failed", error_msg))
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"OPERATION FAILED - Timeout\n\n{e}\n\nOperation took too long to complete."
+            self.log(f"Operation failed - timeout: {e}")
+            print(f"ERROR in _gparted_clone_worker - timeout: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Operation Timeout", error_msg))
+        except RuntimeError as e:
+            error_msg = f"OPERATION FAILED - Runtime Error\n\n{e}"
+            self.log(f"Operation failed - runtime error: {e}")
+            print(f"ERROR in _gparted_clone_worker - runtime error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Runtime Error", error_msg))
+        except ValueError as e:
+            error_msg = f"OPERATION FAILED - Invalid Value\n\n{e}\n\nCheck input parameters."
+            self.log(f"Operation failed - value error: {e}")
+            print(f"ERROR in _gparted_clone_worker - value error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Invalid Value", error_msg))
+        except KeyError as e:
+            error_msg = f"OPERATION FAILED - Data Error\n\n{e}\n\nMissing required data."
+            self.log(f"Operation failed - key error: {e}")
+            print(f"ERROR in _gparted_clone_worker - key error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Data Error", error_msg))
+        except OSError as e:
+            error_msg = f"OPERATION FAILED - System Error\n\n{e}\n\nCheck system resources."
+            self.log(f"Operation failed - system error: {e}")
+            print(f"ERROR in _gparted_clone_worker - system error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+        except ImportError as e:
+            error_msg = f"OPERATION FAILED - Missing Module\n\n{e}\n\nRequired Python module not available."
+            self.log(f"Operation failed - import error: {e}")
+            print(f"ERROR in _gparted_clone_worker - import error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Module Error", error_msg))
         
         finally:
             if source_nbd:
                 try:
                     print(f"Final cleanup of NBD device: {source_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                except Exception as cleanup_e:
-                    print(f"Error cleaning up NBD device: {cleanup_e}")
+                except subprocess.CalledProcessError as cleanup_e:
+                    print(f"Error cleaning up NBD device - command failed: {cleanup_e}")
+                except subprocess.TimeoutExpired:
+                    print(f"Error cleaning up NBD device - timeout")
+                except FileNotFoundError:
+                    print(f"Error cleaning up NBD device - command not found")
+                except OSError as cleanup_e:
+                    print(f"Error cleaning up NBD device - system error: {cleanup_e}")
             self.root.after(0, self.reset_ui)
-
+        
     def _show_completion_and_replacement_dialog(self, source_path, final_path, intermediate_path,
                                            original_info, original_source_size,
                                            final_image_info, final_image_size,
@@ -1915,7 +1993,7 @@ class QCow2CloneResizerGUI:
                 default='yes'
             )
             
-            if replace_result is True:  # REPLACE - delete original and intermediate
+            if replace_result is True:  # REPLACE
                 self._perform_final_cleanup(source_path, intermediate_path, final_path, 
                                         original_source_size, final_image_size)
             elif replace_result is False:  # KEEP ALL
@@ -1931,9 +2009,30 @@ class QCow2CloneResizerGUI:
                     f"QCOW2 resize completed!\n\n"
                     f"Final optimized image: {final_path}")
             
-        except Exception as e:
-            self.log(f"Completion dialog error: {e}")
-            messagebox.showinfo("Operation Complete", "QCOW2 resize completed - check console for details.")
+        except KeyError as e:
+            self.log(f"Completion dialog error - missing data: {e}")
+            messagebox.showinfo("Operation Complete", 
+                f"QCOW2 resize completed!\n\n"
+                f"Original: {source_path}\n"
+                f"Final: {final_path}\n\n"
+                f"Note: Some statistics unavailable.")
+        except TypeError as e:
+            self.log(f"Completion dialog error - type error: {e}")
+            messagebox.showinfo("Operation Complete", 
+                f"QCOW2 resize completed!\n\n"
+                f"Check files manually for results.")
+        except ValueError as e:
+            self.log(f"Completion dialog error - value error: {e}")
+            messagebox.showinfo("Operation Complete", 
+                f"QCOW2 resize completed with some calculation errors.")
+        except AttributeError as e:
+            self.log(f"Completion dialog error - attribute error: {e}")
+            messagebox.showinfo("Operation Complete", 
+                f"QCOW2 resize completed - check console for details.")
+        except OSError as e:
+            self.log(f"Completion dialog error - system error: {e}")
+            messagebox.showerror("Display Error", 
+                f"Operation completed but display error occurred:\n{e}")
     
     def _perform_final_cleanup(self, source_path, intermediate_path, final_path,
                           original_size, final_size):
@@ -1984,7 +2083,7 @@ class QCow2CloneResizerGUI:
             
             # Verify
             if not os.path.exists(source_path):
-                raise Exception(f"Failed to move final image to original location")
+                raise FileNotFoundError(f"Failed to move final image to original location")
             
             if os.path.exists(intermediate_path) or os.path.exists(final_path):
                 print(f"Warning: Cleanup may be incomplete")
@@ -2003,16 +2102,58 @@ class QCow2CloneResizerGUI:
                 f"✓ Total disk space freed: {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
                 f"The optimized image is ready for use!")
             
-        except Exception as e:
-            self.log(f"Cleanup failed: {e}")
-            messagebox.showerror("Cleanup Failed", 
-                f"Error during cleanup:\n{e}\n\n"
-                f"Some files may need manual cleanup.")
+        except FileNotFoundError as e:
+            self.log(f"Cleanup failed - file not found: {e}")
+            messagebox.showerror("Cleanup Failed - File Not Found", 
+                f"Could not find file during cleanup:\n{e}\n\n"
+                f"Files may have been moved or deleted.\n"
+                f"Check file locations manually:\n"
+                f"• Original: {source_path}\n"
+                f"• Intermediate: {intermediate_path}\n"
+                f"• Final: {final_path}")
+        except PermissionError as e:
+            self.log(f"Cleanup failed - permission denied: {e}")
+            messagebox.showerror("Cleanup Failed - Permission Denied", 
+                f"Permission denied during file cleanup:\n{e}\n\n"
+                f"Check file permissions or run as administrator.\n\n"
+                f"Manual cleanup may be required for:\n"
+                f"• Original: {source_path}\n"
+                f"• Intermediate: {intermediate_path}\n"
+                f"• Final: {final_path}")
+        except OSError as e:
+            self.log(f"Cleanup failed - system error: {e}")
+            messagebox.showerror("Cleanup Failed - System Error", 
+                f"System error during file cleanup:\n{e}\n\n"
+                f"Check disk space and file system status.\n\n"
+                f"Manual cleanup may be required for:\n"
+                f"• Original: {source_path}\n"
+                f"• Intermediate: {intermediate_path}\n"
+                f"• Final: {final_path}")
+        except shutil.Error as e:
+            self.log(f"Cleanup failed - copy error: {e}")
+            messagebox.showerror("Cleanup Failed - Copy Error", 
+                f"File operation error during cleanup:\n{e}\n\n"
+                f"Some files may be partially deleted or moved.\n\n"
+                f"Check file status manually:\n"
+                f"• Original: {source_path}\n"
+                f"• Intermediate: {intermediate_path}\n"
+                f"• Final: {final_path}")
+        except ValueError as e:
+            self.log(f"Cleanup failed - invalid value: {e}")
+            messagebox.showerror("Cleanup Failed - Invalid Value", 
+                f"Invalid file path during cleanup:\n{e}\n\n"
+                f"Check file paths and try again.")
+        except RuntimeError as e:
+            self.log(f"Cleanup failed - runtime error: {e}")
+            messagebox.showerror("Cleanup Failed - Runtime Error", 
+                f"Runtime error during cleanup:\n{e}\n\n"
+                f"Operation may be incomplete.\n"
+                f"Check file status manually.")
             
         
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
-                                    existing_source_nbd, layout_info, progress_callback=None,
-                                    compress=False):
+                                existing_source_nbd, layout_info, progress_callback=None,
+                                compress=False):
         """Clone to new image using existing NBD device - NO compression by default"""
         target_nbd = None
         
@@ -2026,7 +2167,7 @@ class QCow2CloneResizerGUI:
             # Verification
             min_required = layout_info['required_minimum_bytes']
             if new_size_bytes < min_required:
-                raise Exception(
+                raise ValueError(
                     f"Size insufficient! Minimum required: {QCow2CloneResizer.format_size(min_required)}, "
                     f"requested: {QCow2CloneResizer.format_size(new_size_bytes)}"
                 )
@@ -2039,7 +2180,7 @@ class QCow2CloneResizerGUI:
             QCow2CloneResizer.create_new_qcow2_image(target_path, new_size_bytes, progress_callback)
             
             if not os.path.exists(target_path):
-                raise Exception(f"Failed to create target image: {target_path}")
+                raise FileNotFoundError(f"Failed to create target image: {target_path}")
             
             # Mount target image
             if progress_callback:
@@ -2057,7 +2198,7 @@ class QCow2CloneResizerGUI:
             print(f"Target NBD device: {target_nbd}")
             
             if existing_source_nbd == target_nbd:
-                raise Exception(f"CRITICAL ERROR: Source and target NBD devices are identical: {existing_source_nbd}")
+                raise RuntimeError(f"CRITICAL ERROR: Source and target NBD devices are identical: {existing_source_nbd}")
             
             # Clone disk structure
             if progress_callback:
@@ -2094,11 +2235,11 @@ class QCow2CloneResizerGUI:
             time.sleep(2)
             
             if not os.path.exists(target_path):
-                raise Exception(f"Target image file not found: {target_path}")
+                raise FileNotFoundError(f"Target image file not found: {target_path}")
             
             file_stat = os.stat(target_path)
             if file_stat.st_size < 1024: 
-                raise Exception(f"Target image file is too small: {file_stat.st_size} bytes")
+                raise ValueError(f"Target image file is too small: {file_stat.st_size} bytes")
             
             final_info = QCow2CloneResizer.get_image_info(target_path)
             print(f"Clone operation completed successfully!")
@@ -2110,24 +2251,157 @@ class QCow2CloneResizerGUI:
             
             return True
             
-        except Exception as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd: {e}")
+        except FileNotFoundError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - file not found: {e}")
             import traceback
             traceback.print_exc()
             
             if target_nbd:
                 try:
                     QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except:
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
                     pass
             
             if target_path and os.path.exists(target_path):
                 try:
                     os.remove(target_path)
-                except:
+                except (PermissionError, OSError):
                     pass
             
-            raise
+            raise FileNotFoundError(f"Clone operation failed - file not found: {e}")
+        
+        except PermissionError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - permission denied: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+            
+            if target_path and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            raise PermissionError(f"Clone operation failed - permission denied: {e}")
+        
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - command failed: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+            
+            if target_path and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Clone operation failed - command error: {e}")
+        
+        except subprocess.TimeoutExpired as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - timeout: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+            
+            if target_path and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            raise subprocess.TimeoutExpired(e.cmd, e.timeout, f"Clone operation failed - timeout: {e}")
+        
+        except ValueError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - invalid value: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+            
+            if target_path and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            raise ValueError(f"Clone operation failed - invalid value: {e}")
+        
+        except RuntimeError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - runtime error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+            
+            if target_path and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            raise RuntimeError(f"Clone operation failed - runtime error: {e}")
+        
+        except OSError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - system error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+            
+            if target_path and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            raise OSError(f"Clone operation failed - system error: {e}")
+        
+        except KeyError as e:
+            print(f"ERROR in _clone_to_new_image_with_existing_nbd - missing data: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if target_nbd:
+                try:
+                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+            
+            if target_path and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            raise KeyError(f"Clone operation failed - missing data: {e}")
     
     def _execute_dd_with_retry(self, cmd, timeout=300, max_retries=3):
         """Execute dd command with retries and better error handling"""
@@ -2590,6 +2864,21 @@ class QCow2CloneResizerGUI:
         except ValueError as e:
             self.log(f"Final size dialog error - value error: {e}")
             print(f"ERROR in _show_final_size_dialog - value error: {e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except KeyError as e:
+            self.log(f"Final size dialog error - missing data key: {e}")
+            print(f"ERROR in _show_final_size_dialog - key error: {e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except tk.TclError as e:
+            self.log(f"Final size dialog error - Tkinter error: {e}")
+            print(f"ERROR in _show_final_size_dialog - Tkinter error: {e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except RuntimeError as e:
+            self.log(f"Final size dialog error - runtime error: {e}")
+            print(f"ERROR in _show_final_size_dialog - runtime error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except OSError as e:
