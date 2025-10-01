@@ -231,86 +231,7 @@ def has_mounted_partitions(device_path: str) -> bool:
         return False
 
 
-def get_disk_list() -> list[dict]:
-    """
-    Get list of available disks as structured data.
-    Returns a list of dictionaries with disk information.
-    Each dictionary contains: 'device', 'size', 'model', 'size_bytes', 'label', 'is_active', and 'is_mounted'.
-    """
-    try:
-        # Use more explicit column specification with -o option and -n to skip header
-        output = run_command(["lsblk", "-d", "-o", "NAME,SIZE,TYPE,MODEL", "-n", "-b"])
-        
-        if not output:
-            # Fallback to a simpler command if the first one returned no results
-            output = run_command(["lsblk", "-d", "-o", "NAME,SIZE", "-n", "-b"])
-            if not output:
-                log_info("No disks detected. Ensure the program is run with appropriate permissions.")
-                return []
-        
-        # Get active disks for marking
-        active_disks = get_active_disk() or []
-        active_disk_names = set()
-        for active_device in active_disks:
-            if isinstance(active_device, str):
-                # Remove /dev/ prefix if present
-                base_name = active_device.replace('/dev/', '')
-                active_disk_names.add(base_name)
-        
-        # Parse the output from lsblk command
-        disks = []
-        for line in output.strip().split('\n'):
-            if not line.strip():
-                continue
-                
-            # Split the line but preserve the model name which might contain spaces
-            parts = line.strip().split(maxsplit=3)
-            device = parts[0]
-            
-            # Ensure we have at least NAME and SIZE
-            if len(parts) >= 2:
-                try:
-                    size_bytes = int(parts[1])
-                    size_human = format_bytes(size_bytes)
-                except (ValueError, IndexError):
-                    size_bytes = 0
-                    size_human = "Unknown"
-                
-                # MODEL may be missing, set to "Unknown" if it is
-                model = parts[3] if len(parts) > 3 else "Unknown"
-                
-                # Get disk label
-                label = get_disk_label(device)
-                
-                # Check if this disk is active (system disk)
-                is_active = device in active_disk_names
-                
-                # Check if this disk has mounted partitions
-                device_path = f"/dev/{device}"
-                is_mounted = has_mounted_partitions(device_path)
-                
-                disks.append({
-                    "device": device_path,
-                    "size": size_human,
-                    "size_bytes": size_bytes,
-                    "model": model,
-                    "label": label,
-                    "is_active": is_active,
-                    "is_mounted": is_mounted
-                })
-        return disks
-    except FileNotFoundError as e:
-        log_error(f"Error: Command not found: {str(e)}")
-        return []
-    except subprocess.CalledProcessError as e:
-        log_error(f"Error executing command: {str(e)}")
-        return []
-    except (IndexError, ValueError) as e:
-        log_error(f"Error parsing disk information: {str(e)}")
-        return []
-    except KeyboardInterrupt:
-        log_error("Disk listing interrupted by user")
-        return []
+
 
 
 def check_filesystem(device_path: str) -> str:
@@ -735,9 +656,22 @@ def get_physical_drives_for_logical_volumes(active_devices: list) -> set:
     physical_drives = set()
     
     try:
-        # Get all physical drives from disk list
-        disk_list = get_disk_list()
-        physical_device_names = [disk['device'].replace('/dev/', '') for disk in disk_list]
+        try:
+            output = run_command([
+                "lsblk", 
+                "-d",  # Only show devices, not partitions
+                "-n",  # No headers
+                "-o", "NAME"  # Only device names
+            ], raise_on_error=False)
+            
+            physical_device_names = []
+            for line in output.strip().split('\n'):
+                if line.strip():
+                    physical_device_names.append(line.strip())
+        
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            log_error(f"Could not get physical device list: {str(e)}")
+            return set()
         
         for physical_device in physical_device_names:
             try:
@@ -792,6 +726,93 @@ def get_physical_drives_for_logical_volumes(active_devices: list) -> set:
         log_error(f"OS error during logical volume mapping: {str(e)}")
     
     return physical_drives
+
+
+def get_disk_list() -> list[dict]:
+    """
+    Get list of available disks as structured data.
+    Returns a list of dictionaries with disk information.
+    Each dictionary contains: 'device', 'size', 'model', 'size_bytes', 'label', 'is_active', and 'is_mounted'.
+    """
+    try:
+        # Use more explicit column specification with -o option and -n to skip header
+        output = run_command(["lsblk", "-d", "-o", "NAME,SIZE,TYPE,MODEL", "-n", "-b"])
+        
+        if not output:
+            # Fallback to a simpler command if the first one returned no results
+            output = run_command(["lsblk", "-d", "-o", "NAME,SIZE", "-n", "-b"])
+            if not output:
+                log_info("No disks detected. Ensure the program is run with appropriate permissions.")
+                return []
+        
+        # Get active disks for marking - but handle the case where this might fail
+        try:
+            active_disks = get_active_disk() or []
+            active_disk_names = set()
+            for active_device in active_disks:
+                if isinstance(active_device, str):
+                    # Remove /dev/ prefix if present
+                    base_name = active_device.replace('/dev/', '')
+                    active_disk_names.add(base_name)
+        except Exception as e:
+            # If getting active disks fails, continue without marking any as active
+            log_error(f"Could not determine active disks: {str(e)}")
+            active_disk_names = set()
+        
+        # Parse the output from lsblk command
+        disks = []
+        for line in output.strip().split('\n'):
+            if not line.strip():
+                continue
+                
+            # Split the line but preserve the model name which might contain spaces
+            parts = line.strip().split(maxsplit=3)
+            device = parts[0]
+            
+            # Ensure we have at least NAME and SIZE
+            if len(parts) >= 2:
+                try:
+                    size_bytes = int(parts[1])
+                    size_human = format_bytes(size_bytes)
+                except (ValueError, IndexError):
+                    size_bytes = 0
+                    size_human = "Unknown"
+                
+                # MODEL may be missing, set to "Unknown" if it is
+                model = parts[3] if len(parts) > 3 else "Unknown"
+                
+                # Get disk label
+                label = get_disk_label(device)
+                
+                # Check if this disk is active (system disk)
+                is_active = device in active_disk_names
+                
+                # Check if this disk has mounted partitions
+                device_path = f"/dev/{device}"
+                is_mounted = has_mounted_partitions(device_path)
+                
+                disks.append({
+                    "device": device_path,
+                    "size": size_human,
+                    "size_bytes": size_bytes,
+                    "model": model,
+                    "label": label,
+                    "is_active": is_active,
+                    "is_mounted": is_mounted
+                })
+        return disks
+    except FileNotFoundError as e:
+        log_error(f"Error: Command not found: {str(e)}")
+        return []
+    except subprocess.CalledProcessError as e:
+        log_error(f"Error executing command: {str(e)}")
+        return []
+    except (IndexError, ValueError) as e:
+        log_error(f"Error parsing disk information: {str(e)}")
+        return []
+    except KeyboardInterrupt:
+        log_error("Disk listing interrupted by user")
+        return []
 
 
 def get_base_disk(device_name: str) -> str:
