@@ -1,7 +1,7 @@
 import tkinter as tk
 import os
 import subprocess
-
+import tempfile
 import json
 import shutil
 import time
@@ -939,3 +939,72 @@ class QCow2CloneResizer:
         except shutil.Error as e:
             raise Exception(f"Copy error creating backup: {e}")
 
+    @staticmethod
+    def detect_vm_os(nbd_device):
+        """Detect if VM is Linux or Windows
+        
+        Returns:
+            'linux', 'windows', or 'unknown'
+        """
+        try:
+            print(f"Detecting OS on {nbd_device}")
+            
+            partitions = []
+            for i in range(1, 10):
+                for path_fmt in [f"{nbd_device}p{i}", f"{nbd_device}{i}"]:
+                    if os.path.exists(path_fmt):
+                        partitions.append((i, path_fmt))
+                        break
+            
+            if not partitions:
+                print("No partitions found")
+                return 'unknown'
+            
+            # Try to mount and detect
+            for part_num, part_device in partitions:
+                with tempfile.TemporaryDirectory() as mount_point:
+                    try:
+                        # Try different filesystems
+                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2', 'ntfs', 'vfat']:
+                            result = subprocess.run(
+                                ['mount', '-t', fs_type, '-o', 'ro', part_device, mount_point],
+                                capture_output=True, timeout=10, check=False
+                            )
+                            
+                            if result.returncode == 0:
+                                print(f"Mounted {part_device} as {fs_type}")
+                                
+                                # Check for Linux indicators
+                                if os.path.exists(os.path.join(mount_point, 'etc')):
+                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                    print("Detected Linux (found /etc)")
+                                    return 'linux'
+                                
+                                # Check for Windows indicators
+                                if os.path.exists(os.path.join(mount_point, 'Windows')) or \
+                                os.path.exists(os.path.join(mount_point, 'WINDOWS')):
+                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                    print("Detected Windows (found Windows directory)")
+                                    return 'windows'
+                                
+                                # Check for boot directory (Linux)
+                                if os.path.exists(os.path.join(mount_point, 'boot')):
+                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                    print("Detected Linux (found /boot)")
+                                    return 'linux'
+                                
+                                subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                
+                    except subprocess.TimeoutExpired:
+                        print(f"Mount operation timed out for {part_device}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except Exception as e:
+                        print(f"Error checking partition {part_device}: {e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+            
+            print("Could not determine OS type")
+            return 'unknown'
+            
+        except Exception as e:
+            print(f"Error in detect_vm_os: {e}")
+            return 'unknown'
