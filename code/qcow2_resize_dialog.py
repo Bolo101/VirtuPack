@@ -607,6 +607,21 @@ class QCow2CloneResizerGUI:
             elif os_type == 'windows':
                 print("=== WINDOWS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
                 
+                # CRITICAL: Disconnect NBD device before compression
+                self.update_progress(40, "Finalizing Windows partition changes...")
+                print("Performing final sync before NBD disconnect...")
+                subprocess.run(['sync'], check=False, timeout=60)
+                time.sleep(2)
+                
+                # Disconnect NBD device
+                print(f"Disconnecting NBD device: {source_nbd}")
+                QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                source_nbd = None  # Mark as cleaned up
+                
+                # Wait for device to be fully released
+                print("Waiting for device release...")
+                time.sleep(5)
+                
                 self.update_progress(50, "Compressing Windows image for space optimization...")
                 
                 try:
@@ -635,8 +650,10 @@ class QCow2CloneResizerGUI:
                     
                 except Exception as compression_error:
                     print(f"ERROR: Windows image compression failed: {compression_error}")
+                    import traceback
+                    traceback.print_exc()
                     error_msg = f"Failed to compress Windows image:\n\n{compression_error}\n\n"
-                    error_msg += "Your original image remains unchanged."
+                    error_msg += "Your original image has the GParted changes but is not compressed."
                     self.root.after(0, lambda: messagebox.showerror("Compression Failed", error_msg))
             
             else:
@@ -744,7 +761,7 @@ class QCow2CloneResizerGUI:
                 f"Windows image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
                 f"Compressed: {final_image_size / (1024**3):.2f} GB")
-
+        
     @staticmethod
     def reinstall_bootloader(nbd_device, progress_callback=None):
         """Reinstall bootloader with proper EFI cleanup and fallback setup"""
