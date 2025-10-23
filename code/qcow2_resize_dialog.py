@@ -406,6 +406,17 @@ class QCow2CloneResizerGUI:
             os_type = QCow2CloneResizer.detect_vm_os(source_nbd)
             print(f"Detected OS type: {os_type}")
             
+            # Detect partition table type (BIOS vs UEFI)
+            parted_result = subprocess.run(
+                ['parted', '-s', source_nbd, 'print'],
+                capture_output=True, text=True, check=True, timeout=30
+            )
+            is_gpt = 'gpt' in parted_result.stdout.lower()
+            is_uefi = is_gpt
+            boot_type = "UEFI" if is_uefi else "BIOS"
+            
+            print(f"Boot type: {boot_type}")
+            
             # Get initial partition layout
             self.update_progress(20, "Analyzing initial partition layout...")
             initial_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
@@ -420,7 +431,8 @@ class QCow2CloneResizerGUI:
             instructions = (
                 f"GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
                 f"Device: {source_nbd}\n"
-                f"OS Type: {os_type.upper()}\n\n"
+                f"OS Type: {os_type.upper()}\n"
+                f"Boot Type: {boot_type}\n\n"
                 f"CURRENT PARTITIONS:\n{initial_info}\n"
                 f"INSTRUCTIONS FOR GPARTED:\n"
                 f"1. Resize partitions (shrink to save space or expand)\n"
@@ -430,10 +442,15 @@ class QCow2CloneResizerGUI:
                 f"5. Close GParted when finished\n\n"
             )
             
-            if os_type == 'linux':
+            if os_type == 'linux' and is_uefi:
                 instructions += (
-                    f"After GParted closes, the bootloader will be automatically\n"
-                    f"reinstalled to ensure your VM boots correctly."
+                    f"After GParted closes and cloning completes, the bootloader\n"
+                    f"will be automatically reinstalled to ensure your VM boots correctly."
+                )
+            elif os_type == 'linux' and not is_uefi:
+                instructions += (
+                    f"BIOS system detected: After GParted closes, the image will be\n"
+                    f"compressed in-place (no cloning). Bootloader will remain intact."
                 )
             elif os_type == 'windows':
                 instructions += (
@@ -453,47 +470,11 @@ class QCow2CloneResizerGUI:
             print("GParted session completed")
             
             # OS-SPECIFIC HANDLING
-            if os_type == 'linux':
-                print("=== LINUX VM DETECTED - PERFORMING FULL CLONING ===")
-                
-                # *** AUTOMATIC BOOTLOADER REINSTALLATION ***
-                self.update_progress(35, "Reinstalling bootloader after partition changes...")
-                print("Attempting to reinstall bootloader to prevent boot issues...")
-                
-                bootloader_fixed = QCow2CloneResizerGUI.reinstall_bootloader(
-                    source_nbd, 
-                    self.update_progress
-                )
-                
-                if bootloader_fixed:
-                    print("Bootloader successfully reinstalled")
-                    self.root.after(0, lambda: messagebox.showinfo(
-                        "Bootloader Fixed",
-                        "Bootloader has been automatically reinstalled.\n\n"
-                        "Your VM will boot correctly with the resized partitions.\n\n"
-                        "This works for both BIOS and UEFI systems."
-                    ))
-                else:
-                    print("WARNING: Bootloader reinstall unsuccessful")
-                    
-                    warning_msg = (
-                        "Could not automatically reinstall bootloader.\n\n"
-                        "POSSIBLE REASONS:\n"
-                        "- No Linux root filesystem detected\n"
-                        "- Unsupported bootloader configuration\n\n"
-                        "FOR LINUX VMs:\n"
-                        "If VM doesn't boot after cloning, boot from live CD and run:\n"
-                        "  sudo mount /dev/vda1 /mnt\n"
-                        "  sudo grub-install --root-directory=/mnt /dev/vda\n"
-                        "  sudo umount /mnt\n\n"
-                        "Continue with cloning?"
-                    )
-                    
-                    result = self.root.after(0, lambda: messagebox.askyesno(
-                        "Bootloader Warning",
-                        warning_msg,
-                        default='yes'
-                    ))
+            if os_type == 'linux' and is_uefi:
+                # ========================================================================
+                # UEFI Linux - FULL CLONING WITH BOOTLOADER REINSTALL
+                # ========================================================================
+                print("=== LINUX UEFI VM DETECTED - PERFORMING FULL CLONING ===")
                 
                 # Analyze final partition layout
                 self.update_progress(40, "GParted completed - analyzing partition changes...")
@@ -533,7 +514,7 @@ class QCow2CloneResizerGUI:
                     intermediate_path = original_path.parent / f"{original_path.stem}_intermediate{original_path.suffix}"
                     final_path = original_path.parent / f"{original_path.stem}_optimized{original_path.suffix}"
                     
-                    # Clone to intermediate image (NO compression here)
+                    # Clone to intermediate image (NO compression, NO bootloader yet)
                     self.update_progress(55, "Cloning modified partitions to intermediate image...")
                     print(f"Starting clone operation to intermediate: {intermediate_path}")
                     
@@ -549,8 +530,123 @@ class QCow2CloneResizerGUI:
                     
                     print("Clone operation completed successfully!")
                     
+                    # Disconnect source NBD (no longer needed)
+                    print(f"Disconnecting source NBD device: {source_nbd}")
+                    subprocess.run(['sync'], check=False, timeout=60)
+                    time.sleep(2)
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                    source_nbd = None  # Mark as cleaned up
+                    time.sleep(3)
+                    
+                    # *** BOOTLOADER REINSTALLATION ON CLONED IMAGE (UEFI ONLY) ***
+                    print("\n" + "=" * 70)
+                    print("STEP: REINSTALLING BOOTLOADER ON CLONED IMAGE")
+                    print("=" * 70)
+                    
+                    self.update_progress(88, "Mounting cloned image for bootloader reinstallation...")
+                    print("Mounting cloned intermediate image for bootloader fix...")
+                    
+                    # Mount the cloned intermediate image
+                    target_nbd = None
+                    try:
+                        target_nbd = QCow2CloneResizer.setup_nbd_device(str(intermediate_path), self.update_progress)
+                        print(f"Cloned image mounted as: {target_nbd}")
+                        
+                        # Give device time to settle
+                        time.sleep(3)
+                        subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+                        time.sleep(2)
+                        
+                        # Reinstall bootloader on the CLONED image
+                        self.update_progress(90, "Reinstalling bootloader on cloned image...")
+                        print("\nAttempting to reinstall bootloader on cloned target...")
+                        print(f"Target device: {target_nbd}")
+                        
+                        bootloader_fixed = QCow2CloneResizerGUI.reinstall_bootloader(
+                            target_nbd, 
+                            self.update_progress
+                        )
+                        
+                        if bootloader_fixed:
+                            print("\n" + "=" * 70)
+                            print("SUCCESS: Bootloader reinstalled on cloned image")
+                            print("=" * 70)
+                            
+                            self.root.after(0, lambda: messagebox.showinfo(
+                                "Bootloader Fixed",
+                                "✓ Bootloader has been successfully reinstalled on the cloned image.\n\n"
+                                "Your VM will boot correctly with the resized partitions.\n\n"
+                                "Proceeding with compression..."
+                            ))
+                        else:
+                            print("\n" + "!" * 70)
+                            print("WARNING: Bootloader reinstall unsuccessful")
+                            print("!" * 70)
+                            
+                            warning_msg = (
+                                "Could not automatically reinstall bootloader on cloned image.\n\n"
+                                "POSSIBLE REASONS:\n"
+                                "• No Linux root filesystem detected\n"
+                                "• Unsupported bootloader configuration\n"
+                                "• GRUB installation failed\n\n"
+                                "FOR UEFI LINUX VMs:\n"
+                                "If VM doesn't boot after cloning, boot from live CD and run:\n"
+                                "  sudo mount /dev/vda2 /mnt\n"
+                                "  sudo mount /dev/vda1 /mnt/boot/efi\n"
+                                "  sudo grub-install --efi-directory=/mnt/boot/efi\n"
+                                "  sudo umount /mnt/boot/efi\n"
+                                "  sudo umount /mnt\n\n"
+                                "Continue with compression anyway?"
+                            )
+                            
+                            # Show warning and get user decision
+                            continue_result = [True]  # Default to continue
+                            continue_event = threading.Event()
+                            
+                            def show_warning():
+                                result = messagebox.askyesno(
+                                    "Bootloader Warning",
+                                    warning_msg,
+                                    default='yes'
+                                )
+                                continue_result[0] = result
+                                continue_event.set()
+                            
+                            self.root.after(0, show_warning)
+                            
+                            # Wait for user response
+                            if not continue_event.wait(timeout=120):
+                                print("Warning dialog timed out, defaulting to continue")
+                            
+                            if not continue_result[0]:
+                                print("User chose not to continue after bootloader warning")
+                                # Cleanup target NBD
+                                subprocess.run(['sync'], check=False, timeout=60)
+                                time.sleep(2)
+                                QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                                target_nbd = None
+                                
+                                self.root.after(0, lambda: messagebox.showinfo(
+                                    "Operation Cancelled",
+                                    "Operation cancelled by user.\n\n"
+                                    "Intermediate image preserved:\n"
+                                    f"{intermediate_path}\n\n"
+                                    "You can manually fix the bootloader and compress later."
+                                ))
+                                return
+                    
+                    finally:
+                        # Disconnect target NBD before compression
+                        if target_nbd:
+                            print(f"Disconnecting target NBD device: {target_nbd}")
+                            subprocess.run(['sync'], check=False, timeout=60)
+                            time.sleep(2)
+                            QCow2CloneResizer.cleanup_nbd_device(target_nbd)
+                            target_nbd = None
+                            time.sleep(3)
+                    
                     # Compress intermediate image to create final image
-                    self.update_progress(90, "Compressing intermediate image to create final optimized image...")
+                    self.update_progress(93, "Compressing intermediate image to create final optimized image...")
                     print(f"Starting compression: {intermediate_path} -> {final_path}")
                     
                     try:
@@ -598,13 +694,71 @@ class QCow2CloneResizerGUI:
                     
                     self.root.after(0, lambda: messagebox.showwarning("Cloning Skipped - Changes Lost", 
                         f"Cloning operation skipped by user.\n\n"
-                        f"IMPORTANT: GParted partition changes AND bootloader fixes\n"
-                        f"were made to the NBD device in memory only!\n\n"
+                        f"IMPORTANT: GParted partition changes were made to the\n"
+                        f"NBD device in memory only!\n\n"
                         f"Your original image file remains completely unchanged:\n"
                         f"{image_path}\n\n"
                         f"All modifications have been discarded."))
             
+            elif os_type == 'linux' and not is_uefi:
+                # ========================================================================
+                # BIOS Linux - COMPRESS IN-PLACE (same as Windows)
+                # ========================================================================
+                print("=== LINUX BIOS VM DETECTED - COMPRESSING IN-PLACE ===")
+                
+                # CRITICAL: Disconnect NBD device before compression
+                self.update_progress(40, "Finalizing BIOS partition changes...")
+                print("Performing final sync before NBD disconnect...")
+                subprocess.run(['sync'], check=False, timeout=60)
+                time.sleep(2)
+                
+                # Disconnect NBD device
+                print(f"Disconnecting NBD device: {source_nbd}")
+                QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                source_nbd = None  # Mark as cleaned up
+                
+                # Wait for device to be fully released
+                print("Waiting for device release...")
+                time.sleep(5)
+                
+                self.update_progress(50, "Compressing BIOS Linux image for space optimization...")
+                
+                try:
+                    # Compress the original image in place
+                    compression_stats = QCow2CloneResizer.compress_qcow2_image(
+                        image_path,
+                        self.update_progress,
+                        delete_original_source=None
+                    )
+                    
+                    print(f"BIOS Linux image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                    
+                    # Get final compressed image info
+                    final_image_info = QCow2CloneResizer.get_image_info(image_path)
+                    final_image_size = os.path.getsize(image_path)
+                    
+                    # Show completion dialog
+                    self.root.after(0, lambda: self._show_bios_completion_dialog(
+                        image_path,
+                        original_info,
+                        original_source_size,
+                        final_image_info,
+                        final_image_size,
+                        compression_stats
+                    ))
+                    
+                except Exception as compression_error:
+                    print(f"ERROR: BIOS Linux image compression failed: {compression_error}")
+                    import traceback
+                    traceback.print_exc()
+                    error_msg = f"Failed to compress BIOS Linux image:\n\n{compression_error}\n\n"
+                    error_msg += "Your original image has the GParted changes but is not compressed."
+                    self.root.after(0, lambda: messagebox.showerror("Compression Failed", error_msg))
+            
             elif os_type == 'windows':
+                # ========================================================================
+                # Windows - COMPRESS IN-PLACE
+                # ========================================================================
                 print("=== WINDOWS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
                 
                 # CRITICAL: Disconnect NBD device before compression
@@ -657,6 +811,9 @@ class QCow2CloneResizerGUI:
                     self.root.after(0, lambda: messagebox.showerror("Compression Failed", error_msg))
             
             else:
+                # ========================================================================
+                # Unknown OS Type
+                # ========================================================================
                 print("=== UNKNOWN OS TYPE - SKIPPING CLONING ===")
                 
                 self.root.after(0, lambda: messagebox.showwarning("Unknown OS Type",
@@ -761,6 +918,47 @@ class QCow2CloneResizerGUI:
                 f"Windows image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
                 f"Compressed: {final_image_size / (1024**3):.2f} GB")
+
+    def _show_bios_completion_dialog(self, image_path, original_info, original_source_size,
+                                    final_image_info, final_image_size, compression_stats):
+        """Show completion dialog for BIOS Linux image compression"""
+        try:
+            original_virtual_size = original_info['virtual_size']
+            final_virtual_size = final_image_info['virtual_size']
+            
+            success_msg = f"BIOS LINUX IMAGE COMPRESSION COMPLETED!\n\n"
+            success_msg += f"OPERATION RESULTS:\n"
+            success_msg += f"{'='*50}\n"
+            success_msg += f"Image: {os.path.basename(image_path)}\n\n"
+            
+            success_msg += f"IMAGE COMPRESSION RESULTS:\n"
+            success_msg += f"Original file size: {QCow2CloneResizer.format_size(original_source_size)}\n"
+            success_msg += f"Compressed file size: {QCow2CloneResizer.format_size(final_image_size)}\n"
+            
+            if final_image_size < original_source_size:
+                file_saved = original_source_size - final_image_size
+                file_ratio = file_saved / original_source_size * 100
+                success_msg += f"\n✓ Space optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
+            
+            if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
+                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
+            
+            success_msg += f"\n✓ All partition changes preserved\n"
+            success_msg += f"✓ BIOS bootloader intact\n"
+            success_msg += f"✓ Ready for VM use\n\n"
+            
+            success_msg += f"Your BIOS Linux image has been optimized for storage.\n"
+            success_msg += f"No cloning was performed - the image was compressed in place.\n"
+            success_msg += f"The bootloader remains unchanged and should boot normally."
+            
+            messagebox.showinfo("Compression Complete", success_msg)
+            
+        except Exception as e:
+            self.log(f"BIOS completion dialog error: {e}")
+            messagebox.showinfo("Operation Complete",
+                f"BIOS Linux image compression completed!\n\n"
+                f"Original: {original_source_size / (1024**3):.2f} GB\n"
+                f"Compressed: {final_image_size / (1024**3):.2f} GB")
         
     @staticmethod
     def reinstall_bootloader(nbd_device, progress_callback=None):
@@ -770,6 +968,11 @@ class QCow2CloneResizerGUI:
                 progress_callback(45, "Reinstalling bootloader...")
             
             print(f"Reinstalling bootloader on {nbd_device}")
+            
+            # Wait for device to be ready
+            time.sleep(2)
+            subprocess.run(['partprobe', nbd_device], check=False, timeout=30)
+            time.sleep(2)
             
             # Detect partition table
             parted_result = subprocess.run(
@@ -781,10 +984,9 @@ class QCow2CloneResizerGUI:
             is_uefi = is_gpt
             
             if not is_uefi:
-                # Handle BIOS case (your existing code)
-                print("BIOS mode - installing to MBR")
-                # ... existing BIOS code ...
-                return False  # For now, focusing on UEFI
+                # BIOS mode - no reinstall, will be handled like Windows
+                print("BIOS mode detected - bootloader reinstall skipped (will compress in-place)")
+                return False
             
             print("UEFI mode detected")
             
