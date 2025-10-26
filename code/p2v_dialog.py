@@ -327,26 +327,11 @@ class P2VConverterGUI:
         try:
             log_info("Opening QCOW2 Clone Resizer dialog")
             
-            # Create a new toplevel window for the resizer
-            resizer_window = tk.Toplevel(self.root)
-            resizer_window.title("QCOW2 Clone Resizer")
-            resizer_window.geometry("900x700")
-            resizer_window.transient(self.root)
-            resizer_window.grab_set()
+            # Import and create the resizer directly - it creates its own Toplevel
+            resizer_app = QCow2CloneResizerGUI(self.root)
             
-            # Center the window on parent
-            self.root.update_idletasks()
-            x = (self.root.winfo_screenwidth() // 2) - (900 // 2)
-            y = (self.root.winfo_screenheight() // 2) - (700 // 2)
-            resizer_window.geometry(f"900x700+{x}+{y}")
-            
-            # Create the resizer GUI inside the toplevel window
-            resizer_app = QCow2CloneResizerGUI(resizer_window)
-            
-            # Wait for the dialog to close
-            self.root.wait_window(resizer_window)
-            
-            log_info("QCOW2 Clone Resizer dialog closed")
+            # The resizer creates its own window, so just wait for it
+            log_info("QCOW2 Clone Resizer dialog opened")
             
         except ImportError as e:
             error_msg = f"QCOW2 Clone Resizer not available: {str(e)}"
@@ -355,44 +340,56 @@ class P2VConverterGUI:
                             "QCOW2 Clone Resizer feature is not available.\n\n"
                             "Please ensure qcow2_resize_dialog.py is in the same directory.\n\n"
                             "Missing dependency: qcow2_resize_dialog module")
-        except Exception as e:
-            error_msg = f"Error opening QCOW2 Clone Resizer: {str(e)}"
+        except AttributeError as e:
+            error_msg = f"Error initializing QCOW2 Clone Resizer: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Error", 
+            messagebox.showerror("Initialization Error", 
+                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
+        except tk.TclError as e:
+            error_msg = f"Window creation error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Window Error", 
+                            f"Failed to create QCOW2 Clone Resizer window:\n\n{error_msg}")
+        except TypeError as e:
+            error_msg = f"Type error initializing QCOW2 Clone Resizer: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Type Error", 
+                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
+        except ValueError as e:
+            error_msg = f"Invalid value for QCOW2 Clone Resizer: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Value Error", 
+                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
+        except MemoryError as e:
+            error_msg = "Insufficient memory to open QCOW2 Clone Resizer"
+            log_error(error_msg)
+            messagebox.showerror("Memory Error", 
                             f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
-            
+        except OSError as e:
+            error_msg = f"System error opening QCOW2 Clone Resizer: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("System Error", 
+                            f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
+
     def open_format_converter(self):
         """Open the Format Converter dialog as a modal window"""
         try:
             log_info("Opening Format Converter dialog")
-             
-            # Create a new toplevel window for the converter
-            converter_window = tk.Toplevel(self.root)
-            converter_window.title("Virtual Disk Image Format Converter")
-            converter_window.geometry("900x700")
-            converter_window.transient(self.root)
-            converter_window.grab_set()
             
-            # Center the window on parent
-            self.root.update_idletasks()
-            x = (self.root.winfo_screenwidth() // 2) - (900 // 2)
-            y = (self.root.winfo_screenheight() // 2) - (700 // 2)
-            converter_window.geometry(f"900x700+{x}+{y}")
+            # Import the converter module
+            from image_format_converter import ImageFormatConverter
             
-            # Create the converter GUI inside the toplevel window
-            converter_app = ImageFormatConverter(converter_window)
+            # Create the converter directly - it creates its own Toplevel window
+            converter_app = ImageFormatConverter(self.root)
             
-            # Wait for the dialog to close
-            self.root.wait_window(converter_window)
-            
-            log_info("Format Converter dialog closed")
+            log_info("Format Converter dialog opened")
             
         except ImportError as e:
             error_msg = f"Format Converter not available: {str(e)}"
             log_error(error_msg)
             messagebox.showerror("Feature Not Available", 
                             "Format Converter feature is not available.\n\n"
-                            "Please ensure ImageFormatConverter.py is in the same directory.\n\n"
+                            "Please ensure image_format_converter.py is in the same directory.\n\n"
                             f"Missing dependency: {str(e)}")
         except AttributeError as e:
             error_msg = f"Error initializing Format Converter: {str(e)}"
@@ -404,10 +401,35 @@ class P2VConverterGUI:
             log_error(error_msg)
             messagebox.showerror("Window Error", 
                             f"Failed to create Format Converter window:\n\n{error_msg}")
-        except Exception as e:
-            error_msg = f"Error opening Format Converter: {str(e)}"
+        except TypeError as e:
+            error_msg = f"Type error initializing Format Converter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Error", 
+            messagebox.showerror("Type Error", 
+                            f"Failed to initialize Format Converter:\n\n{error_msg}")
+        except ValueError as e:
+            error_msg = f"Invalid value for Format Converter: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Value Error", 
+                            f"Failed to initialize Format Converter:\n\n{error_msg}")
+        except MemoryError as e:
+            error_msg = "Insufficient memory to open Format Converter"
+            log_error(error_msg)
+            messagebox.showerror("Memory Error", 
+                            f"Failed to open Format Converter:\n\n{error_msg}")
+        except OSError as e:
+            error_msg = f"System error opening Format Converter: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("System Error", 
+                            f"Failed to open Format Converter:\n\n{error_msg}")
+        except FileNotFoundError as e:
+            error_msg = f"Required file not found: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("File Not Found", 
+                            f"Failed to open Format Converter:\n\n{error_msg}")
+        except PermissionError as e:
+            error_msg = f"Permission denied: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Permission Error", 
                             f"Failed to open Format Converter:\n\n{error_msg}")
 
     def mount_disk_dialog(self):

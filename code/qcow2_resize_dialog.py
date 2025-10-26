@@ -58,7 +58,6 @@ class QCow2CloneResizerGUI:
                 return
         
         self.root.destroy()
-        self.parent.destroy()
 
     def setup_ui(self):
         """Setup simplified user interface with single action button"""
