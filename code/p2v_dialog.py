@@ -19,6 +19,7 @@ get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 from disk_mount_dialog import DiskMountDialog
 from qcow2_resize_dialog import QCow2CloneResizerGUI
+from image_format_converter import ImageFormatConverter
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
@@ -127,10 +128,10 @@ class P2VConverterGUI:
             return True, "Unable to verify disk status - system error"
     
     def create_widgets(self):
-        """Create all GUI widgets - Updated version with proper QCOW2 Resizer integration"""
+        """Create all GUI widgets - Updated version with Format Converter integration"""
         self.create_header_frame()
         self.create_main_frame()
-        self.create_status_frame()
+        self.create_status_frame()  
     
     def create_header_frame(self):
         """Create the header frame with title and PDF generation buttons"""
@@ -180,7 +181,7 @@ class P2VConverterGUI:
         separator.grid(row=0, column=0, sticky="ew", pady=(0, 5), columnspan=1)
     
     def create_main_frame(self):
-        """Create the main content frame - Updated with proper QCOW2 Resizer button"""
+        """Create the main content frame - Updated with Format Converter button"""
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         main_frame.grid_rowconfigure(4, weight=1)
@@ -224,7 +225,7 @@ class P2VConverterGUI:
         output_entry = ttk.Entry(output_frame, textvariable=self.output_path, font=("Arial", 9))
         output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         
-        # Enhanced browse button with dropdown - Updated with QCOW2 Clone Resize button
+        # Enhanced browse button with dropdown - Updated with Format Converter button
         browse_frame = ttk.Frame(output_frame)
         browse_frame.grid(row=0, column=1)
         
@@ -234,17 +235,23 @@ class P2VConverterGUI:
         mount_btn = ttk.Button(browse_frame, text="Mount Disk", command=self.mount_disk_dialog)
         mount_btn.grid(row=0, column=1, padx=(0, 2))
         
-        # Updated: QCOW2 Clone Resize button with proper tooltip
+        # QCOW2 Clone Resize button
         resize_btn = ttk.Button(browse_frame, text="QCOW2 Resize", command=self.open_qcow2_resizer,
                             width=12)
-        resize_btn.grid(row=0, column=2)
-        
-        # Add tooltip/description for the QCOW2 Tools button
+        resize_btn.grid(row=0, column=2, padx=(0, 2))
+
+        # NEW: Format Converter button
+        convert_btn = ttk.Button(browse_frame, text="Format Converter", 
+                                command=self.open_format_converter, 
+                                width=14)
+        convert_btn.grid(row=0, column=3, padx=(0, 0))
+
+        # Add tooltip/description for the tools buttons
         tools_info_frame = ttk.Frame(vm_config_frame)
         tools_info_frame.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=(5, 0))
         
         tools_info_label = ttk.Label(tools_info_frame, 
-                                    text="QCOW2 Tools: Resize existing QCOW2 virtual disk images safely",
+                                    text="QCOW2 Tools: Resize virtual disks | Format Converter: Convert between disk image formats",
                                     font=("Arial", 8), foreground="gray")
         tools_info_label.grid(row=0, column=0, sticky="w")
         
@@ -353,7 +360,56 @@ class P2VConverterGUI:
             log_error(error_msg)
             messagebox.showerror("Error", 
                             f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
-        
+            
+    def open_format_converter(self):
+        """Open the Format Converter dialog as a modal window"""
+        try:
+            log_info("Opening Format Converter dialog")
+             
+            # Create a new toplevel window for the converter
+            converter_window = tk.Toplevel(self.root)
+            converter_window.title("Virtual Disk Image Format Converter")
+            converter_window.geometry("900x700")
+            converter_window.transient(self.root)
+            converter_window.grab_set()
+            
+            # Center the window on parent
+            self.root.update_idletasks()
+            x = (self.root.winfo_screenwidth() // 2) - (900 // 2)
+            y = (self.root.winfo_screenheight() // 2) - (700 // 2)
+            converter_window.geometry(f"900x700+{x}+{y}")
+            
+            # Create the converter GUI inside the toplevel window
+            converter_app = ImageFormatConverter(converter_window)
+            
+            # Wait for the dialog to close
+            self.root.wait_window(converter_window)
+            
+            log_info("Format Converter dialog closed")
+            
+        except ImportError as e:
+            error_msg = f"Format Converter not available: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Feature Not Available", 
+                            "Format Converter feature is not available.\n\n"
+                            "Please ensure ImageFormatConverter.py is in the same directory.\n\n"
+                            f"Missing dependency: {str(e)}")
+        except AttributeError as e:
+            error_msg = f"Error initializing Format Converter: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Initialization Error", 
+                            f"Failed to initialize Format Converter:\n\n{error_msg}")
+        except tk.TclError as e:
+            error_msg = f"Window creation error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Window Error", 
+                            f"Failed to create Format Converter window:\n\n{error_msg}")
+        except Exception as e:
+            error_msg = f"Error opening Format Converter: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Error", 
+                            f"Failed to open Format Converter:\n\n{error_msg}")
+
     def mount_disk_dialog(self):
         """Show dialog to select and mount a disk for output storage"""
         try:
