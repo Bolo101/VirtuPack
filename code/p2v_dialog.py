@@ -175,6 +175,11 @@ class P2VConverterGUI:
                                   command=self.exit_application,
                                   width=12)
         self.exit_btn.grid(row=0, column=2)
+
+        # Poweroff button
+        self.poweroff_btn = ttk.Button(button_frame,text="Power Off",
+                                       command=self.power_off_system,width=12)
+        self.poweroff_btn.grid(row=0, column=3, padx=(5, 0))
         
         # Add separator
         separator = ttk.Separator(self.root, orient='horizontal')
@@ -524,6 +529,106 @@ class P2VConverterGUI:
                                f"• coreutils (for dd)")
         else:
             log_info("All prerequisites are available")
+
+    def power_off_system(self):
+        """Power off the system after confirmation."""
+        try:
+            # Check if any operation is running
+            if self.operation_running:
+                messagebox.showwarning(
+                    "Operation in Progress",
+                    "Cannot power off while an operation is running.\n\n"
+                    "Please stop the current operation first."
+                )
+                return
+            
+            # Final confirmation
+            result = messagebox.askyesno(
+                "Power Off Confirmation",
+                "Are you sure you want to power off the system?\n\n"
+                "This will:\n"
+                "• Close all applications\n"
+                "• Save session logs\n"
+                "• Shut down the system\n\n"
+                "Continue with power off?"
+            )
+            
+            if not result:
+                log_info("Power off cancelled by user")
+                return
+            
+            log_info("System power off requested by user")
+            
+            # End session before shutdown
+            try:
+                if is_session_active():
+                    log_info("Ending session before system power off")
+                    session_end()
+            except (AttributeError, IOError, OSError, KeyError, ValueError) as e:
+                log_warning(f"Error ending session before power off: {str(e)}")
+            
+            # Show final message
+            self.status_var.set("Shutting down system...")
+            self.root.update_idletasks()
+            
+            # Attempt to power off using various methods
+            try:
+                # Try systemctl first (systemd systems)
+                subprocess.run(
+                    ['systemctl', 'poweroff'],
+                    check=True,
+                    timeout=5
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+                try:
+                    # Try shutdown command
+                    subprocess.run(
+                        ['shutdown', '-h', 'now'],
+                        check=True,
+                        timeout=5
+                    )
+                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+                    try:
+                        # Try poweroff command directly
+                        subprocess.run(
+                            ['poweroff'],
+                            check=True,
+                            timeout=5
+                        )
+                    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+                        # All methods failed
+                        error_msg = (
+                            "Failed to power off the system.\n\n"
+                            "Attempted methods:\n"
+                            "• systemctl poweroff\n"
+                            "• shutdown -h now\n"
+                            "• poweroff\n\n"
+                            "Please run with sudo or use system power button."
+                        )
+                        log_error("All power off methods failed")
+                        messagebox.showerror("Power Off Failed", error_msg)
+                        return
+            
+        except PermissionError as e:
+            error_msg = f"Permission denied: {str(e)}\n\nPower off requires root/administrator privileges."
+            log_error(error_msg)
+            messagebox.showerror("Permission Error", error_msg)
+        except OSError as e:
+            error_msg = f"System error during power off: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("System Error", error_msg)
+        except subprocess.SubprocessError as e:
+            error_msg = f"Command execution error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Command Error", error_msg)
+        except tk.TclError as e:
+            error_msg = f"GUI error during power off: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("GUI Error", error_msg)
+        except (AttributeError, TypeError) as e:
+            error_msg = f"Internal error during power off: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Internal Error", error_msg)
     
     def update_log_from_session(self):
         """Update log display from session logs"""
@@ -989,6 +1094,12 @@ class P2VConverterGUI:
             log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Command Error", 
                 f"P2V conversion failed:\n\n{error_msg}"))
+        
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"Command timed out: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Timeout Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
                 
         except PermissionError as e:
             error_msg = f"Permission denied accessing disk or output directory: {str(e)}"
@@ -1000,6 +1111,12 @@ class P2VConverterGUI:
             error_msg = f"System error during disk operation: {str(e)}"
             log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("System Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+        
+        except IOError as e:
+            error_msg = f"I/O error during conversion: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("I/O Error", 
                 f"P2V conversion failed:\n\n{error_msg}"))
                 
         except ValueError as e:
@@ -1019,22 +1136,40 @@ class P2VConverterGUI:
             log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Attribute Error", 
                 f"P2V conversion failed:\n\n{error_msg}"))
+        
+        except KeyError as e:
+            error_msg = f"Missing configuration key: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Configuration Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+        
+        except IndexError as e:
+            error_msg = f"Index error during data processing: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Data Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
                 
         except KeyboardInterrupt:
             log_warning("P2V conversion cancelled by user")
             self.root.after(0, lambda: messagebox.showinfo("Cancelled", 
                 "P2V conversion was cancelled by user"))
                 
-        except MemoryError as e:
+        except MemoryError:
             error_msg = "Insufficient memory to perform conversion"
             log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Memory Error", 
                 f"P2V conversion failed:\n\n{error_msg}"))
-                
-        except Exception as e:
-            error_msg = f"Unexpected error during conversion: {str(e)}"
+        
+        except RuntimeError as e:
+            error_msg = f"Runtime error during conversion: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Unexpected Error", 
+            self.root.after(0, lambda: messagebox.showerror("Runtime Error", 
+                f"P2V conversion failed:\n\n{error_msg}"))
+        
+        except UnicodeError as e:
+            error_msg = f"Text encoding error: {str(e)}"
+            log_error(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Encoding Error", 
                 f"P2V conversion failed:\n\n{error_msg}"))
         
         finally:
