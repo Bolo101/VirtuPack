@@ -296,37 +296,176 @@ class QCow2CloneResizerGUI:
         self.info_text.config(state="disabled")
     
     def create_backup(self):
-        """Create backup of current image"""
+        """Create backup of current image using rsync with progress"""
         path = self.image_path.get().strip()
         if not path or not os.path.exists(path):
             messagebox.showwarning("No File", "Select a valid image file first")
             return
         
         try:
-            self.update_progress(20, "Creating backup...")
-            backup_path = QCow2CloneResizer.create_backup(path)
-            self.update_progress(0, "Backup created successfully")
+            # Generate backup filename
+            from pathlib import Path
+            original_path = Path(path)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_path = original_path.parent / f"{original_path.stem}_backup_{timestamp}{original_path.suffix}"
             
+            # Disable backup button during operation
+            self.backup_btn.config(state="disabled")
+            self.main_action_btn.config(state="disabled")
+            
+            # Start backup in thread
+            backup_thread = threading.Thread(
+                target=self._backup_worker,
+                args=(path, str(backup_path))
+            )
+            backup_thread.daemon = True
+            backup_thread.start()
+            
+        except OSError as e:
+            error_msg = f"System error preparing backup: {str(e)}"
+            self.log(error_msg)
+            messagebox.showerror("System Error", error_msg)
+            self.backup_btn.config(state="normal")
+            self.main_action_btn.config(state="normal")
+        except PermissionError as e:
+            error_msg = f"Permission denied preparing backup: {str(e)}"
+            self.log(error_msg)
+            messagebox.showerror("Permission Error", error_msg)
+            self.backup_btn.config(state="normal")
+            self.main_action_btn.config(state="normal")
+        except ValueError as e:
+            error_msg = f"Invalid path for backup: {str(e)}"
+            self.log(error_msg)
+            messagebox.showerror("Value Error", error_msg)
+            self.backup_btn.config(state="normal")
+            self.main_action_btn.config(state="normal")
+
+    def _backup_worker(self, source_path, backup_path):
+        """Worker thread for rsync backup with progress tracking"""
+        try:
+            self.log(f"Starting backup: {source_path} -> {backup_path}")
+            self.update_progress(5, "Initializing backup...")
+            
+            # Get source file size for progress calculation
+            source_size = os.path.getsize(source_path)
+            
+            # Build rsync command with progress
+            rsync_cmd = [
+                'rsync',
+                '-ah',  # archive mode, human-readable
+                '--progress',
+                source_path,
+                backup_path
+            ]
+            
+            self.update_progress(10, "Starting file transfer...")
+            
+            # Execute rsync with progress monitoring
+            process = subprocess.Popen(
+                rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            # Monitor rsync progress
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    # Parse rsync progress output
+                    # Format: "bytes transferred/total size percentage speed time"
+                    if '%' in line:
+                        try:
+                            # Extract percentage from rsync output
+                            parts = line.split()
+                            for part in parts:
+                                if '%' in part:
+                                    percent_str = part.replace('%', '')
+                                    percent = float(percent_str)
+                                    # Scale to 10-90% range
+                                    scaled_percent = 10 + (percent * 0.8)
+                                    self.update_progress(
+                                        int(scaled_percent),
+                                        f"Backing up: {percent:.1f}%"
+                                    )
+                                    break
+                        except (ValueError, IndexError):
+                            pass
+            
+            # Wait for process completion
+            return_code = process.wait()
+            
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, rsync_cmd)
+            
+            # Verify backup
+            if not os.path.exists(backup_path):
+                raise FileNotFoundError(f"Backup file not created: {backup_path}")
+            
+            backup_size = os.path.getsize(backup_path)
+            if backup_size != source_size:
+                raise ValueError(
+                    f"Backup size mismatch: source={source_size}, backup={backup_size}"
+                )
+            
+            self.update_progress(100, "Backup completed successfully")
+            
+            self.log(f"Backup created successfully: {backup_path}")
+            
+            # Show success message
             backup_msg = f"BACKUP CREATED SUCCESSFULLY!\n\n"
-            backup_msg += f"Original: {path}\n"
-            backup_msg += f"Backup: {backup_path}\n\n"
+            backup_msg += f"Original: {os.path.basename(source_path)}\n"
+            backup_msg += f"Backup: {os.path.basename(backup_path)}\n"
+            backup_msg += f"Size: {QCow2CloneResizer.format_size(backup_size)}\n\n"
+            backup_msg += f"Location: {backup_path}\n\n"
             backup_msg += f"The backup is a complete copy of your virtual disk.\n"
             backup_msg += f"You can now safely proceed with the resizing process."
             
-            messagebox.showinfo("Backup Complete", backup_msg)
+            self.root.after(0, lambda: messagebox.showinfo("Backup Complete", backup_msg))
             
-        except FileNotFoundError:
-            self.update_progress(0, "Backup failed - file not found")
-            messagebox.showerror("File Not Found", f"Could not find source image:\n{path}")
-        except PermissionError:
-            self.update_progress(0, "Backup failed - permission denied")
-            messagebox.showerror("Permission Denied", f"Permission denied creating backup")
-        except shutil.Error as e:
-            self.update_progress(0, "Backup failed - copy error")
-            messagebox.showerror("Copy Error", f"Could not copy file during backup:\n{e}")
+            # Reset progress
+            self.root.after(100, lambda: self.update_progress(0, "Backup complete"))
+            
+        except FileNotFoundError as e:
+            error_msg = f"Backup failed - file not found: {str(e)}"
+            self.log(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+            self.update_progress(0, "Backup failed")
+        except PermissionError as e:
+            error_msg = f"Backup failed - permission denied: {str(e)}"
+            self.log(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
+            self.update_progress(0, "Backup failed")
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Backup failed - rsync error (code {e.returncode})"
+            self.log(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Backup Failed", error_msg))
+            self.update_progress(0, "Backup failed")
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"Backup failed - operation timed out"
+            self.log(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Timeout", error_msg))
+            self.update_progress(0, "Backup failed")
+        except ValueError as e:
+            error_msg = f"Backup failed - verification error: {str(e)}"
+            self.log(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("Verification Failed", error_msg))
+            self.update_progress(0, "Backup failed")
         except OSError as e:
-            self.update_progress(0, "Backup failed - system error")
-            messagebox.showerror("System Error", f"System error creating backup:\n{e}")
+            error_msg = f"Backup failed - system error: {str(e)}"
+            self.log(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+            self.update_progress(0, "Backup failed")
+        except IOError as e:
+            error_msg = f"Backup failed - I/O error: {str(e)}"
+            self.log(error_msg)
+            self.root.after(0, lambda: messagebox.showerror("I/O Error", error_msg))
+            self.update_progress(0, "Backup failed")
+        finally:
+            # Re-enable buttons
+            self.root.after(0, lambda: self.backup_btn.config(state="normal"))
+            self.root.after(0, lambda: self.main_action_btn.config(state="normal"))
     
     def start_gparted_resize(self):
         """Start GParted + clone resize operation"""
