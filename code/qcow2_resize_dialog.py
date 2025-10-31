@@ -318,7 +318,7 @@ class QCow2CloneResizerGUI:
                 target=self._backup_worker,
                 args=(path, str(backup_path))
             )
-            backup_thread.daemon = True
+            backup_thread.daemon = False
             backup_thread.start()
             
         except OSError as e:
@@ -621,11 +621,13 @@ class QCow2CloneResizerGUI:
                 
                 if bootloader_fixed:
                     print("UEFI bootloader successfully reinstalled")
+                    
                     self.root.after(0, lambda: messagebox.showinfo(
                         "Bootloader Fixed",
                         "UEFI bootloader has been automatically reinstalled.\n\n"
                         "Your VM will boot correctly with the resized partitions."
                     ))
+                    
                 else:
                     print("WARNING: UEFI bootloader reinstall unsuccessful")
                     
@@ -2011,7 +2013,7 @@ class QCow2CloneResizerGUI:
         return False
 
     def _clone_disk_structure_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone disk structure with device verification"""
+        """Clone disk structure with device verification and flag preservation"""
         try:
             print(f"Cloning disk structure from {source_nbd} to {target_nbd}")
             
@@ -2055,6 +2057,35 @@ class QCow2CloneResizerGUI:
             
             print(f"Detected partition table type: {table_type}")
             
+            # Parse partitions with flags
+            partitions_with_flags = []
+            for line in parted_result.stdout.split('\n'):
+                if re.match(r'^\s*\d+\s+', line.strip()):
+                    parts = line.split()
+                    if len(parts) >= 1:
+                        part_num = int(parts[0])
+                        flags = []
+                        
+                        # Extract flags from the line
+                        line_lower = line.lower()
+                        if 'boot' in line_lower:
+                            flags.append('boot')
+                        if 'esp' in line_lower:
+                            flags.append('esp')
+                        if 'bios_grub' in line_lower:
+                            flags.append('bios_grub')
+                        if 'lvm' in line_lower:
+                            flags.append('lvm')
+                        if 'raid' in line_lower:
+                            flags.append('raid')
+                        
+                        partitions_with_flags.append({
+                            'number': part_num,
+                            'flags': flags
+                        })
+            
+            print(f"Parsed partitions with flags: {partitions_with_flags}")
+            
             # Create partition table on target
             subprocess.run([
                 'parted', '-s', target_nbd, 'mklabel', table_type
@@ -2082,10 +2113,35 @@ class QCow2CloneResizerGUI:
             subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
             time.sleep(2)
             
+            # Apply flags to target partitions
+            if progress_callback:
+                progress_callback(78, "Applying partition flags...")
+            
+            for part_info in partitions_with_flags:
+                part_num = part_info['number']
+                flags = part_info['flags']
+                
+                if flags:
+                    print(f"Setting flags for partition {part_num}: {flags}")
+                    for flag in flags:
+                        try:
+                            subprocess.run([
+                                'parted', '-s', target_nbd,
+                                'set', str(part_num), flag, 'on'
+                            ], capture_output=True, text=True, check=True, timeout=30)
+                            print(f"  Set flag '{flag}' on partition {part_num}")
+                        except subprocess.CalledProcessError as e:
+                            print(f"  Warning: Could not set flag '{flag}' on partition {part_num}: {e}")
+            
             # Verify partitions were created on target
             verify_result = subprocess.run(['lsblk', target_nbd], 
                                         capture_output=True, text=True, timeout=30)
             print(f"Target partition layout:\n{verify_result.stdout}")
+            
+            # Verify flags were set
+            verify_parted = subprocess.run(['parted', '-s', target_nbd, 'print'],
+                                        capture_output=True, text=True, timeout=30)
+            print(f"Target partition flags:\n{verify_parted.stdout}")
             
             return True
             
@@ -2440,17 +2496,32 @@ class QCow2CloneResizerGUI:
         return True
     
     def update_progress(self, percent, status):
-        """Update progress bar and status"""
+        """Update progress bar and status with error handling"""
         def update():
-            self.progress['value'] = percent
-            self.progress_label.config(text=status)
-            
-            if percent == 0:
-                self.status_label.config(text="Ready - Select image and ensure VM is shut down")
-            else:
-                self.status_label.config(text=f"Operation in progress: {status}")
+            try:
+                # Check if widgets still exist
+                if self.progress.winfo_exists():
+                    self.progress['value'] = percent
+                if self.progress_label.winfo_exists():
+                    self.progress_label.config(text=status)
+                
+                if self.status_label.winfo_exists():
+                    if percent == 0:
+                        self.status_label.config(text="Ready - Select image and ensure VM is shut down")
+                    else:
+                        self.status_label.config(text=f"Operation in progress: {status}")
+            except tk.TclError as e:
+                # Widget was destroyed, ignore the error
+                print(f"Warning: Could not update progress (widget destroyed): {e}")
+            except AttributeError as e:
+                # Widget doesn't exist anymore
+                print(f"Warning: Progress widget not available: {e}")
         
-        self.root.after(0, update)
+        try:
+            self.root.after(0, update)
+        except tk.TclError:
+            # Root window was destroyed
+            print(f"Warning: Could not schedule progress update (root destroyed)")
     
     def log(self, message):
         """Log message to console with timestamp"""
