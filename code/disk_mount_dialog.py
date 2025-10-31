@@ -311,7 +311,7 @@ class DiskMountDialog:
         # Validate mount point
         if not mount_point.startswith('/'):
             messagebox.showwarning("Warning", "Mount point must be an absolute path (start with /)", 
-                                 parent=self.dialog)
+                                parent=self.dialog)
             return
         
         # Confirm mounting
@@ -331,8 +331,12 @@ class DiskMountDialog:
             return
         
         # Disable button during mounting
-        self.mount_btn.config(state=tk.DISABLED, text="Mounting...")
-        self.dialog.update()
+        try:
+            if self.mount_btn.winfo_exists():
+                self.mount_btn.config(state=tk.DISABLED, text="Mounting...")
+                self.dialog.update()
+        except tk.TclError:
+            pass  # Widget already destroyed
         
         try:
             # Create mount point if it doesn't exist
@@ -370,17 +374,23 @@ class DiskMountDialog:
                     success_text += f"{space_msg}\n\n"
                     success_text += f"You can now use this location for VM storage."
                     
-                    messagebox.showinfo("Mount Successful", success_text, parent=self.dialog)
+                    # Check if dialog still exists before showing message
+                    if self.dialog.winfo_exists():
+                        messagebox.showinfo("Mount Successful", success_text, parent=self.dialog)
                 except (OSError, IOError, AttributeError, KeyError) as e:
-                    messagebox.showinfo("Mount Successful", 
-                                      f"Partition mounted successfully!\n\n"
-                                      f"Partition: {device_path}\n"
-                                      f"Mount point: {mount_point}",
-                                      parent=self.dialog)
+                    if self.dialog.winfo_exists():
+                        messagebox.showinfo("Mount Successful", 
+                                        f"Partition mounted successfully!\n\n"
+                                        f"Partition: {device_path}\n"
+                                        f"Mount point: {mount_point}",
+                                        parent=self.dialog)
                 
                 self.mount_point = mount_point
                 self.result = mount_point
-                self.dialog.destroy()
+                
+                # Destroy dialog only if it still exists
+                if self.dialog.winfo_exists():
+                    self.dialog.destroy()
                 
             else:
                 raise RuntimeError("Mount command succeeded but mount point is not mounted")
@@ -388,35 +398,52 @@ class DiskMountDialog:
         except subprocess.TimeoutExpired:
             error_msg = "Mount operation timed out. The partition may not be ready or may require manual intervention."
             log_error(error_msg)
-            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+            if self.dialog.winfo_exists():
+                messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
         
         except subprocess.CalledProcessError as e:
             error_msg = f"Failed to mount partition: {e.stderr.strip() if e.stderr else str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+            if self.dialog.winfo_exists():
+                messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
         
         except PermissionError:
             error_msg = "Permission denied. You may need to run the application with sudo or check partition permissions."
-            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+            if self.dialog.winfo_exists():
+                messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
         
         except (FileNotFoundError, NotADirectoryError) as e:
             error_msg = f"File system error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+            if self.dialog.winfo_exists():
+                messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
         
         except OSError as e:
             error_msg = f"OS error during mount operation: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+            if self.dialog.winfo_exists():
+                messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
         
         except (RuntimeError, SystemError, ValueError) as e:
             error_msg = f"Unexpected error mounting partition: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+            if self.dialog.winfo_exists():
+                messagebox.showerror("Mount Failed", error_msg, parent=self.dialog)
+        
+        except tk.TclError as e:
+            # Dialog was destroyed while we were working
+            log_warning(f"Dialog destroyed during mount operation: {e}")
+            # Still set the result in case caller needs it
+            self.mount_point = mount_point
+            self.result = mount_point
         
         finally:
-            # Re-enable button
-            self.mount_btn.config(state=tk.NORMAL, text="Select & Mount")
+            # Re-enable button only if it still exists
+            try:
+                if hasattr(self, 'mount_btn') and self.mount_btn.winfo_exists():
+                    self.mount_btn.config(state=tk.NORMAL, text="Select & Mount")
+            except (tk.TclError, AttributeError):
+                pass
     
     def cancel(self):
         """Cancel the dialog"""

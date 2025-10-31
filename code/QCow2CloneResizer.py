@@ -188,6 +188,16 @@ class QCow2CloneResizer:
     def get_image_info(image_path):
         """Get QCOW2 image information"""
         try:
+            # First check if file exists and is readable
+            if not os.path.exists(image_path):
+                raise Exception(f"Image file does not exist: {image_path}")
+            
+            if not os.access(image_path, os.R_OK):
+                raise Exception(f"Image file is not readable (check permissions): {image_path}")
+            
+            file_size = os.path.getsize(image_path)
+            print(f"Image file exists: {image_path} ({QCow2CloneResizer.format_size(file_size)})")
+            
             result = subprocess.run(
                 ['qemu-img', 'info', '--output=json', image_path],
                 capture_output=True, text=True, check=True, timeout=30
@@ -201,7 +211,28 @@ class QCow2CloneResizer:
                 'compressed': data.get('compressed', False)
             }
         except subprocess.CalledProcessError as e:
-            raise Exception(f"qemu-img failed to analyze image: {e}")
+            error_msg = f"qemu-img failed to analyze image: {image_path}\n"
+            error_msg += f"Return code: {e.returncode}\n"
+            if e.stdout:
+                error_msg += f"Stdout: {e.stdout}\n"
+            if e.stderr:
+                error_msg += f"Stderr: {e.stderr}\n"
+            
+            # Try to get more info with non-JSON output
+            try:
+                fallback_result = subprocess.run(
+                    ['qemu-img', 'info', image_path],
+                    capture_output=True, text=True, timeout=30, check=False
+                )
+                if fallback_result.stdout:
+                    error_msg += f"Fallback info output:\n{fallback_result.stdout}\n"
+                if fallback_result.stderr:
+                    error_msg += f"Fallback info stderr:\n{fallback_result.stderr}\n"
+            except Exception as fallback_e:
+                error_msg += f"Fallback check also failed: {fallback_e}\n"
+            
+            print(f"ERROR: {error_msg}")
+            raise Exception(error_msg)
         except subprocess.TimeoutExpired:
             raise Exception(f"qemu-img timed out while analyzing image: {image_path}")
         except json.JSONDecodeError as e:
