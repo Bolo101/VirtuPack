@@ -600,7 +600,8 @@ class QCow2CloneResizerGUI:
                     f"detected OS type."
                 )
             
-            self.root.after(0, lambda: messagebox.showinfo("GParted Session Starting", instructions))
+            # Show instructions and wait for OK using event
+            self._show_message_and_wait("GParted Session Starting", instructions)
             
             print("Launching GParted...")
             QCow2CloneResizer.launch_gparted(source_nbd)
@@ -622,11 +623,11 @@ class QCow2CloneResizerGUI:
                 if bootloader_fixed:
                     print("UEFI bootloader successfully reinstalled")
                     
-                    self.root.after(0, lambda: messagebox.showinfo(
+                    self._show_message_and_wait(
                         "Bootloader Fixed",
                         "UEFI bootloader has been automatically reinstalled.\n\n"
                         "Your VM will boot correctly with the resized partitions."
-                    ))
+                    )
                     
                 else:
                     print("WARNING: UEFI bootloader reinstall unsuccessful")
@@ -646,11 +647,10 @@ class QCow2CloneResizerGUI:
                         "Continue with cloning?"
                     )
                     
-                    self.root.after(0, lambda: messagebox.askyesno(
-                        "Bootloader Warning",
-                        warning_msg,
-                        default='yes'
-                    ))
+                    # Use event-based confirmation
+                    if not self._show_yesno_and_wait("Bootloader Warning", warning_msg):
+                        print("User cancelled operation after bootloader warning")
+                        return
                 
                 # Analyze final partition layout
                 self.update_progress(40, "GParted completed - analyzing partition changes...")
@@ -769,7 +769,7 @@ class QCow2CloneResizerGUI:
                     
                     # Show completion dialog
                     print("Showing completion dialog...")
-                    self.root.after(0, lambda: self._show_completion_and_replacement_dialog(
+                    self._show_completion_and_replacement_dialog(
                         image_path,
                         str(final_path),
                         str(intermediate_path),
@@ -779,19 +779,19 @@ class QCow2CloneResizerGUI:
                         final_image_size,
                         new_size,
                         compression_stats
-                    ))
+                    )
                     
                 else:
                     # User chose to skip cloning
                     print("User chose to skip cloning - changes lost")
                     
-                    self.root.after(0, lambda: messagebox.showwarning("Cloning Skipped - Changes Lost", 
+                    self._show_message_and_wait("Cloning Skipped - Changes Lost", 
                         f"Cloning operation skipped by user.\n\n"
                         f"IMPORTANT: GParted partition changes AND bootloader fixes\n"
                         f"were made to the NBD device in memory only!\n\n"
                         f"Your original image file remains completely unchanged:\n"
                         f"{image_path}\n\n"
-                        f"All modifications have been discarded."))
+                        f"All modifications have been discarded.")
             
             elif os_type == 'linux' and boot_mode == 'bios':
                 print("=== LINUX BIOS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
@@ -828,14 +828,14 @@ class QCow2CloneResizerGUI:
                     final_image_size = os.path.getsize(image_path)
                     
                     # Show BIOS completion dialog
-                    self.root.after(0, lambda: self._show_bios_completion_dialog(
+                    self._show_bios_completion_dialog(
                         image_path,
                         original_info,
                         original_source_size,
                         final_image_info,
                         final_image_size,
                         compression_stats
-                    ))
+                    )
                     
                 except subprocess.CalledProcessError as compression_error:
                     print(f"ERROR: BIOS Linux image compression failed - command error: {compression_error}")
@@ -906,14 +906,14 @@ class QCow2CloneResizerGUI:
                     final_image_size = os.path.getsize(image_path)
                     
                     # Show Windows completion dialog
-                    self.root.after(0, lambda: self._show_windows_completion_dialog(
+                    self._show_windows_completion_dialog(
                         image_path,
                         original_info,
                         original_source_size,
                         final_image_info,
                         final_image_size,
                         compression_stats
-                    ))
+                    )
                     
                 except subprocess.CalledProcessError as compression_error:
                     print(f"ERROR: Windows image compression failed - command error: {compression_error}")
@@ -952,12 +952,12 @@ class QCow2CloneResizerGUI:
             else:
                 print("=== UNKNOWN OS TYPE - SKIPPING CLONING ===")
                 
-                self.root.after(0, lambda: messagebox.showwarning("Unknown OS Type",
+                self._show_message_and_wait("Unknown OS Type",
                     f"Could not determine if this is a Linux or Windows VM.\n\n"
                     f"GParted changes have been applied but no cloning was performed.\n\n"
                     f"Your original image has been modified in place:\n"
                     f"{image_path}\n\n"
-                    f"If you want to compress the image, please run the operation again."))
+                    f"If you want to compress the image, please run the operation again.")
             
         except FileNotFoundError as e:
             error_msg = f"OPERATION FAILED - File Not Found\n\n{e}\n\nCheck file paths and permissions."
@@ -1025,7 +1025,6 @@ class QCow2CloneResizerGUI:
                     print(f"Error cleaning up NBD device - system error: {cleanup_e}")
             self.root.after(0, self.reset_ui)
 
-
     def _show_windows_completion_dialog(self, image_path, original_info, original_source_size,
                                     final_image_info, final_image_size, compression_stats):
         """Show completion dialog for Windows image compression"""
@@ -1057,14 +1056,15 @@ class QCow2CloneResizerGUI:
             success_msg += f"Your Windows image has been optimized for storage.\n"
             success_msg += f"No cloning was performed - the image was compressed in place."
             
-            messagebox.showinfo("Compression Complete", success_msg)
+            self._show_message_and_wait("Compression Complete", success_msg)
             
         except Exception as e:
             self.log(f"Windows completion dialog error: {e}")
-            messagebox.showinfo("Operation Complete",
+            self._show_message_and_wait("Operation Complete",
                 f"Windows image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
                 f"Compressed: {final_image_size / (1024**3):.2f} GB")
+
 
     def _show_bios_completion_dialog(self, image_path, original_info, original_source_size,
                                     final_image_info, final_image_size, compression_stats):
@@ -1098,31 +1098,256 @@ class QCow2CloneResizerGUI:
             success_msg += f"No cloning was performed - the image was compressed in place.\n"
             success_msg += f"The bootloader remains unchanged and should boot normally."
             
-            messagebox.showinfo("Compression Complete", success_msg)
+            self._show_message_and_wait("Compression Complete", success_msg)
             
-        except KeyError as e:
-            self.log(f"BIOS completion dialog error - missing key: {e}")
-            messagebox.showinfo("Operation Complete",
+        except Exception as e:
+            self.log(f"BIOS completion dialog error: {e}")
+            self._show_message_and_wait("Operation Complete",
                 f"BIOS Linux image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
                 f"Compressed: {final_image_size / (1024**3):.2f} GB")
-        except TypeError as e:
-            self.log(f"BIOS completion dialog error - type error: {e}")
-            messagebox.showinfo("Operation Complete",
-                f"BIOS Linux image compression completed with some calculation errors.")
-        except ValueError as e:
-            self.log(f"BIOS completion dialog error - value error: {e}")
-            messagebox.showinfo("Operation Complete",
-                f"BIOS Linux image compression completed.")
-        except AttributeError as e:
-            self.log(f"BIOS completion dialog error - attribute error: {e}")
-            messagebox.showinfo("Operation Complete",
-                f"BIOS Linux image compression completed.")
+
+
+    def _show_completion_and_replacement_dialog(self, source_path, final_path, intermediate_path,
+                                        original_info, original_source_size,
+                                        final_image_info, final_image_size,
+                                        new_size, compression_stats):
+        """Show completion dialog comparing SOURCE and FINAL images"""
+        try:
+            original_virtual_size = original_info['virtual_size']
+            final_virtual_size = final_image_info['virtual_size']
+            
+            # Build success message comparing SOURCE vs FINAL
+            success_msg = f"QCOW2 RESIZE & COMPRESSION COMPLETED SUCCESSFULLY!\n\n"
+            success_msg += f"OPERATION RESULTS:\n"
+            success_msg += f"{'='*50}\n"
+            success_msg += f"Original image: {os.path.basename(source_path)}\n"
+            success_msg += f"Final optimized image: {os.path.basename(final_path)}\n\n"
+            
+            success_msg += f"IMAGE COMPARISON (SOURCE vs FINAL):\n"
+            success_msg += f"Original source image:\n"
+            success_msg += f"  Virtual size: {QCow2CloneResizer.format_size(original_virtual_size)}\n"
+            success_msg += f"  File size: {QCow2CloneResizer.format_size(original_source_size)}\n\n"
+            success_msg += f"Final optimized image:\n"
+            success_msg += f"  Virtual size: {QCow2CloneResizer.format_size(final_virtual_size)}\n"
+            success_msg += f"  File size: {QCow2CloneResizer.format_size(final_image_size)}\n\n"
+            
+            # Calculate improvements
+            if final_virtual_size < original_virtual_size:
+                saved = original_virtual_size - final_virtual_size
+                success_msg += f"✓ Virtual space optimized: {QCow2CloneResizer.format_size(saved)} smaller "
+                success_msg += f"({(saved/original_virtual_size*100):.1f}% reduction)\n"
+            elif final_virtual_size > original_virtual_size:
+                added = final_virtual_size - original_virtual_size
+                success_msg += f"✓ Virtual space expanded: {QCow2CloneResizer.format_size(added)} larger "
+                success_msg += f"({(added/original_virtual_size*100):.1f}% increase)\n"
+            
+            if final_image_size < original_source_size:
+                file_saved = original_source_size - final_image_size
+                file_ratio = file_saved / original_source_size * 100
+                success_msg += f"✓ File size optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
+            
+            if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
+                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
+            
+            success_msg += f"\n✓ All partition changes preserved\n"
+            success_msg += f"✓ Bootloader intact\n"
+            success_msg += f"✓ Ready for VM use\n\n"
+            
+            success_msg += f"NEXT STEP - CLEANUP:\n"
+            success_msg += f"{'='*50}\n"
+            success_msg += f"REPLACE - Delete original and intermediate, keep final:\n"
+            success_msg += f"  • Original image DELETED: {os.path.basename(source_path)}\n"
+            success_msg += f"  • Intermediate DELETED: {os.path.basename(intermediate_path)}\n"
+            success_msg += f"  • Final becomes main: {os.path.basename(final_path)}\n"
+            success_msg += f"  • Maximum space savings\n"
+            success_msg += f"  • WARNING: Cannot be undone\n\n"
+            success_msg += f"KEEP ALL - Preserve all files for manual cleanup:\n"
+            success_msg += f"  • All three files preserved\n"
+            success_msg += f"  • Manual cleanup required\n"
+            
+            # Show dialog using event-based system
+            replace_result = self._show_yesnocancel_and_wait(
+                "Cleanup - Replace or Keep All?", 
+                success_msg
+            )
+            
+            if replace_result is True:  # REPLACE
+                self._perform_final_cleanup(source_path, intermediate_path, final_path, 
+                                        original_source_size, final_image_size)
+            elif replace_result is False:  # KEEP ALL
+                self._show_message_and_wait("All Files Preserved", 
+                    f"Operation completed successfully!\n\n"
+                    f"FILES AVAILABLE:\n"
+                    f"• Original: {source_path}\n"
+                    f"• Intermediate: {intermediate_path}\n"
+                    f"• Final optimized: {final_path}\n\n"
+                    f"Manual cleanup required.")
+            else:  # Cancel
+                self._show_message_and_wait("Operation Complete", 
+                    f"QCOW2 resize completed!\n\n"
+                    f"Final optimized image: {final_path}")
+            
+        except KeyError as e:
+            self.log(f"Completion dialog error - missing data: {e}")
+            self._show_message_and_wait("Operation Complete", 
+                f"QCOW2 resize completed!\n\n"
+                f"Original: {source_path}\n"
+                f"Final: {final_path}\n\n"
+                f"Note: Some statistics unavailable.")
+        except Exception as e:
+            self.log(f"Completion dialog error: {e}")
+            self._show_message_and_wait("Operation Complete", 
+                f"QCOW2 resize completed - check console for details.")
+
+
+    def _perform_final_cleanup(self, source_path, intermediate_path, final_path,
+                        original_size, final_size):
+        """Delete original and intermediate, rename final to original location"""
+        try:
+            print(f"Starting final cleanup and file replacement")
+            
+            total_space_saved = original_size - final_size
+            
+            # Final confirmation
+            confirm_msg = f"FINAL CONFIRMATION - CLEANUP AND REPLACEMENT\n\n"
+            confirm_msg += f"Files to DELETE:\n"
+            confirm_msg += f"1. Original: {source_path}\n"
+            confirm_msg += f"   Size: {QCow2CloneResizer.format_size(original_size)}\n"
+            confirm_msg += f"2. Intermediate: {intermediate_path}\n\n"
+            confirm_msg += f"Final optimized image will become main file:\n"
+            confirm_msg += f"   {final_path} -> {source_path}\n"
+            confirm_msg += f"   Size: {QCow2CloneResizer.format_size(final_size)}\n\n"
+            confirm_msg += f"Total space saved: {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
+            confirm_msg += f"WARNING: This action CANNOT be undone!\n\n"
+            confirm_msg += f"Proceed with cleanup?"
+            
+            final_confirm = self._show_yesno_and_wait(
+                "DELETE ORIGINAL AND INTERMEDIATE?", 
+                confirm_msg
+            )
+            
+            if not final_confirm:
+                self._show_message_and_wait("Cleanup Cancelled", 
+                    f"Cleanup cancelled.\n\nAll files preserved for manual handling.")
+                return
+            
+            print(f"User confirmed cleanup - proceeding")
+            
+            # Step 1: Delete original
+            print(f"Deleting original file: {source_path}")
+            os.remove(source_path)
+            
+            # Step 2: Delete intermediate
+            print(f"Deleting intermediate file: {intermediate_path}")
+            os.remove(intermediate_path)
+            
+            # Step 3: Move final to original location
+            print(f"Moving final to original location: {final_path} -> {source_path}")
+            os.rename(final_path, source_path)
+            
+            # Verify
+            if not os.path.exists(source_path):
+                raise FileNotFoundError(f"Failed to move final image to original location")
+            
+            if os.path.exists(intermediate_path) or os.path.exists(final_path):
+                print(f"Warning: Cleanup may be incomplete")
+            
+            print(f"Cleanup completed successfully")
+            
+            # Success message
+            self._show_message_and_wait("Cleanup Complete", 
+                f"✓ CLEANUP SUCCESSFUL!\n\n"
+                f"FINAL STATUS:\n"
+                f"✓ Active file: {source_path}\n"
+                f"  (Now the optimized version)\n"
+                f"  Size: {QCow2CloneResizer.format_size(final_size)}\n\n"
+                f"✓ Original file: DELETED\n"
+                f"✓ Intermediate file: DELETED\n"
+                f"✓ Total disk space freed: {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
+                f"The optimized image is ready for use!")
+            
+        except FileNotFoundError as e:
+            self.log(f"Cleanup failed - file not found: {e}")
+            error_msg = f"Could not find file during cleanup:\n{e}\n\n"
+            error_msg += f"Files may have been moved or deleted.\n"
+            error_msg += f"Check file locations manually:\n"
+            error_msg += f"• Original: {source_path}\n"
+            error_msg += f"• Intermediate: {intermediate_path}\n"
+            error_msg += f"• Final: {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - File Not Found", error_msg))
+        except PermissionError as e:
+            self.log(f"Cleanup failed - permission denied: {e}")
+            error_msg = f"Permission denied during file cleanup:\n{e}\n\n"
+            error_msg += f"Check file permissions or run as administrator.\n\n"
+            error_msg += f"Manual cleanup may be required for:\n"
+            error_msg += f"• Original: {source_path}\n"
+            error_msg += f"• Intermediate: {intermediate_path}\n"
+            error_msg += f"• Final: {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - Permission Denied", error_msg))
         except OSError as e:
-            self.log(f"BIOS completion dialog error - system error: {e}")
-            messagebox.showerror("Display Error",
-                f"Operation completed but display error occurred:\n{e}")
+            self.log(f"Cleanup failed - system error: {e}")
+            error_msg = f"System error during file cleanup:\n{e}\n\n"
+            error_msg += f"Check disk space and file system status.\n\n"
+            error_msg += f"Manual cleanup may be required for:\n"
+            error_msg += f"• Original: {source_path}\n"
+            error_msg += f"• Intermediate: {intermediate_path}\n"
+            error_msg += f"• Final: {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - System Error", error_msg))
+        except Exception as e:
+            self.log(f"Cleanup failed - unexpected error: {e}")
+            error_msg = f"Unexpected error during cleanup:\n{e}\n\n"
+            error_msg += f"Check file status manually:\n"
+            error_msg += f"• Original: {source_path}\n"
+            error_msg += f"• Intermediate: {intermediate_path}\n"
+            error_msg += f"• Final: {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed", error_msg))
+
+
+    def _show_message_and_wait(self, title, message):
+        """Show info message and wait for user to click OK"""
+        self.dialog_result_event.clear()
+        self.dialog_result_value = None
         
+        def show_dialog():
+            messagebox.showinfo(title, message)
+            self.dialog_result_event.set()
+        
+        self.root.after(0, show_dialog)
+        self.dialog_result_event.wait()
+
+
+    def _show_yesno_and_wait(self, title, message):
+        """Show yes/no dialog and wait for user response"""
+        self.dialog_result_event.clear()
+        self.dialog_result_value = None
+        
+        def show_dialog():
+            result = messagebox.askyesno(title, message, default='yes')
+            self.dialog_result_value = result
+            self.dialog_result_event.set()
+        
+        self.root.after(0, show_dialog)
+        self.dialog_result_event.wait()
+        
+        return self.dialog_result_value
+
+
+    def _show_yesnocancel_and_wait(self, title, message):
+        """Show yes/no/cancel dialog and wait for user response"""
+        self.dialog_result_event.clear()
+        self.dialog_result_value = None
+        
+        def show_dialog():
+            result = messagebox.askyesnocancel(title, message, default='yes')
+            self.dialog_result_value = result
+            self.dialog_result_event.set()
+        
+        self.root.after(0, show_dialog)
+        self.dialog_result_event.wait()
+        
+        return self.dialog_result_value
+
     @staticmethod
     def reinstall_bootloader(nbd_device, progress_callback=None):
         """Reinstall bootloader with proper EFI cleanup and fallback setup"""
@@ -1461,227 +1686,6 @@ class QCow2CloneResizerGUI:
             print(f"BCD error: {e}")
             return False
 
-    def _show_completion_and_replacement_dialog(self, source_path, final_path, intermediate_path,
-                                           original_info, original_source_size,
-                                           final_image_info, final_image_size,
-                                           new_size, compression_stats):
-        """Show completion dialog comparing SOURCE and FINAL images"""
-        try:
-            original_virtual_size = original_info['virtual_size']
-            final_virtual_size = final_image_info['virtual_size']
-            
-            # Build success message comparing SOURCE vs FINAL
-            success_msg = f"QCOW2 RESIZE & COMPRESSION COMPLETED SUCCESSFULLY!\n\n"
-            success_msg += f"OPERATION RESULTS:\n"
-            success_msg += f"{'='*50}\n"
-            success_msg += f"Original image: {os.path.basename(source_path)}\n"
-            success_msg += f"Final optimized image: {os.path.basename(final_path)}\n\n"
-            
-            success_msg += f"IMAGE COMPARISON (SOURCE vs FINAL):\n"
-            success_msg += f"Original source image:\n"
-            success_msg += f"  Virtual size: {QCow2CloneResizer.format_size(original_virtual_size)}\n"
-            success_msg += f"  File size: {QCow2CloneResizer.format_size(original_source_size)}\n\n"
-            success_msg += f"Final optimized image:\n"
-            success_msg += f"  Virtual size: {QCow2CloneResizer.format_size(final_virtual_size)}\n"
-            success_msg += f"  File size: {QCow2CloneResizer.format_size(final_image_size)}\n\n"
-            
-            # Calculate improvements
-            if final_virtual_size < original_virtual_size:
-                saved = original_virtual_size - final_virtual_size
-                success_msg += f"✓ Virtual space optimized: {QCow2CloneResizer.format_size(saved)} smaller "
-                success_msg += f"({(saved/original_virtual_size*100):.1f}% reduction)\n"
-            elif final_virtual_size > original_virtual_size:
-                added = final_virtual_size - original_virtual_size
-                success_msg += f"✓ Virtual space expanded: {QCow2CloneResizer.format_size(added)} larger "
-                success_msg += f"({(added/original_virtual_size*100):.1f}% increase)\n"
-            
-            if final_image_size < original_source_size:
-                file_saved = original_source_size - final_image_size
-                file_ratio = file_saved / original_source_size * 100
-                success_msg += f"✓ File size optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
-            
-            if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
-                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
-            
-            success_msg += f"\n✓ All partition changes preserved\n"
-            success_msg += f"✓ Bootloader intact\n"
-            success_msg += f"✓ Ready for VM use\n\n"
-            
-            success_msg += f"NEXT STEP - CLEANUP:\n"
-            success_msg += f"{'='*50}\n"
-            success_msg += f"REPLACE - Delete original and intermediate, keep final:\n"
-            success_msg += f"  • Original image DELETED: {os.path.basename(source_path)}\n"
-            success_msg += f"  • Intermediate DELETED: {os.path.basename(intermediate_path)}\n"
-            success_msg += f"  • Final becomes main: {os.path.basename(final_path)}\n"
-            success_msg += f"  • Maximum space savings\n"
-            success_msg += f"  • WARNING: Cannot be undone\n\n"
-            success_msg += f"KEEP ALL - Preserve all files for manual cleanup:\n"
-            success_msg += f"  • All three files preserved\n"
-            success_msg += f"  • Manual cleanup required\n"
-            
-            # Show dialog
-            replace_result = messagebox.askyesnocancel(
-                "Cleanup - Replace or Keep All?", 
-                success_msg,
-                default='yes'
-            )
-            
-            if replace_result is True:  # REPLACE
-                self._perform_final_cleanup(source_path, intermediate_path, final_path, 
-                                        original_source_size, final_image_size)
-            elif replace_result is False:  # KEEP ALL
-                messagebox.showinfo("All Files Preserved", 
-                    f"Operation completed successfully!\n\n"
-                    f"FILES AVAILABLE:\n"
-                    f"• Original: {source_path}\n"
-                    f"• Intermediate: {intermediate_path}\n"
-                    f"• Final optimized: {final_path}\n\n"
-                    f"Manual cleanup required.")
-            else:  # Cancel
-                messagebox.showinfo("Operation Complete", 
-                    f"QCOW2 resize completed!\n\n"
-                    f"Final optimized image: {final_path}")
-            
-        except KeyError as e:
-            self.log(f"Completion dialog error - missing data: {e}")
-            messagebox.showinfo("Operation Complete", 
-                f"QCOW2 resize completed!\n\n"
-                f"Original: {source_path}\n"
-                f"Final: {final_path}\n\n"
-                f"Note: Some statistics unavailable.")
-        except TypeError as e:
-            self.log(f"Completion dialog error - type error: {e}")
-            messagebox.showinfo("Operation Complete", 
-                f"QCOW2 resize completed!\n\n"
-                f"Check files manually for results.")
-        except ValueError as e:
-            self.log(f"Completion dialog error - value error: {e}")
-            messagebox.showinfo("Operation Complete", 
-                f"QCOW2 resize completed with some calculation errors.")
-        except AttributeError as e:
-            self.log(f"Completion dialog error - attribute error: {e}")
-            messagebox.showinfo("Operation Complete", 
-                f"QCOW2 resize completed - check console for details.")
-        except OSError as e:
-            self.log(f"Completion dialog error - system error: {e}")
-            messagebox.showerror("Display Error", 
-                f"Operation completed but display error occurred:\n{e}")
-    
-    def _perform_final_cleanup(self, source_path, intermediate_path, final_path,
-                          original_size, final_size):
-        """Delete original and intermediate, rename final to original location"""
-        try:
-            print(f"Starting final cleanup and file replacement")
-            
-            total_space_saved = original_size - final_size
-            
-            # Final confirmation
-            confirm_msg = f"FINAL CONFIRMATION - CLEANUP AND REPLACEMENT\n\n"
-            confirm_msg += f"Files to DELETE:\n"
-            confirm_msg += f"1. Original: {source_path}\n"
-            confirm_msg += f"   Size: {QCow2CloneResizer.format_size(original_size)}\n"
-            confirm_msg += f"2. Intermediate: {intermediate_path}\n\n"
-            confirm_msg += f"Final optimized image will become main file:\n"
-            confirm_msg += f"   {final_path} -> {source_path}\n"
-            confirm_msg += f"   Size: {QCow2CloneResizer.format_size(final_size)}\n\n"
-            confirm_msg += f"Total space saved: {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
-            confirm_msg += f"WARNING: This action CANNOT be undone!\n\n"
-            confirm_msg += f"Proceed with cleanup?"
-            
-            final_confirm = messagebox.askyesno(
-                "DELETE ORIGINAL AND INTERMEDIATE?", 
-                confirm_msg,
-                default='no',
-                icon='warning'
-            )
-            
-            if not final_confirm:
-                messagebox.showinfo("Cleanup Cancelled", 
-                    f"Cleanup cancelled.\n\nAll files preserved for manual handling.")
-                return
-            
-            print(f"User confirmed cleanup - proceeding")
-            
-            # Step 1: Delete original
-            print(f"Deleting original file: {source_path}")
-            os.remove(source_path)
-            
-            # Step 2: Delete intermediate
-            print(f"Deleting intermediate file: {intermediate_path}")
-            os.remove(intermediate_path)
-            
-            # Step 3: Move final to original location
-            print(f"Moving final to original location: {final_path} -> {source_path}")
-            os.rename(final_path, source_path)
-            
-            # Verify
-            if not os.path.exists(source_path):
-                raise FileNotFoundError(f"Failed to move final image to original location")
-            
-            if os.path.exists(intermediate_path) or os.path.exists(final_path):
-                print(f"Warning: Cleanup may be incomplete")
-            
-            print(f"Cleanup completed successfully")
-            
-            # Success message
-            messagebox.showinfo("Cleanup Complete", 
-                f"✓ CLEANUP SUCCESSFUL!\n\n"
-                f"FINAL STATUS:\n"
-                f"✓ Active file: {source_path}\n"
-                f"  (Now the optimized version)\n"
-                f"  Size: {QCow2CloneResizer.format_size(final_size)}\n\n"
-                f"✓ Original file: DELETED\n"
-                f"✓ Intermediate file: DELETED\n"
-                f"✓ Total disk space freed: {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
-                f"The optimized image is ready for use!")
-            
-        except FileNotFoundError as e:
-            self.log(f"Cleanup failed - file not found: {e}")
-            messagebox.showerror("Cleanup Failed - File Not Found", 
-                f"Could not find file during cleanup:\n{e}\n\n"
-                f"Files may have been moved or deleted.\n"
-                f"Check file locations manually:\n"
-                f"• Original: {source_path}\n"
-                f"• Intermediate: {intermediate_path}\n"
-                f"• Final: {final_path}")
-        except PermissionError as e:
-            self.log(f"Cleanup failed - permission denied: {e}")
-            messagebox.showerror("Cleanup Failed - Permission Denied", 
-                f"Permission denied during file cleanup:\n{e}\n\n"
-                f"Check file permissions or run as administrator.\n\n"
-                f"Manual cleanup may be required for:\n"
-                f"• Original: {source_path}\n"
-                f"• Intermediate: {intermediate_path}\n"
-                f"• Final: {final_path}")
-        except OSError as e:
-            self.log(f"Cleanup failed - system error: {e}")
-            messagebox.showerror("Cleanup Failed - System Error", 
-                f"System error during file cleanup:\n{e}\n\n"
-                f"Check disk space and file system status.\n\n"
-                f"Manual cleanup may be required for:\n"
-                f"• Original: {source_path}\n"
-                f"• Intermediate: {intermediate_path}\n"
-                f"• Final: {final_path}")
-        except shutil.Error as e:
-            self.log(f"Cleanup failed - copy error: {e}")
-            messagebox.showerror("Cleanup Failed - Copy Error", 
-                f"File operation error during cleanup:\n{e}\n\n"
-                f"Some files may be partially deleted or moved.\n\n"
-                f"Check file status manually:\n"
-                f"• Original: {source_path}\n"
-                f"• Intermediate: {intermediate_path}\n"
-                f"• Final: {final_path}")
-        except ValueError as e:
-            self.log(f"Cleanup failed - invalid value: {e}")
-            messagebox.showerror("Cleanup Failed - Invalid Value", 
-                f"Invalid file path during cleanup:\n{e}\n\n"
-                f"Check file paths and try again.")
-        except RuntimeError as e:
-            self.log(f"Cleanup failed - runtime error: {e}")
-            messagebox.showerror("Cleanup Failed - Runtime Error", 
-                f"Runtime error during cleanup:\n{e}\n\n"
-                f"Operation may be incomplete.\n"
-                f"Check file status manually.")
             
         
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
