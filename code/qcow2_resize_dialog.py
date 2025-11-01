@@ -650,6 +650,86 @@ class QCow2CloneResizerGUI:
                     # Use event-based confirmation
                     if not self._show_yesno_and_wait("Bootloader Warning", warning_msg):
                         print("User cancelled operation after bootloader warning")
+                        
+                        # COMPRESS ORIGINAL IMAGE INSTEAD OF CLONING
+                        print("=== USER CANCELLED CLONING - COMPRESSING ORIGINAL IMAGE ===")
+                        
+                        # CRITICAL: Disconnect NBD device before compression
+                        self.update_progress(40, "Finalizing UEFI partition changes...")
+                        print("Performing final sync before NBD disconnect...")
+                        subprocess.run(['sync'], check=False, timeout=60)
+                        time.sleep(2)
+                        
+                        # Disconnect NBD device
+                        print(f"Disconnecting NBD device: {source_nbd}")
+                        QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                        source_nbd = None  # Mark as cleaned up
+                        
+                        # Wait for device to be fully released
+                        print("Waiting for device release...")
+                        time.sleep(5)
+                        
+                        self.update_progress(50, "Compressing UEFI Linux image for space optimization...")
+                        
+                        try:
+                            # Compress the original image in place
+                            compression_stats = QCow2CloneResizer.compress_qcow2_image(
+                                image_path,
+                                self.update_progress,
+                                delete_original_source=None
+                            )
+                            
+                            print(f"UEFI Linux image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                            
+                            # Get final compressed image info
+                            final_image_info = QCow2CloneResizer.get_image_info(image_path)
+                            final_image_size = os.path.getsize(image_path)
+                            
+                            # Show UEFI compression completion dialog
+                            self._show_uefi_compression_completion_dialog(
+                                image_path,
+                                original_info,
+                                original_source_size,
+                                final_image_info,
+                                final_image_size,
+                                compression_stats
+                            )
+                            
+                        except subprocess.CalledProcessError as compression_error:
+                            print(f"ERROR: UEFI Linux image compression failed - command error: {compression_error}")
+                            import traceback
+                            traceback.print_exc()
+                            error_msg = f"Failed to compress UEFI Linux image:\n\n{compression_error}\n\n"
+                            error_msg += "Your original image has the GParted changes but is not compressed."
+                            self._show_message_and_wait("Compression Failed", error_msg)
+                        except subprocess.TimeoutExpired as compression_error:
+                            print(f"ERROR: UEFI Linux image compression failed - timeout: {compression_error}")
+                            import traceback
+                            traceback.print_exc()
+                            error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
+                            error_msg += "Your original image has the GParted changes but is not compressed."
+                            self._show_message_and_wait("Compression Timeout", error_msg)
+                        except FileNotFoundError as compression_error:
+                            print(f"ERROR: UEFI Linux image compression failed - file not found: {compression_error}")
+                            import traceback
+                            traceback.print_exc()
+                            error_msg = f"Image file not found during compression:\n\n{compression_error}"
+                            self._show_message_and_wait("File Not Found", error_msg)
+                        except PermissionError as compression_error:
+                            print(f"ERROR: UEFI Linux image compression failed - permission denied: {compression_error}")
+                            import traceback
+                            traceback.print_exc()
+                            error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
+                            error_msg += "Try running with sudo or check file permissions."
+                            self._show_message_and_wait("Permission Denied", error_msg)
+                        except OSError as compression_error:
+                            print(f"ERROR: UEFI Linux image compression failed - system error: {compression_error}")
+                            import traceback
+                            traceback.print_exc()
+                            error_msg = f"System error during compression:\n\n{compression_error}"
+                            self._show_message_and_wait("System Error", error_msg)
+                        
+                        # Exit early - compression done, no cloning
                         return
                 
                 # Analyze final partition layout
@@ -782,16 +862,83 @@ class QCow2CloneResizerGUI:
                     )
                     
                 else:
-                    # User chose to skip cloning
-                    print("User chose to skip cloning - changes lost")
+                    # User chose to skip cloning - COMPRESS ORIGINAL IMAGE
+                    print("User chose to skip cloning - compressing original image instead")
                     
-                    self._show_message_and_wait("Cloning Skipped - Changes Lost", 
-                        f"Cloning operation skipped by user.\n\n"
-                        f"IMPORTANT: GParted partition changes AND bootloader fixes\n"
-                        f"were made to the NBD device in memory only!\n\n"
-                        f"Your original image file remains completely unchanged:\n"
-                        f"{image_path}\n\n"
-                        f"All modifications have been discarded.")
+                    # CRITICAL: Disconnect NBD device before compression
+                    self.update_progress(40, "Finalizing UEFI partition changes...")
+                    print("Performing final sync before NBD disconnect...")
+                    subprocess.run(['sync'], check=False, timeout=60)
+                    time.sleep(2)
+                    
+                    # Disconnect NBD device
+                    print(f"Disconnecting NBD device: {source_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                    source_nbd = None  # Mark as cleaned up
+                    
+                    # Wait for device to be fully released
+                    print("Waiting for device release...")
+                    time.sleep(5)
+                    
+                    self.update_progress(50, "Compressing UEFI Linux image for space optimization...")
+                    
+                    try:
+                        # Compress the original image in place
+                        compression_stats = QCow2CloneResizer.compress_qcow2_image(
+                            image_path,
+                            self.update_progress,
+                            delete_original_source=None
+                        )
+                        
+                        print(f"UEFI Linux image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                        
+                        # Get final compressed image info
+                        final_image_info = QCow2CloneResizer.get_image_info(image_path)
+                        final_image_size = os.path.getsize(image_path)
+                        
+                        # Show UEFI compression completion dialog
+                        self._show_uefi_compression_completion_dialog(
+                            image_path,
+                            original_info,
+                            original_source_size,
+                            final_image_info,
+                            final_image_size,
+                            compression_stats
+                        )
+                        
+                    except subprocess.CalledProcessError as compression_error:
+                        print(f"ERROR: UEFI Linux image compression failed - command error: {compression_error}")
+                        import traceback
+                        traceback.print_exc()
+                        error_msg = f"Failed to compress UEFI Linux image:\n\n{compression_error}\n\n"
+                        error_msg += "Your original image has the GParted changes but is not compressed."
+                        self._show_message_and_wait("Compression Failed", error_msg)
+                    except subprocess.TimeoutExpired as compression_error:
+                        print(f"ERROR: UEFI Linux image compression failed - timeout: {compression_error}")
+                        import traceback
+                        traceback.print_exc()
+                        error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
+                        error_msg += "Your original image has the GParted changes but is not compressed."
+                        self._show_message_and_wait("Compression Timeout", error_msg)
+                    except FileNotFoundError as compression_error:
+                        print(f"ERROR: UEFI Linux image compression failed - file not found: {compression_error}")
+                        import traceback
+                        traceback.print_exc()
+                        error_msg = f"Image file not found during compression:\n\n{compression_error}"
+                        self._show_message_and_wait("File Not Found", error_msg)
+                    except PermissionError as compression_error:
+                        print(f"ERROR: UEFI Linux image compression failed - permission denied: {compression_error}")
+                        import traceback
+                        traceback.print_exc()
+                        error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
+                        error_msg += "Try running with sudo or check file permissions."
+                        self._show_message_and_wait("Permission Denied", error_msg)
+                    except OSError as compression_error:
+                        print(f"ERROR: UEFI Linux image compression failed - system error: {compression_error}")
+                        import traceback
+                        traceback.print_exc()
+                        error_msg = f"System error during compression:\n\n{compression_error}"
+                        self._show_message_and_wait("System Error", error_msg)
             
             elif os_type == 'linux' and boot_mode == 'bios':
                 print("=== LINUX BIOS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
@@ -1104,6 +1251,47 @@ class QCow2CloneResizerGUI:
             self.log(f"BIOS completion dialog error: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"BIOS Linux image compression completed!\n\n"
+                f"Original: {original_source_size / (1024**3):.2f} GB\n"
+                f"Compressed: {final_image_size / (1024**3):.2f} GB")
+            
+    def _show_uefi_compression_completion_dialog(self, image_path, original_info, original_source_size,
+                                    final_image_info, final_image_size, compression_stats):
+        """Show completion dialog for UEFI Linux image compression (when cloning was skipped)"""
+        try:
+            original_virtual_size = original_info['virtual_size']
+            final_virtual_size = final_image_info['virtual_size']
+            
+            success_msg = f"UEFI LINUX IMAGE COMPRESSION COMPLETED!\n\n"
+            success_msg += f"OPERATION RESULTS:\n"
+            success_msg += f"{'='*50}\n"
+            success_msg += f"Image: {os.path.basename(image_path)}\n\n"
+            
+            success_msg += f"IMAGE COMPRESSION RESULTS:\n"
+            success_msg += f"Original file size: {QCow2CloneResizer.format_size(original_source_size)}\n"
+            success_msg += f"Compressed file size: {QCow2CloneResizer.format_size(final_image_size)}\n"
+            
+            if final_image_size < original_source_size:
+                file_saved = original_source_size - final_image_size
+                file_ratio = file_saved / original_source_size * 100
+                success_msg += f"\n✓ Space optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
+            
+            if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
+                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
+            
+            success_msg += f"\n✓ All partition changes preserved\n"
+            success_msg += f"✓ UEFI bootloader reinstalled\n"
+            success_msg += f"✓ Ready for VM use\n\n"
+            
+            success_msg += f"Your UEFI Linux image has been optimized for storage.\n"
+            success_msg += f"Cloning was skipped - the image was compressed in place.\n"
+            success_msg += f"The bootloader has been reinstalled and should boot normally."
+            
+            self._show_message_and_wait("Compression Complete", success_msg)
+            
+        except Exception as e:
+            self.log(f"UEFI compression completion dialog error: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"UEFI Linux image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
                 f"Compressed: {final_image_size / (1024**3):.2f} GB")
 
