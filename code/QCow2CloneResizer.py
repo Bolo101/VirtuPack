@@ -38,7 +38,7 @@ class QCow2CloneResizer:
     
     @staticmethod
     def compress_qcow2_image(image_path, progress_callback=None, delete_original_source=None):
-        """Compress QCOW2 image - DOES NOT replace in place, just compresses to temp file
+        """Compress QCOW2 image with digit-only progress updates
         
         Args:
             image_path: Path to the image to compress  
@@ -47,7 +47,7 @@ class QCow2CloneResizer:
         """
         try:
             if progress_callback:
-                progress_callback(92, "Compressing image for optimal storage...")
+                progress_callback(92, "Compressing")
             
             print(f"Starting compression of: {image_path}")
             
@@ -81,16 +81,33 @@ class QCow2CloneResizer:
             
             print(f"Compressing image: {' '.join(cmd)}")
             
-            result = subprocess.run(
+            # Execute with progress monitoring
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True, text=True, check=True, 
-                timeout=1800  # 30 minutes for compression
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
             )
             
-            if result.stdout:
-                print(f"Compression stdout: {result.stdout}")
-            if result.stderr:
-                print(f"Compression stderr: {result.stderr}")
+            # Monitor compression progress
+            for line in process.stdout:
+                line = line.strip()
+                if line and '%' in line:
+                    try:
+                        # Extract percentage from qemu-img output (format: "(XX.XX/100%)")
+                        match = re.search(r'\((\d+(?:\.\d+)?)/100%\)', line)
+                        if match:
+                            percent = float(match.group(1))
+                            if progress_callback:
+                                progress_callback(92, f"Compressing {int(percent)} %")
+                    except (ValueError, IndexError):
+                        pass
+            
+            return_code = process.wait()
+            
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, cmd)
             
             # Verify compressed image was created
             if not os.path.exists(temp_compressed_path):
@@ -125,7 +142,7 @@ class QCow2CloneResizer:
                     'compression_ratio': 0.0,
                 }
             
-            # CRITICAL CHANGE: Replace original IN PLACE instead of keeping temp file
+            # Replace original IN PLACE
             print(f"Replacing original with compressed version...")
             os.remove(image_path)
             os.rename(temp_compressed_path, image_path)
@@ -133,7 +150,7 @@ class QCow2CloneResizer:
             print(f"Image compression completed and replaced in place")
             
             if progress_callback:
-                progress_callback(98, f"Image compressed - saved {compression_ratio:.1f}% space")
+                progress_callback(98, f"Compressing 100")
             
             return {
                 'original_size': original_file_size,
