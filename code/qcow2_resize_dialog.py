@@ -787,14 +787,16 @@ class QCow2CloneResizerGUI:
                     print("Clone operation completed successfully!")
                     
                     # Compress intermediate image to create final image
-                    self.update_progress(90, "Compressing intermediate image to create final optimized image...")
+                    self.update_progress(90, "Preparing final compression...")
                     print(f"Starting compression: {intermediate_path} -> {final_path}")
-                    
+
                     try:
-                        # Copy intermediate to final
+                        # Copy intermediate to final with progress
+                        print(f"Copying intermediate image to final location...")
                         shutil.copy2(str(intermediate_path), str(final_path))
+                        self.update_progress(92, "Copy complete, starting compression...")
                         
-                        # Compress final image
+                        # Compress final image - progress will go from 50-100% inside compress_qcow2_image
                         compression_stats = QCow2CloneResizer.compress_qcow2_image(
                             str(final_path), 
                             self.update_progress,
@@ -2357,7 +2359,7 @@ class QCow2CloneResizerGUI:
             raise OSError(f"System error during disk structure cloning: {e}")
 
     def _clone_partition_data_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone partition data with continuous progress updates in text label only"""
+        """Clone partition data with detailed progress updates (0-100%)"""
         try:
             print(f"Cloning partition data from {source_nbd} to {target_nbd}")
             
@@ -2367,6 +2369,9 @@ class QCow2CloneResizerGUI:
             
             total_partitions = len(layout_info['partitions'])
             print(f"Processing {total_partitions} partitions")
+            
+            if progress_callback:
+                progress_callback(0, "Preparing partition cloning...")
             
             # Wait for all partitions to be available
             print("Ensuring all partitions are available...")
@@ -2395,16 +2400,40 @@ class QCow2CloneResizerGUI:
                     break
                 else:
                     print(f"Attempt {attempt + 1}: Some partitions not ready, waiting...")
+                    if progress_callback:
+                        progress_callback(min(5, attempt + 1), "Waiting for partitions...")
             
             if not all_found:
                 print("Warning: Not all partitions detected, proceeding anyway...")
             
-            for i, partition in enumerate(layout_info['partitions']):
+            if progress_callback:
+                progress_callback(5, "Partitions ready, starting clone...")
+            
+            # Calculate total size for accurate progress
+            total_size = 0
+            partition_sizes = []
+            
+            for partition in layout_info['partitions']:
                 partition_num = partition['number']
-                
-                base_progress = 80
-                if progress_callback:
-                    progress_callback(base_progress, f"Cloning partition {partition_num}/{total_partitions}")
+                for path_fmt in [f"{source_nbd}p{partition_num}", f"{source_nbd}{partition_num}"]:
+                    if os.path.exists(path_fmt):
+                        try:
+                            size_result = subprocess.run(['blockdev', '--getsize64', path_fmt],
+                                                        capture_output=True, text=True, check=True, timeout=10)
+                            size = int(size_result.stdout.strip())
+                            partition_sizes.append((partition_num, size))
+                            total_size += size
+                            break
+                        except:
+                            partition_sizes.append((partition_num, 0))
+            
+            print(f"Total size to clone: {QCow2CloneResizer.format_size(total_size)}")
+            
+            cumulative_bytes_copied = 0
+            
+            for partition_index, partition in enumerate(layout_info['partitions']):
+                partition_num = partition['number']
+                partition_label = f"Partition {partition_num}/{total_partitions}"
                 
                 # Try different partition naming schemes
                 source_part_options = [
@@ -2467,6 +2496,7 @@ class QCow2CloneResizerGUI:
                 print(f"Cloning partition {partition_num}: {source_part} -> {target_part}")
                 
                 # Get exact partition sizes
+                partition_size = 0
                 try:
                     source_size_result = subprocess.run(['blockdev', '--getsize64', source_part],
                                                 capture_output=True, text=True, check=True, timeout=30)
@@ -2479,19 +2509,18 @@ class QCow2CloneResizerGUI:
                     print(f"Partition {partition_num} - Source: {QCow2CloneResizer.format_size(source_size)}, Target: {QCow2CloneResizer.format_size(target_size)}")
                     
                     copy_size = min(source_size, target_size)
-                    copy_blocks = copy_size // (4 * 1024 * 1024)
+                    partition_size = copy_size
                     
                 except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
-                    copy_blocks = None
+                    copy_size = None
                 
-                # Clone with continuous progress updates
-                if copy_blocks is not None and copy_blocks > 0:
+                # Clone with detailed progress updates
+                if copy_size is not None and copy_size > 0:
                     cmd = [
                         'dd',
                         f'if={source_part}',
                         f'of={target_part}',
                         'bs=4M',
-                        f'count={copy_blocks}',
                         'conv=notrunc,noerror,sync',
                         'oflag=sync',
                         'status=progress'
@@ -2508,30 +2537,86 @@ class QCow2CloneResizerGUI:
                         bufsize=1
                     )
                     
+                    last_update_time = time.time()
+                    update_interval = 0.5  # Update every 0.5 seconds
+                    
                     # Monitor dd progress
                     for line in process.stdout:
                         line = line.strip()
                         if line and 'bytes' in line.lower():
-                            # Update text label only with partition info
-                            if progress_callback:
-                                progress_callback(base_progress, f"Cloning partition {partition_num}/{total_partitions}")
+                            current_time = time.time()
+                            if current_time - last_update_time >= update_interval:
+                                try:
+                                    # Parse bytes copied from dd output
+                                    bytes_match = re.search(r'(\d+)\s+bytes', line)
+                                    if bytes_match:
+                                        bytes_copied_partition = int(bytes_match.group(1))
+                                        
+                                        # Calculate overall progress
+                                        total_bytes_copied = cumulative_bytes_copied + bytes_copied_partition
+                                        
+                                        if total_size > 0:
+                                            # Progress from 5% to 95% (reserve 5% for finalization)
+                                            overall_percent = 5 + int((total_bytes_copied / total_size) * 90)
+                                            overall_percent = min(95, overall_percent)
+                                        else:
+                                            # Fallback: divide equally among partitions
+                                            overall_percent = 5 + int(((partition_index + (bytes_copied_partition / partition_size)) / total_partitions) * 90)
+                                            overall_percent = min(95, overall_percent)
+                                        
+                                        # Partition progress
+                                        partition_percent = int((bytes_copied_partition / partition_size) * 100) if partition_size > 0 else 0
+                                        
+                                        # Extract speed if available
+                                        speed_match = re.search(r'([\d.]+\s+[KMGT]?B/s)', line)
+                                        speed_info = f" @ {speed_match.group(1)}" if speed_match else ""
+                                        
+                                        if progress_callback:
+                                            progress_callback(
+                                                overall_percent, 
+                                                f"Cloning {partition_label}: {partition_percent}%{speed_info}"
+                                            )
+                                        
+                                        last_update_time = current_time
+                                except (ValueError, AttributeError, ZeroDivisionError):
+                                    pass
                     
                     return_code = process.wait()
                     
                     if return_code != 0:
                         print(f"ERROR: Failed to copy partition {partition_num}")
                         continue
+                    
+                    # Update cumulative bytes
+                    cumulative_bytes_copied += partition_size
+                    
+                    # Final update for this partition
+                    if total_size > 0:
+                        overall_percent = 5 + int((cumulative_bytes_copied / total_size) * 90)
+                        overall_percent = min(95, overall_percent)
+                    else:
+                        overall_percent = 5 + int(((partition_index + 1) / total_partitions) * 90)
+                        overall_percent = min(95, overall_percent)
+                    
+                    if progress_callback:
+                        progress_callback(overall_percent, f"Cloning {partition_label}: complete")
                 
                 print(f"Partition {partition_num} cloned successfully")
                 
                 # Sync and verify
                 subprocess.run(['sync'], check=False, timeout=60)
-                time.sleep(1)
+                time.sleep(0.5)
             
             # Final sync
+            if progress_callback:
+                progress_callback(95, "Finalizing clone operation...")
+            
             print("Performing final sync...")
             subprocess.run(['sync'], check=False, timeout=60)
             time.sleep(2)
+            
+            if progress_callback:
+                progress_callback(100, "Clone complete!")
             
             print("All partitions processed")
             return True

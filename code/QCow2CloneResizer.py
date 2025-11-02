@@ -38,7 +38,7 @@ class QCow2CloneResizer:
     
     @staticmethod
     def compress_qcow2_image(image_path, progress_callback=None, delete_original_source=None):
-        """Compress QCOW2 image with digit-only progress updates
+        """Compress QCOW2 image with detailed progress updates (0-100%)
         
         Args:
             image_path: Path to the image to compress  
@@ -47,7 +47,7 @@ class QCow2CloneResizer:
         """
         try:
             if progress_callback:
-                progress_callback(92, "Compressing")
+                progress_callback(0, "Preparing compression...")
             
             print(f"Starting compression of: {image_path}")
             
@@ -60,12 +60,18 @@ class QCow2CloneResizer:
             print(f"  File size: {QCow2CloneResizer.format_size(original_file_size)}")
             print(f"  Current compression: {original_info.get('compressed', False)}")
             
+            if progress_callback:
+                progress_callback(2, "Creating temporary file...")
+            
             # Create temporary compressed version
             temp_compressed_path = f"{image_path}.compressed.tmp"
             
             # Remove temp file if it exists
             if os.path.exists(temp_compressed_path):
                 os.remove(temp_compressed_path)
+            
+            if progress_callback:
+                progress_callback(5, "Starting compression...")
             
             # Compression command
             cmd = [
@@ -90,24 +96,38 @@ class QCow2CloneResizer:
                 bufsize=1
             )
             
+            last_update_time = time.time()
+            update_interval = 0.5  # Update every 0.5 seconds
+            
             # Monitor compression progress
             for line in process.stdout:
                 line = line.strip()
                 if line and '%' in line:
-                    try:
-                        # Extract percentage from qemu-img output (format: "(XX.XX/100%)")
-                        match = re.search(r'\((\d+(?:\.\d+)?)/100%\)', line)
-                        if match:
-                            percent = float(match.group(1))
-                            if progress_callback:
-                                progress_callback(92, f"Compressing {int(percent)} %")
-                    except (ValueError, IndexError):
-                        pass
+                    current_time = time.time()
+                    if current_time - last_update_time >= update_interval:
+                        try:
+                            # Extract percentage from qemu-img output (format: "(XX.XX/100%)")
+                            match = re.search(r'\((\d+(?:\.\d+)?)/100%\)', line)
+                            if match:
+                                percent = float(match.group(1))
+                                # Scale progress from 5% to 90% (reserve 10% for finalization)
+                                scaled_progress = 5 + int(percent * 0.85)
+                                
+                                if progress_callback:
+                                    progress_callback(scaled_progress, f"Compressing: {int(percent)}%")
+                                
+                                last_update_time = current_time
+                        except (ValueError, IndexError):
+                            pass
             
             return_code = process.wait()
             
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, cmd)
+            
+            # Progress update
+            if progress_callback:
+                progress_callback(92, "Compression complete, verifying...")
             
             # Verify compressed image was created
             if not os.path.exists(temp_compressed_path):
@@ -129,12 +149,19 @@ class QCow2CloneResizer:
             print(f"  Space saved: {QCow2CloneResizer.format_size(original_file_size - compressed_file_size)}")
             print(f"  Compression ratio: {compression_ratio:.1f}%")
             
+            if progress_callback:
+                progress_callback(95, "Checking compression savings...")
+            
             # Check if compression is worth it (more than 1MB savings)
             min_savings = 1024 * 1024  # 1MB minimum savings
             if compressed_file_size >= (original_file_size - min_savings):
                 print(f"WARNING: Compression saved less than 1MB")
                 print(f"Keeping original and removing compressed temp file")
                 os.remove(temp_compressed_path)
+                
+                if progress_callback:
+                    progress_callback(100, "Compression skipped (minimal savings)")
+                
                 return {
                     'original_size': original_file_size,
                     'compressed_size': original_file_size,
@@ -143,6 +170,9 @@ class QCow2CloneResizer:
                 }
             
             # Replace original IN PLACE
+            if progress_callback:
+                progress_callback(97, "Replacing original with compressed version...")
+            
             print(f"Replacing original with compressed version...")
             os.remove(image_path)
             os.rename(temp_compressed_path, image_path)
@@ -150,7 +180,7 @@ class QCow2CloneResizer:
             print(f"Image compression completed and replaced in place")
             
             if progress_callback:
-                progress_callback(98, f"Compressing 100")
+                progress_callback(100, "Compression complete")
             
             return {
                 'original_size': original_file_size,
