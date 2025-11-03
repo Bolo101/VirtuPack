@@ -582,17 +582,17 @@ class QCow2CloneResizerGUI:
             if os_type == 'linux' and boot_mode == 'uefi':
                 instructions += (
                     f"After GParted closes, the UEFI bootloader will be automatically\n"
-                    f"reinstalled to ensure your VM boots correctly."
+                    f"reinstalled and the image will be cloned to an optimized version."
                 )
             elif os_type == 'linux' and boot_mode == 'bios':
                 instructions += (
-                    f"For BIOS Linux, the original image will be compressed\n"
-                    f"to save disk space after partition changes."
+                    f"After GParted closes, the image will be compressed\n"
+                    f"to save disk space. No cloning will be performed."
                 )
             elif os_type == 'windows':
                 instructions += (
-                    f"For Windows, the original image will be compressed\n"
-                    f"to save disk space."
+                    f"After GParted closes, the image will be compressed\n"
+                    f"to save disk space. No cloning will be performed."
                 )
             else:
                 instructions += (
@@ -992,33 +992,33 @@ class QCow2CloneResizerGUI:
                     traceback.print_exc()
                     error_msg = f"Failed to compress BIOS Linux image:\n\n{compression_error}\n\n"
                     error_msg += "Your original image has the GParted changes but is not compressed."
-                    self.root.after(0, lambda: messagebox.showerror("Compression Failed", error_msg))
+                    self._show_message_and_wait("Compression Failed", error_msg)
                 except subprocess.TimeoutExpired as compression_error:
                     print(f"ERROR: BIOS Linux image compression failed - timeout: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
                     error_msg += "Your original image has the GParted changes but is not compressed."
-                    self.root.after(0, lambda: messagebox.showerror("Compression Timeout", error_msg))
+                    self._show_message_and_wait("Compression Timeout", error_msg)
                 except FileNotFoundError as compression_error:
                     print(f"ERROR: BIOS Linux image compression failed - file not found: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Image file not found during compression:\n\n{compression_error}"
-                    self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+                    self._show_message_and_wait("File Not Found", error_msg)
                 except PermissionError as compression_error:
                     print(f"ERROR: BIOS Linux image compression failed - permission denied: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
                     error_msg += "Try running with sudo or check file permissions."
-                    self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
+                    self._show_message_and_wait("Permission Denied", error_msg)
                 except OSError as compression_error:
                     print(f"ERROR: BIOS Linux image compression failed - system error: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"System error during compression:\n\n{compression_error}"
-                    self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+                    self._show_message_and_wait("System Error", error_msg)
             
             elif os_type == 'windows':
                 print("=== WINDOWS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
@@ -1070,40 +1070,48 @@ class QCow2CloneResizerGUI:
                     traceback.print_exc()
                     error_msg = f"Failed to compress Windows image:\n\n{compression_error}\n\n"
                     error_msg += "Your original image has the GParted changes but is not compressed."
-                    self.root.after(0, lambda: messagebox.showerror("Compression Failed", error_msg))
+                    self._show_message_and_wait("Compression Failed", error_msg)
                 except subprocess.TimeoutExpired as compression_error:
                     print(f"ERROR: Windows image compression failed - timeout: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
                     error_msg += "Your original image has the GParted changes but is not compressed."
-                    self.root.after(0, lambda: messagebox.showerror("Compression Timeout", error_msg))
+                    self._show_message_and_wait("Compression Timeout", error_msg)
                 except FileNotFoundError as compression_error:
                     print(f"ERROR: Windows image compression failed - file not found: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Image file not found during compression:\n\n{compression_error}"
-                    self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+                    self._show_message_and_wait("File Not Found", error_msg)
                 except PermissionError as compression_error:
                     print(f"ERROR: Windows image compression failed - permission denied: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
                     error_msg += "Try running with administrator privileges."
-                    self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
+                    self._show_message_and_wait("Permission Denied", error_msg)
                 except OSError as compression_error:
                     print(f"ERROR: Windows image compression failed - system error: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"System error during compression:\n\n{compression_error}"
-                    self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+                    self._show_message_and_wait("System Error", error_msg)
             
             else:
-                print("=== UNKNOWN OS TYPE - SKIPPING CLONING ===")
+                print("=== UNKNOWN OS TYPE - SKIPPING OPERATIONS ===")
+                
+                # Disconnect NBD device
+                if source_nbd:
+                    print(f"Disconnecting NBD device: {source_nbd}")
+                    subprocess.run(['sync'], check=False, timeout=60)
+                    time.sleep(2)
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                    source_nbd = None
                 
                 self._show_message_and_wait("Unknown OS Type",
                     f"Could not determine if this is a Linux or Windows VM.\n\n"
-                    f"GParted changes have been applied but no cloning was performed.\n\n"
+                    f"GParted changes have been applied but no compression was performed.\n\n"
                     f"Your original image has been modified in place:\n"
                     f"{image_path}\n\n"
                     f"If you want to compress the image, please run the operation again.")
