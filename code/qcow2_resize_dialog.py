@@ -654,11 +654,10 @@ class QCow2CloneResizerGUI:
                         # COMPRESS ORIGINAL IMAGE INSTEAD OF CLONING
                         print("=== USER CANCELLED CLONING - COMPRESSING ORIGINAL IMAGE ===")
                         
-                        # CRITICAL: Disconnect NBD device before compression
+                        # IMPROVED: Sync with proper error handling and no timeout
                         self.update_progress(40, "Finalizing UEFI partition changes...")
                         print("Performing final sync before NBD disconnect...")
-                        subprocess.run(['sync'], check=False, timeout=60)
-                        time.sleep(2)
+                        self._perform_safe_sync("Pre-disconnect sync")
                         
                         # Disconnect NBD device
                         print(f"Disconnecting NBD device: {source_nbd}")
@@ -695,39 +694,13 @@ class QCow2CloneResizerGUI:
                                 compression_stats
                             )
                             
-                        except subprocess.CalledProcessError as compression_error:
-                            print(f"ERROR: UEFI Linux image compression failed - command error: {compression_error}")
+                        except Exception as compression_error:
+                            print(f"ERROR: UEFI Linux image compression failed: {compression_error}")
                             import traceback
                             traceback.print_exc()
                             error_msg = f"Failed to compress UEFI Linux image:\n\n{compression_error}\n\n"
                             error_msg += "Your original image has the GParted changes but is not compressed."
                             self._show_message_and_wait("Compression Failed", error_msg)
-                        except subprocess.TimeoutExpired as compression_error:
-                            print(f"ERROR: UEFI Linux image compression failed - timeout: {compression_error}")
-                            import traceback
-                            traceback.print_exc()
-                            error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
-                            error_msg += "Your original image has the GParted changes but is not compressed."
-                            self._show_message_and_wait("Compression Timeout", error_msg)
-                        except FileNotFoundError as compression_error:
-                            print(f"ERROR: UEFI Linux image compression failed - file not found: {compression_error}")
-                            import traceback
-                            traceback.print_exc()
-                            error_msg = f"Image file not found during compression:\n\n{compression_error}"
-                            self._show_message_and_wait("File Not Found", error_msg)
-                        except PermissionError as compression_error:
-                            print(f"ERROR: UEFI Linux image compression failed - permission denied: {compression_error}")
-                            import traceback
-                            traceback.print_exc()
-                            error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
-                            error_msg += "Try running with sudo or check file permissions."
-                            self._show_message_and_wait("Permission Denied", error_msg)
-                        except OSError as compression_error:
-                            print(f"ERROR: UEFI Linux image compression failed - system error: {compression_error}")
-                            import traceback
-                            traceback.print_exc()
-                            error_msg = f"System error during compression:\n\n{compression_error}"
-                            self._show_message_and_wait("System Error", error_msg)
                         
                         # Exit early - compression done, no cloning
                         return
@@ -796,47 +769,15 @@ class QCow2CloneResizerGUI:
                         shutil.copy2(str(intermediate_path), str(final_path))
                         self.update_progress(92, "Copy complete, starting compression...")
                         
-                        # Compress final image - progress will go from 50-100% inside compress_qcow2_image
+                        # Compress final image
                         compression_stats = QCow2CloneResizer.compress_qcow2_image(
                             str(final_path), 
                             self.update_progress,
                             delete_original_source=None
                         )
                         print(f"Compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
-                    except subprocess.CalledProcessError as compression_error:
-                        print(f"ERROR: Compression failed - command error: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except subprocess.TimeoutExpired as compression_error:
-                        print(f"ERROR: Compression failed - timeout: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except FileNotFoundError as compression_error:
-                        print(f"ERROR: Compression failed - file not found: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except PermissionError as compression_error:
-                        print(f"ERROR: Compression failed - permission denied: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except OSError as compression_error:
-                        print(f"ERROR: Compression failed - system error: {compression_error}")
+                    except Exception as compression_error:
+                        print(f"ERROR: Compression failed: {compression_error}")
                         compression_stats = {
                             'space_saved': 0,
                             'compression_ratio': 0.0,
@@ -867,11 +808,10 @@ class QCow2CloneResizerGUI:
                     # User chose to skip cloning - COMPRESS ORIGINAL IMAGE
                     print("User chose to skip cloning - compressing original image instead")
                     
-                    # CRITICAL: Disconnect NBD device before compression
+                    # IMPROVED: Sync with proper error handling
                     self.update_progress(40, "Finalizing UEFI partition changes...")
                     print("Performing final sync before NBD disconnect...")
-                    subprocess.run(['sync'], check=False, timeout=60)
-                    time.sleep(2)
+                    self._perform_safe_sync("Pre-disconnect sync")
                     
                     # Disconnect NBD device
                     print(f"Disconnecting NBD device: {source_nbd}")
@@ -908,48 +848,21 @@ class QCow2CloneResizerGUI:
                             compression_stats
                         )
                         
-                    except subprocess.CalledProcessError as compression_error:
-                        print(f"ERROR: UEFI Linux image compression failed - command error: {compression_error}")
+                    except Exception as compression_error:
+                        print(f"ERROR: UEFI Linux image compression failed: {compression_error}")
                         import traceback
                         traceback.print_exc()
                         error_msg = f"Failed to compress UEFI Linux image:\n\n{compression_error}\n\n"
                         error_msg += "Your original image has the GParted changes but is not compressed."
                         self._show_message_and_wait("Compression Failed", error_msg)
-                    except subprocess.TimeoutExpired as compression_error:
-                        print(f"ERROR: UEFI Linux image compression failed - timeout: {compression_error}")
-                        import traceback
-                        traceback.print_exc()
-                        error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
-                        error_msg += "Your original image has the GParted changes but is not compressed."
-                        self._show_message_and_wait("Compression Timeout", error_msg)
-                    except FileNotFoundError as compression_error:
-                        print(f"ERROR: UEFI Linux image compression failed - file not found: {compression_error}")
-                        import traceback
-                        traceback.print_exc()
-                        error_msg = f"Image file not found during compression:\n\n{compression_error}"
-                        self._show_message_and_wait("File Not Found", error_msg)
-                    except PermissionError as compression_error:
-                        print(f"ERROR: UEFI Linux image compression failed - permission denied: {compression_error}")
-                        import traceback
-                        traceback.print_exc()
-                        error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
-                        error_msg += "Try running with sudo or check file permissions."
-                        self._show_message_and_wait("Permission Denied", error_msg)
-                    except OSError as compression_error:
-                        print(f"ERROR: UEFI Linux image compression failed - system error: {compression_error}")
-                        import traceback
-                        traceback.print_exc()
-                        error_msg = f"System error during compression:\n\n{compression_error}"
-                        self._show_message_and_wait("System Error", error_msg)
             
             elif os_type == 'linux' and boot_mode == 'bios':
                 print("=== LINUX BIOS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
                 
-                # CRITICAL: Disconnect NBD device before compression
+                # IMPROVED: Sync with proper error handling
                 self.update_progress(40, "Finalizing BIOS partition changes...")
                 print("Performing final sync before NBD disconnect...")
-                subprocess.run(['sync'], check=False, timeout=60)
-                time.sleep(2)
+                self._perform_safe_sync("BIOS pre-disconnect sync")
                 
                 # Disconnect NBD device
                 print(f"Disconnecting NBD device: {source_nbd}")
@@ -986,48 +899,21 @@ class QCow2CloneResizerGUI:
                         compression_stats
                     )
                     
-                except subprocess.CalledProcessError as compression_error:
-                    print(f"ERROR: BIOS Linux image compression failed - command error: {compression_error}")
+                except Exception as compression_error:
+                    print(f"ERROR: BIOS Linux image compression failed: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Failed to compress BIOS Linux image:\n\n{compression_error}\n\n"
                     error_msg += "Your original image has the GParted changes but is not compressed."
                     self._show_message_and_wait("Compression Failed", error_msg)
-                except subprocess.TimeoutExpired as compression_error:
-                    print(f"ERROR: BIOS Linux image compression failed - timeout: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
-                    error_msg += "Your original image has the GParted changes but is not compressed."
-                    self._show_message_and_wait("Compression Timeout", error_msg)
-                except FileNotFoundError as compression_error:
-                    print(f"ERROR: BIOS Linux image compression failed - file not found: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"Image file not found during compression:\n\n{compression_error}"
-                    self._show_message_and_wait("File Not Found", error_msg)
-                except PermissionError as compression_error:
-                    print(f"ERROR: BIOS Linux image compression failed - permission denied: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
-                    error_msg += "Try running with sudo or check file permissions."
-                    self._show_message_and_wait("Permission Denied", error_msg)
-                except OSError as compression_error:
-                    print(f"ERROR: BIOS Linux image compression failed - system error: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"System error during compression:\n\n{compression_error}"
-                    self._show_message_and_wait("System Error", error_msg)
             
             elif os_type == 'windows':
                 print("=== WINDOWS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
                 
-                # CRITICAL: Disconnect NBD device before compression
+                # IMPROVED: Sync with proper error handling
                 self.update_progress(40, "Finalizing Windows partition changes...")
                 print("Performing final sync before NBD disconnect...")
-                subprocess.run(['sync'], check=False, timeout=60)
-                time.sleep(2)
+                self._perform_safe_sync("Windows pre-disconnect sync")
                 
                 # Disconnect NBD device
                 print(f"Disconnecting NBD device: {source_nbd}")
@@ -1064,39 +950,13 @@ class QCow2CloneResizerGUI:
                         compression_stats
                     )
                     
-                except subprocess.CalledProcessError as compression_error:
-                    print(f"ERROR: Windows image compression failed - command error: {compression_error}")
+                except Exception as compression_error:
+                    print(f"ERROR: Windows image compression failed: {compression_error}")
                     import traceback
                     traceback.print_exc()
                     error_msg = f"Failed to compress Windows image:\n\n{compression_error}\n\n"
                     error_msg += "Your original image has the GParted changes but is not compressed."
                     self._show_message_and_wait("Compression Failed", error_msg)
-                except subprocess.TimeoutExpired as compression_error:
-                    print(f"ERROR: Windows image compression failed - timeout: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"Compression operation timed out:\n\n{compression_error}\n\n"
-                    error_msg += "Your original image has the GParted changes but is not compressed."
-                    self._show_message_and_wait("Compression Timeout", error_msg)
-                except FileNotFoundError as compression_error:
-                    print(f"ERROR: Windows image compression failed - file not found: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"Image file not found during compression:\n\n{compression_error}"
-                    self._show_message_and_wait("File Not Found", error_msg)
-                except PermissionError as compression_error:
-                    print(f"ERROR: Windows image compression failed - permission denied: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"Permission denied during compression:\n\n{compression_error}\n\n"
-                    error_msg += "Try running with administrator privileges."
-                    self._show_message_and_wait("Permission Denied", error_msg)
-                except OSError as compression_error:
-                    print(f"ERROR: Windows image compression failed - system error: {compression_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"System error during compression:\n\n{compression_error}"
-                    self._show_message_and_wait("System Error", error_msg)
             
             else:
                 print("=== UNKNOWN OS TYPE - SKIPPING OPERATIONS ===")
@@ -1104,8 +964,7 @@ class QCow2CloneResizerGUI:
                 # Disconnect NBD device
                 if source_nbd:
                     print(f"Disconnecting NBD device: {source_nbd}")
-                    subprocess.run(['sync'], check=False, timeout=60)
-                    time.sleep(2)
+                    self._perform_safe_sync("Unknown OS pre-disconnect sync")
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
                     source_nbd = None
                 
@@ -1116,71 +975,73 @@ class QCow2CloneResizerGUI:
                     f"{image_path}\n\n"
                     f"If you want to compress the image, please run the operation again.")
             
-        except FileNotFoundError as e:
-            error_msg = f"OPERATION FAILED - File Not Found\n\n{e}\n\nCheck file paths and permissions."
-            self.log(f"Operation failed - file not found: {e}")
-            print(f"ERROR in _gparted_clone_worker - file not found: {e}")
-            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
-        except PermissionError as e:
-            error_msg = f"OPERATION FAILED - Permission Denied\n\n{e}\n\nRun as root or with sudo."
-            self.log(f"Operation failed - permission denied: {e}")
-            print(f"ERROR in _gparted_clone_worker - permission denied: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
-        except subprocess.CalledProcessError as e:
-            error_msg = f"OPERATION FAILED - Command Error\n\n{e}\n\nCommand: {e.cmd}\nReturn code: {e.returncode}"
-            self.log(f"Operation failed - command error: {e}")
-            print(f"ERROR in _gparted_clone_worker - command error: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Command Failed", error_msg))
-        except subprocess.TimeoutExpired as e:
-            error_msg = f"OPERATION FAILED - Timeout\n\n{e}\n\nOperation took too long to complete."
-            self.log(f"Operation failed - timeout: {e}")
-            print(f"ERROR in _gparted_clone_worker - timeout: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Operation Timeout", error_msg))
-        except RuntimeError as e:
-            error_msg = f"OPERATION FAILED - Runtime Error\n\n{e}"
-            self.log(f"Operation failed - runtime error: {e}")
-            print(f"ERROR in _gparted_clone_worker - runtime error: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Runtime Error", error_msg))
-        except ValueError as e:
-            error_msg = f"OPERATION FAILED - Invalid Value\n\n{e}\n\nCheck input parameters."
-            self.log(f"Operation failed - value error: {e}")
-            print(f"ERROR in _gparted_clone_worker - value error: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Invalid Value", error_msg))
-        except KeyError as e:
-            error_msg = f"OPERATION FAILED - Data Error\n\n{e}\n\nMissing required data."
-            self.log(f"Operation failed - key error: {e}")
-            print(f"ERROR in _gparted_clone_worker - key error: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Data Error", error_msg))
-        except OSError as e:
-            error_msg = f"OPERATION FAILED - System Error\n\n{e}\n\nCheck system resources."
-            self.log(f"Operation failed - system error: {e}")
-            print(f"ERROR in _gparted_clone_worker - system error: {e}")
-            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
-        except ImportError as e:
-            error_msg = f"OPERATION FAILED - Missing Module\n\n{e}\n\nRequired Python module not available."
-            self.log(f"Operation failed - import error: {e}")
-            print(f"ERROR in _gparted_clone_worker - import error: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Module Error", error_msg))
-        except shutil.Error as e:
-            error_msg = f"OPERATION FAILED - File Copy Error\n\n{e}\n\nError during file operations."
-            self.log(f"Operation failed - shutil error: {e}")
-            print(f"ERROR in _gparted_clone_worker - shutil error: {e}")
-            self.root.after(0, lambda: messagebox.showerror("File Copy Error", error_msg))
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = f"OPERATION FAILED - {error_type}\n\n{e}"
+            self.log(f"Operation failed: {e}")
+            print(f"ERROR in _gparted_clone_worker: {e}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror(f"{error_type}", error_msg))
         
         finally:
             if source_nbd:
                 try:
                     print(f"Final cleanup of NBD device: {source_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                except subprocess.CalledProcessError as cleanup_e:
-                    print(f"Error cleaning up NBD device - command failed: {cleanup_e}")
-                except subprocess.TimeoutExpired as cleanup_e:
-                    print(f"Error cleaning up NBD device - timeout: {cleanup_e}")
-                except FileNotFoundError as cleanup_e:
-                    print(f"Error cleaning up NBD device - not found: {cleanup_e}")
-                except OSError as cleanup_e:
-                    print(f"Error cleaning up NBD device - system error: {cleanup_e}")
+                except Exception as cleanup_e:
+                    print(f"Error cleaning up NBD device: {cleanup_e}")
             self.root.after(0, self.reset_ui)
+
+
+    def _perform_safe_sync(self, operation_name="Sync"):
+        """Perform sync operation with proper error handling and no timeout"""
+        try:
+            print(f"{operation_name}: Starting sync operation...")
+            
+            # Method 1: Try regular sync (no timeout - let it finish)
+            try:
+                print(f"{operation_name}: Attempting full sync...")
+                process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Wait up to 2 minutes, but don't fail if it takes longer
+                try:
+                    stdout, stderr = process.communicate(timeout=120)
+                    if process.returncode == 0:
+                        print(f"{operation_name}: Full sync completed successfully")
+                        time.sleep(2)
+                        return True
+                except subprocess.TimeoutExpired:
+                    print(f"{operation_name}: Full sync taking longer than expected, continuing anyway...")
+                    # Don't kill the process - let it finish in background
+                    time.sleep(5)
+                    return True
+                    
+            except Exception as e:
+                print(f"{operation_name}: Full sync error: {e}")
+            
+            # Method 2: Try syncfs on specific device if we have NBD info
+            try:
+                print(f"{operation_name}: Attempting filesystem-specific sync...")
+                subprocess.run(['sync', '-f'], check=False, timeout=30)
+                print(f"{operation_name}: Filesystem sync completed")
+                time.sleep(2)
+                return True
+            except:
+                pass
+            
+            # Method 3: Just wait a bit for kernel buffers to flush
+            print(f"{operation_name}: Using fallback wait period...")
+            time.sleep(10)
+            
+            print(f"{operation_name}: Sync operation completed (or timed out safely)")
+            return True
+            
+        except Exception as e:
+            print(f"{operation_name}: Sync error (non-fatal): {e}")
+            # Don't fail the entire operation just because sync had issues
+            time.sleep(5)
+            return False
 
     def _show_windows_completion_dialog(self, image_path, original_info, original_source_size,
                                     final_image_info, final_image_size, compression_stats):

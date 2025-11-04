@@ -858,26 +858,77 @@ class QCow2CloneResizer:
             cmd = [
                 'qemu-img', 'create', 
                 '-f', 'qcow2',
-                '-o', 'preallocation=metadata',  # FIXED: Added preallocation=metadata
+                '-o', 'preallocation=metadata',
                 target_path, 
                 str(size_bytes)
             ]
             
             print(f"Creating new image: {' '.join(cmd)}")
             
-            result = subprocess.run(
+            # Start the process
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True, text=True, check=True, timeout=600  # Increased timeout for large images
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1
             )
             
-            if result.stdout:
-                print(f"qemu-img output: {result.stdout}")
-            if result.stderr:
-                print(f"qemu-img stderr: {result.stderr}")
+            # Monitor progress with periodic updates
+            start_time = time.time()
+            last_update = start_time
+            update_interval = 2.0  # Update every 2 seconds
+            max_wait_time = 600  # 10 minutes maximum
+            
+            while process.poll() is None:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                
+                # Update progress periodically
+                if current_time - last_update >= update_interval:
+                    if progress_callback:
+                        # Calculate pseudo-progress based on time elapsed
+                        # Assume it should take about 30 seconds for a typical image
+                        estimated_time = 30
+                        percent = min(29, int((elapsed / estimated_time) * 9) + 20)  # 20-29%
+                        
+                        progress_callback(
+                            percent,
+                            f"Creating image... {int(elapsed)}s elapsed"
+                        )
+                    
+                    last_update = current_time
+                
+                # Check for timeout
+                if elapsed > max_wait_time:
+                    print(f"WARNING: Image creation taking longer than {max_wait_time}s")
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(cmd, max_wait_time)
+                
+                time.sleep(0.5)
+            
+            # Get final output
+            stdout, stderr = process.communicate(timeout=10)
+            
+            if stdout:
+                print(f"qemu-img output: {stdout}")
+            if stderr:
+                print(f"qemu-img stderr: {stderr}")
+            
+            # Check return code
+            if process.returncode != 0:
+                error_msg = f"qemu-img failed with return code {process.returncode}"
+                if stderr:
+                    error_msg += f"\nError: {stderr}"
+                raise subprocess.CalledProcessError(process.returncode, cmd, stderr)
             
             # Verify the image was created successfully
             if not os.path.exists(target_path):
                 raise Exception(f"Image file was not created: {target_path}")
+            
+            # Brief wait for filesystem to catch up (especially on USB drives)
+            time.sleep(2)
             
             # Verify image properties
             verify_info = QCow2CloneResizer.get_image_info(target_path)
@@ -900,7 +951,10 @@ class QCow2CloneResizer:
             print(f"ERROR: {error_msg}")
             raise Exception(error_msg)
         except subprocess.TimeoutExpired:
-            raise Exception("Image creation timed out (10 minutes)")
+            error_msg = f"Image creation timed out after {max_wait_time} seconds. "
+            error_msg += "This can happen on slow USB drives. Try creating the image on a faster drive."
+            print(f"ERROR: {error_msg}")
+            raise Exception(error_msg)
         except FileNotFoundError:
             raise Exception("qemu-img command not found")
         except PermissionError:
@@ -1038,12 +1092,55 @@ class QCow2CloneResizer:
                 print("No partitions found")
                 return 'unknown'
             
-            # Try to mount and detect
+            # First check partition table and flags (faster method)
+            try:
+                parted_result = subprocess.run(
+                    ['parted', '-s', nbd_device, 'print'],
+                    capture_output=True, text=True, check=True, timeout=10
+                )
+                
+                parted_output = parted_result.stdout.lower()
+                
+                # Check for Windows indicators in partition flags/names
+                windows_indicators = [
+                    'microsoft reserved partition',
+                    'basic data partition',
+                    'msftres',
+                    'msftdata',
+                    'efi system partition'  # Often present in Windows
+                ]
+                
+                linux_indicators = [
+                    'linux filesystem',
+                    'linux swap',
+                    'ext2',
+                    'ext3', 
+                    'ext4'
+                ]
+                
+                windows_score = sum(1 for indicator in windows_indicators if indicator in parted_output)
+                linux_score = sum(1 for indicator in linux_indicators if indicator in parted_output)
+                
+                # If we see Microsoft Reserved Partition, it's definitely Windows
+                if 'microsoft reserved partition' in parted_output or 'msftres' in parted_output:
+                    print("Detected Windows (found Microsoft Reserved Partition)")
+                    return 'windows'
+                
+                # Check filesystem types
+                if 'ntfs' in parted_output or 'fat32' in parted_output:
+                    if linux_score == 0:  # No Linux filesystems detected
+                        print("Detected Windows (NTFS/FAT32 without Linux filesystems)")
+                        return 'windows'
+                
+            except Exception as e:
+                print(f"Error checking parted output: {e}")
+            
+            # Fallback: Try to mount and detect
             for part_num, part_device in partitions:
                 with tempfile.TemporaryDirectory() as mount_point:
                     try:
                         # Try different filesystems
-                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2', 'ntfs', 'vfat']:
+                        for fs_type in ['auto', 'ntfs', 'vfat', 'ext4', 'ext3', 'ext2']:
                             result = subprocess.run(
                                 ['mount', '-t', fs_type, '-o', 'ro', part_device, mount_point],
                                 capture_output=True, timeout=10, check=False
@@ -1052,27 +1149,59 @@ class QCow2CloneResizer:
                             if result.returncode == 0:
                                 print(f"Mounted {part_device} as {fs_type}")
                                 
-                                # Check for Linux indicators
-                                if os.path.exists(os.path.join(mount_point, 'etc')):
+                                try:
+                                    # Check for Windows indicators FIRST (more specific)
+                                    windows_paths = [
+                                        'Windows',
+                                        'WINDOWS', 
+                                        'windows',
+                                        'Program Files',
+                                        'Program Files (x86)',
+                                        'ProgramData',
+                                        'Users',
+                                        'System Volume Information',
+                                        'Boot',
+                                        'bootmgr',
+                                        'BOOTMGR'
+                                    ]
+                                    
+                                    for win_path in windows_paths:
+                                        full_path = os.path.join(mount_point, win_path)
+                                        if os.path.exists(full_path):
+                                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                            print(f"Detected Windows (found {win_path})")
+                                            return 'windows'
+                                    
+                                    # Check for EFI partition content (common in Windows)
+                                    efi_path = os.path.join(mount_point, 'EFI')
+                                    if os.path.exists(efi_path):
+                                        efi_contents = os.listdir(efi_path)
+                                        if 'Microsoft' in efi_contents or 'Boot' in efi_contents:
+                                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                            print("Detected Windows (found EFI/Microsoft)")
+                                            return 'windows'
+                                    
+                                    # Only check for Linux if Windows wasn't detected
+                                    linux_paths = [
+                                        'etc/fstab',
+                                        'etc/passwd',
+                                        'bin/bash',
+                                        'usr/bin',
+                                        'var/log'
+                                    ]
+                                    
+                                    for linux_path in linux_paths:
+                                        full_path = os.path.join(mount_point, linux_path)
+                                        if os.path.exists(full_path):
+                                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                            print(f"Detected Linux (found {linux_path})")
+                                            return 'linux'
+                                    
+                                finally:
                                     subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                    print("Detected Linux (found /etc)")
-                                    return 'linux'
                                 
-                                # Check for Windows indicators
-                                if os.path.exists(os.path.join(mount_point, 'Windows')) or \
-                                os.path.exists(os.path.join(mount_point, 'WINDOWS')):
-                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                    print("Detected Windows (found Windows directory)")
-                                    return 'windows'
-                                
-                                # Check for boot directory (Linux)
-                                if os.path.exists(os.path.join(mount_point, 'boot')):
-                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                    print("Detected Linux (found /boot)")
-                                    return 'linux'
-                                
-                                subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                
+                                break  # Successfully mounted, no need to try other fs types
+                            
                     except subprocess.TimeoutExpired:
                         print(f"Mount operation timed out for {part_device}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
