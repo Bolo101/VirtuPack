@@ -117,7 +117,7 @@ class QCow2CloneResizer:
                                     progress_callback(scaled_progress, f"Compressing: {int(percent)}%")
                                 
                                 last_update_time = current_time
-                        except (ValueError, IndexError):
+                        except (ValueError, IndexError, AttributeError):
                             pass
             
             return_code = process.wait()
@@ -131,7 +131,7 @@ class QCow2CloneResizer:
             
             # Verify compressed image was created
             if not os.path.exists(temp_compressed_path):
-                raise Exception(f"Compressed image was not created: {temp_compressed_path}")
+                raise FileNotFoundError(f"Compressed image was not created: {temp_compressed_path}")
             
             # Get compressed image stats
             compressed_info = QCow2CloneResizer.get_image_info(temp_compressed_path)
@@ -189,15 +189,69 @@ class QCow2CloneResizer:
                 'compression_ratio': compression_ratio,
             }
             
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             # Clean up temp file on error
             temp_compressed_path = f"{image_path}.compressed.tmp"
             if os.path.exists(temp_compressed_path):
                 try:
                     os.remove(temp_compressed_path)
-                except:
+                except (FileNotFoundError, PermissionError, OSError):
                     pass
-            print(f"ERROR during compression: {e}")
+            print(f"ERROR - compression command failed: {e}")
+            raise
+        except subprocess.TimeoutExpired as e:
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError):
+                    pass
+            print(f"ERROR - compression timed out: {e}")
+            raise
+        except FileNotFoundError as e:
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError):
+                    pass
+            print(f"ERROR - file not found during compression: {e}")
+            raise
+        except PermissionError as e:
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError):
+                    pass
+            print(f"ERROR - permission denied during compression: {e}")
+            raise
+        except OSError as e:
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError):
+                    pass
+            print(f"ERROR - OS error during compression: {e}")
+            raise
+        except json.JSONDecodeError as e:
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError):
+                    pass
+            print(f"ERROR - JSON parsing error during compression: {e}")
+            raise
+        except ValueError as e:
+            temp_compressed_path = f"{image_path}.compressed.tmp"
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError):
+                    pass
+            print(f"ERROR - invalid value during compression: {e}")
             raise
     
     @staticmethod
@@ -237,10 +291,10 @@ class QCow2CloneResizer:
         try:
             # First check if file exists and is readable
             if not os.path.exists(image_path):
-                raise Exception(f"Image file does not exist: {image_path}")
+                raise FileNotFoundError(f"Image file does not exist: {image_path}")
             
             if not os.access(image_path, os.R_OK):
-                raise Exception(f"Image file is not readable (check permissions): {image_path}")
+                raise PermissionError(f"Image file is not readable (check permissions): {image_path}")
             
             file_size = os.path.getsize(image_path)
             print(f"Image file exists: {image_path} ({QCow2CloneResizer.format_size(file_size)})")
@@ -275,19 +329,28 @@ class QCow2CloneResizer:
                     error_msg += f"Fallback info output:\n{fallback_result.stdout}\n"
                 if fallback_result.stderr:
                     error_msg += f"Fallback info stderr:\n{fallback_result.stderr}\n"
-            except Exception as fallback_e:
+            except subprocess.TimeoutExpired as fallback_timeout:
+                error_msg += f"Fallback check also timed out: {fallback_timeout}\n"
+            except subprocess.CalledProcessError as fallback_e:
                 error_msg += f"Fallback check also failed: {fallback_e}\n"
+            except FileNotFoundError as fallback_file:
+                error_msg += f"qemu-img command not found in fallback: {fallback_file}\n"
+            except OSError as fallback_os:
+                error_msg += f"OS error in fallback check: {fallback_os}\n"
             
             print(f"ERROR: {error_msg}")
-            raise Exception(error_msg)
+            raise RuntimeError(error_msg)
         except subprocess.TimeoutExpired:
-            raise Exception(f"qemu-img timed out while analyzing image: {image_path}")
+            raise subprocess.TimeoutExpired(['qemu-img', 'info'], 30, 
+                f"qemu-img timed out while analyzing image: {image_path}")
         except json.JSONDecodeError as e:
-            raise Exception(f"Failed to parse qemu-img JSON output: {e}")
+            raise json.JSONDecodeError(f"Failed to parse qemu-img JSON output", e.doc, e.pos)
         except FileNotFoundError:
-            raise Exception(f"Image file not found: {image_path}")
+            raise FileNotFoundError(f"Image file not found: {image_path}")
         except PermissionError:
-            raise Exception(f"Permission denied accessing image: {image_path}")
+            raise PermissionError(f"Permission denied accessing image: {image_path}")
+        except OSError as e:
+            raise OSError(f"OS error accessing image {image_path}: {e}")
     
     @staticmethod
     def setup_nbd_device(image_path, progress_callback=None, exclude_devices=None):
@@ -1132,8 +1195,14 @@ class QCow2CloneResizer:
                         print("Detected Windows (NTFS/FAT32 without Linux filesystems)")
                         return 'windows'
                 
-            except Exception as e:
-                print(f"Error checking parted output: {e}")
+            except subprocess.CalledProcessError as parted_e:
+                print(f"Error running parted: {parted_e}")
+            except subprocess.TimeoutExpired as parted_timeout:
+                print(f"Parted command timed out: {parted_timeout}")
+            except FileNotFoundError as parted_file:
+                print(f"Parted command not found: {parted_file}")
+            except OSError as parted_os:
+                print(f"OS error running parted: {parted_os}")
             
             # Fallback: Try to mount and detect
             for part_num, part_device in partitions:
@@ -1202,16 +1271,34 @@ class QCow2CloneResizer:
                                 
                                 break  # Successfully mounted, no need to try other fs types
                             
-                    except subprocess.TimeoutExpired:
-                        print(f"Mount operation timed out for {part_device}")
+                    except subprocess.TimeoutExpired as mount_timeout:
+                        print(f"Mount operation timed out for {part_device}: {mount_timeout}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
-                    except Exception as e:
-                        print(f"Error checking partition {part_device}: {e}")
+                    except subprocess.CalledProcessError as mount_e:
+                        print(f"Mount command failed for {part_device}: {mount_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except FileNotFoundError as mount_file:
+                        print(f"Mount command not found: {mount_file}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except PermissionError as mount_perm:
+                        print(f"Permission error mounting {part_device}: {mount_perm}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except OSError as mount_os:
+                        print(f"OS error checking partition {part_device}: {mount_os}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
             
             print("Could not determine OS type")
             return 'unknown'
             
-        except Exception as e:
-            print(f"Error in detect_vm_os: {e}")
+        except FileNotFoundError as e:
+            print(f"File not found in detect_vm_os: {e}")
+            return 'unknown'
+        except PermissionError as e:
+            print(f"Permission error in detect_vm_os: {e}")
+            return 'unknown'
+        except OSError as e:
+            print(f"OS error in detect_vm_os: {e}")
+            return 'unknown'
+        except ValueError as e:
+            print(f"Value error in detect_vm_os: {e}")
             return 'unknown'
