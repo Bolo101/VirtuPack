@@ -566,8 +566,13 @@ class QCow2CloneResizerGUI:
                                 print(f"Removing: {file_path_obj.name}")
                                 os.remove(file_path_obj)
                                 files_removed.append(file_path_obj.name)
-                        except Exception as e:
-                            print(f"Failed to remove {file_path_obj.name}: {e}")
+                        except FileNotFoundError:
+                            print(f"File already removed: {file_path_obj.name}")
+                        except PermissionError as e:
+                            print(f"Permission denied removing {file_path_obj.name}: {e}")
+                            files_failed.append(file_path_obj.name)
+                        except OSError as e:
+                            print(f"OS error removing {file_path_obj.name}: {e}")
                             files_failed.append(file_path_obj.name)
                 else:
                     file_path = original_dir / pattern
@@ -581,8 +586,13 @@ class QCow2CloneResizerGUI:
                             print(f"Removing: {file_path.name}")
                             os.remove(file_path)
                             files_removed.append(file_path.name)
-                    except Exception as e:
-                        print(f"Failed to remove {file_path.name}: {e}")
+                    except FileNotFoundError:
+                        print(f"File already removed: {file_path.name}")
+                    except PermissionError as e:
+                        print(f"Permission denied removing {file_path.name}: {e}")
+                        files_failed.append(file_path.name)
+                    except OSError as e:
+                        print(f"OS error removing {file_path.name}: {e}")
                         files_failed.append(file_path.name)
             
             # Verify original image still exists
@@ -606,8 +616,17 @@ class QCow2CloneResizerGUI:
             
             return True
             
-        except Exception as e:
-            print(f"ERROR during cleanup: {e}")
+        except FileNotFoundError as e:
+            print(f"File not found during cleanup: {e}")
+            return False
+        except PermissionError as e:
+            print(f"Permission error during cleanup: {e}")
+            return False
+        except OSError as e:
+            print(f"OS error during cleanup: {e}")
+            return False
+        except ValueError as e:
+            print(f"Value error during cleanup: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -816,8 +835,40 @@ class QCow2CloneResizerGUI:
                             delete_original_source=None
                         )
                         print(f"Compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
-                    except Exception as compression_error:
-                        print(f"ERROR: Compression failed: {compression_error}")
+                    except subprocess.CalledProcessError as compression_error:
+                        print(f"ERROR: Compression command failed: {compression_error}")
+                        compression_stats = {
+                            'space_saved': 0,
+                            'compression_ratio': 0.0,
+                            'original_size': 0,
+                            'compressed_size': 0,
+                        }
+                    except subprocess.TimeoutExpired as compression_error:
+                        print(f"ERROR: Compression timed out: {compression_error}")
+                        compression_stats = {
+                            'space_saved': 0,
+                            'compression_ratio': 0.0,
+                            'original_size': 0,
+                            'compressed_size': 0,
+                        }
+                    except FileNotFoundError as compression_error:
+                        print(f"ERROR: Compression file not found: {compression_error}")
+                        compression_stats = {
+                            'space_saved': 0,
+                            'compression_ratio': 0.0,
+                            'original_size': 0,
+                            'compressed_size': 0,
+                        }
+                    except PermissionError as compression_error:
+                        print(f"ERROR: Compression permission denied: {compression_error}")
+                        compression_stats = {
+                            'space_saved': 0,
+                            'compression_ratio': 0.0,
+                            'original_size': 0,
+                            'compressed_size': 0,
+                        }
+                    except OSError as compression_error:
+                        print(f"ERROR: Compression OS error: {compression_error}")
                         compression_stats = {
                             'space_saved': 0,
                             'compression_ratio': 0.0,
@@ -967,15 +1018,86 @@ class QCow2CloneResizerGUI:
             
             # CLEANUP ALL TEMPORARY FILES
             self._cleanup_all_temporary_files(image_path)
-            
-        except Exception as e:
-            error_type = type(e).__name__
-            error_msg = f"OPERATION FAILED - {error_type}\n\n{e}\n\nCleaning up temporary files..."
-            self.log(f"Operation failed: {e}")
-            print(f"ERROR in _gparted_clone_worker: {e}")
+        
+        except subprocess.CalledProcessError as e:
+            error_msg = f"COMMAND EXECUTION FAILED\n\nCommand: {' '.join(e.cmd) if hasattr(e, 'cmd') else 'unknown'}\n"
+            error_msg += f"Return code: {e.returncode}\n"
+            if e.stderr:
+                error_msg += f"Error: {e.stderr}\n"
+            error_msg += "\nCleaning up temporary files..."
+            self.log(f"Command execution failed: {e}")
+            print(f"ERROR: {error_msg}")
             import traceback
             traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror(f"{error_type}", error_msg))
+            self.root.after(0, lambda: messagebox.showerror("Command Failed", error_msg))
+            
+            # CLEANUP ALL TEMPORARY FILES
+            self._cleanup_all_temporary_files(image_path)
+        
+        except subprocess.TimeoutExpired as e:
+            error_msg = f"OPERATION TIMED OUT\n\nCommand timed out after {e.timeout} seconds\n"
+            error_msg += f"Command: {' '.join(e.cmd) if hasattr(e, 'cmd') else 'unknown'}\n\n"
+            error_msg += "Cleaning up temporary files..."
+            self.log(f"Operation timed out: {e}")
+            print(f"ERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("Timeout", error_msg))
+            
+            # CLEANUP ALL TEMPORARY FILES
+            self._cleanup_all_temporary_files(image_path)
+        
+        except FileNotFoundError as e:
+            error_msg = f"FILE NOT FOUND\n\n{e}\n\nCleaning up temporary files..."
+            self.log(f"File not found: {e}")
+            print(f"ERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+            
+            # CLEANUP ALL TEMPORARY FILES
+            self._cleanup_all_temporary_files(image_path)
+        
+        except PermissionError as e:
+            error_msg = f"PERMISSION DENIED\n\n{e}\n\nTry running with sudo privileges.\n\nCleaning up temporary files..."
+            self.log(f"Permission denied: {e}")
+            print(f"ERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
+            
+            # CLEANUP ALL TEMPORARY FILES
+            self._cleanup_all_temporary_files(image_path)
+        
+        except OSError as e:
+            error_msg = f"SYSTEM ERROR\n\n{e}\n\nCheck disk space and system resources.\n\nCleaning up temporary files..."
+            self.log(f"OS error: {e}")
+            print(f"ERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+            
+            # CLEANUP ALL TEMPORARY FILES
+            self._cleanup_all_temporary_files(image_path)
+        
+        except ValueError as e:
+            error_msg = f"INVALID VALUE\n\n{e}\n\nCleaning up temporary files..."
+            self.log(f"Value error: {e}")
+            print(f"ERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("Invalid Value", error_msg))
+            
+            # CLEANUP ALL TEMPORARY FILES
+            self._cleanup_all_temporary_files(image_path)
+        
+        except json.JSONDecodeError as e:
+            error_msg = f"JSON PARSING ERROR\n\n{e}\n\nCleaning up temporary files..."
+            self.log(f"JSON decode error: {e}")
+            print(f"ERROR: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("Parse Error", error_msg))
             
             # CLEANUP ALL TEMPORARY FILES
             self._cleanup_all_temporary_files(image_path)
@@ -986,8 +1108,16 @@ class QCow2CloneResizerGUI:
                 try:
                     print(f"Final cleanup of NBD device: {source_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                except Exception as cleanup_e:
-                    print(f"Error cleaning up NBD device: {cleanup_e}")
+                except subprocess.CalledProcessError as cleanup_e:
+                    print(f"Error cleaning up NBD device (command failed): {cleanup_e}")
+                except subprocess.TimeoutExpired as cleanup_e:
+                    print(f"Error cleaning up NBD device (timeout): {cleanup_e}")
+                except FileNotFoundError as cleanup_e:
+                    print(f"Error cleaning up NBD device (command not found): {cleanup_e}")
+                except PermissionError as cleanup_e:
+                    print(f"Error cleaning up NBD device (permission denied): {cleanup_e}")
+                except OSError as cleanup_e:
+                    print(f"Error cleaning up NBD device (OS error): {cleanup_e}")
             
             self.root.after(0, self.reset_ui)
 
@@ -1074,12 +1204,28 @@ class QCow2CloneResizerGUI:
             
             self._show_message_and_wait("Compression Complete", success_msg)
             
-        except Exception as e:
-            self.log(f"Windows completion dialog error: {e}")
+        except KeyError as e:
+            self.log(f"Windows completion dialog error - missing key: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"Windows image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
-                f"Compressed: {final_image_size / (1024**3):.2f} GB")
+                f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
+                f"Note: Some statistics unavailable.")
+        except ZeroDivisionError as e:
+            self.log(f"Windows completion dialog error - division by zero: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"Windows image compression completed!\n\n"
+                f"Cannot calculate compression ratio (zero size detected).")
+        except TypeError as e:
+            self.log(f"Windows completion dialog error - type error: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"Windows image compression completed!\n\n"
+                f"Some statistics could not be calculated.")
+        except ValueError as e:
+            self.log(f"Windows completion dialog error - value error: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"Windows image compression completed!\n\n"
+                f"Invalid values encountered in statistics.")
 
 
     def _show_bios_completion_dialog(self, image_path, original_info, original_source_size,
@@ -1116,12 +1262,28 @@ class QCow2CloneResizerGUI:
             
             self._show_message_and_wait("Compression Complete", success_msg)
             
-        except Exception as e:
-            self.log(f"BIOS completion dialog error: {e}")
+        except KeyError as e:
+            self.log(f"BIOS completion dialog error - missing key: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"BIOS Linux image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
-                f"Compressed: {final_image_size / (1024**3):.2f} GB")
+                f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
+                f"Note: Some statistics unavailable.")
+        except ZeroDivisionError as e:
+            self.log(f"BIOS completion dialog error - division by zero: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"BIOS Linux image compression completed!\n\n"
+                f"Cannot calculate compression ratio (zero size detected).")
+        except TypeError as e:
+            self.log(f"BIOS completion dialog error - type error: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"BIOS Linux image compression completed!\n\n"
+                f"Some statistics could not be calculated.")
+        except ValueError as e:
+            self.log(f"BIOS completion dialog error - value error: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"BIOS Linux image compression completed!\n\n"
+                f"Invalid values encountered in statistics.")
             
     def _show_uefi_compression_completion_dialog(self, image_path, original_info, original_source_size,
                                     final_image_info, final_image_size, compression_stats):
@@ -1157,13 +1319,28 @@ class QCow2CloneResizerGUI:
             
             self._show_message_and_wait("Compression Complete", success_msg)
             
-        except Exception as e:
-            self.log(f"UEFI compression completion dialog error: {e}")
+        except KeyError as e:
+            self.log(f"UEFI compression completion dialog error - missing key: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"UEFI Linux image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
-                f"Compressed: {final_image_size / (1024**3):.2f} GB")
-
+                f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
+                f"Note: Some statistics unavailable.")
+        except ZeroDivisionError as e:
+            self.log(f"UEFI compression completion dialog error - division by zero: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"UEFI Linux image compression completed!\n\n"
+                f"Cannot calculate compression ratio (zero size detected).")
+        except TypeError as e:
+            self.log(f"UEFI compression completion dialog error - type error: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"UEFI Linux image compression completed!\n\n"
+                f"Some statistics could not be calculated.")
+        except ValueError as e:
+            self.log(f"UEFI compression completion dialog error - value error: {e}")
+            self._show_message_and_wait("Operation Complete",
+                f"UEFI Linux image compression completed!\n\n"
+                f"Invalid values encountered in statistics.")
 
     def _show_completion_and_replacement_dialog(self, source_path, final_path, intermediate_path,
                                         original_info, original_source_size,
@@ -1252,11 +1429,19 @@ class QCow2CloneResizerGUI:
                 f"Original: {source_path}\n"
                 f"Final: {final_path}\n\n"
                 f"Note: Some statistics unavailable.")
-        except Exception as e:
-            self.log(f"Completion dialog error: {e}")
+        except ZeroDivisionError as e:
+            self.log(f"Completion dialog error - division by zero: {e}")
+            self._show_message_and_wait("Operation Complete", 
+                f"QCOW2 resize completed!\n\n"
+                f"Cannot calculate some ratios (zero size detected).")
+        except TypeError as e:
+            self.log(f"Completion dialog error - type error: {e}")
             self._show_message_and_wait("Operation Complete", 
                 f"QCOW2 resize completed - check console for details.")
-
+        except ValueError as e:
+            self.log(f"Completion dialog error - value error: {e}")
+            self._show_message_and_wait("Operation Complete", 
+                f"QCOW2 resize completed - invalid values in statistics.")
 
     def _perform_final_cleanup(self, source_path, intermediate_path, final_path,
                         original_size, final_size):
@@ -1522,8 +1707,12 @@ class QCow2CloneResizerGUI:
                                     print(f"Removing old EFI directory: {item}")
                                     try:
                                         shutil.rmtree(item_path)
-                                    except Exception as e:
-                                        print(f"Could not remove {item}: {e}")
+                                    except PermissionError as perm_e:
+                                        print(f"Permission denied removing {item}: {perm_e}")
+                                    except OSError as os_e:
+                                        print(f"OS error removing {item}: {os_e}")
+                                    except shutil.Error as sh_e:
+                                        print(f"Shutil error removing {item}: {sh_e}")
                         
                         # Mount system dirs
                         for d in ['dev', 'proc', 'sys']:
@@ -1605,16 +1794,46 @@ class QCow2CloneResizerGUI:
                         print("Bootloader installation complete")
                         return True
                         
-                    except Exception as e:
-                        print(f"Error: {e}")
-                        import traceback
-                        traceback.print_exc()
+                    except subprocess.CalledProcessError as mount_e:
+                        print(f"Mount command error: {mount_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except subprocess.TimeoutExpired as timeout_e:
+                        print(f"Mount operation timed out: {timeout_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except FileNotFoundError as file_e:
+                        print(f"Required file/command not found: {file_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except PermissionError as perm_e:
+                        print(f"Permission error during bootloader install: {perm_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except OSError as os_e:
+                        print(f"OS error during bootloader install: {os_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
             
             return False
             
-        except Exception as e:
-            print(f"ERROR: {e}")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR - command failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except subprocess.TimeoutExpired as e:
+            print(f"ERROR - operation timed out: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except FileNotFoundError as e:
+            print(f"ERROR - required command not found: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except PermissionError as e:
+            print(f"ERROR - permission denied: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except OSError as e:
+            print(f"ERROR - OS error: {e}")
             import traceback
             traceback.print_exc()
             return False
