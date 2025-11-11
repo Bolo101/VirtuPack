@@ -37,14 +37,18 @@ class QCow2CloneResizer:
         return missing, optional
     
     @staticmethod
-    def compress_qcow2_image(image_path, progress_callback=None, delete_original_source=None):
+    def compress_qcow2_image(image_path, progress_callback=None, delete_original_source=None, process_tracker=None):
         """Compress QCOW2 image with detailed progress updates (0-100%)
         
         Args:
             image_path: Path to the image to compress  
             progress_callback: Optional progress callback function
             delete_original_source: NOT USED - kept for compatibility
+            process_tracker: Optional dict/object to track the subprocess for external termination
         """
+        temp_compressed_path = f"{image_path}.compressed.tmp"
+        process = None
+        
         try:
             if progress_callback:
                 progress_callback(0, "Preparing compression...")
@@ -58,17 +62,16 @@ class QCow2CloneResizer:
             print(f"Original image stats:")
             print(f"  Virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}")
             print(f"  File size: {QCow2CloneResizer.format_size(original_file_size)}")
-            print(f"  Current compression: {original_info.get('compressed', False)}")
             
             if progress_callback:
                 progress_callback(2, "Creating temporary file...")
             
-            # Create temporary compressed version
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            
             # Remove temp file if it exists
             if os.path.exists(temp_compressed_path):
-                os.remove(temp_compressed_path)
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError) as e:
+                    print(f"Warning: Could not remove existing temp file: {e}")
             
             if progress_callback:
                 progress_callback(5, "Starting compression...")
@@ -96,8 +99,12 @@ class QCow2CloneResizer:
                 bufsize=1
             )
             
+            # Track the process for external termination
+            if process_tracker is not None:
+                process_tracker.compression_process = process
+            
             last_update_time = time.time()
-            update_interval = 0.5  # Update every 0.5 seconds
+            update_interval = 0.5
             
             # Monitor compression progress
             for line in process.stdout:
@@ -106,11 +113,9 @@ class QCow2CloneResizer:
                     current_time = time.time()
                     if current_time - last_update_time >= update_interval:
                         try:
-                            # Extract percentage from qemu-img output (format: "(XX.XX/100%)")
                             match = re.search(r'\((\d+(?:\.\d+)?)/100%\)', line)
                             if match:
                                 percent = float(match.group(1))
-                                # Scale progress from 5% to 90% (reserve 10% for finalization)
                                 scaled_progress = 5 + int(percent * 0.85)
                                 
                                 if progress_callback:
@@ -125,7 +130,6 @@ class QCow2CloneResizer:
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, cmd)
             
-            # Progress update
             if progress_callback:
                 progress_callback(92, "Compression complete, verifying...")
             
@@ -133,8 +137,6 @@ class QCow2CloneResizer:
             if not os.path.exists(temp_compressed_path):
                 raise FileNotFoundError(f"Compressed image was not created: {temp_compressed_path}")
             
-            # Get compressed image stats
-            compressed_info = QCow2CloneResizer.get_image_info(temp_compressed_path)
             compressed_file_size = os.path.getsize(temp_compressed_path)
             
             print(f"Compressed image stats:")
@@ -153,11 +155,10 @@ class QCow2CloneResizer:
                 progress_callback(95, "Checking compression savings...")
             
             # Check if compression is worth it (more than 1MB savings)
-            min_savings = 1024 * 1024  # 1MB minimum savings
+            min_savings = 1024 * 1024
             if compressed_file_size >= (original_file_size - min_savings):
                 print(f"WARNING: Compression saved less than 1MB")
-                print(f"Keeping original and removing compressed temp file")
-                os.remove(temp_compressed_path)
+                QCow2CloneResizer._force_remove_file(temp_compressed_path)
                 
                 if progress_callback:
                     progress_callback(100, "Compression skipped (minimal savings)")
@@ -169,13 +170,25 @@ class QCow2CloneResizer:
                     'compression_ratio': 0.0,
                 }
             
-            # Replace original IN PLACE
             if progress_callback:
                 progress_callback(97, "Replacing original with compressed version...")
             
             print(f"Replacing original with compressed version...")
-            os.remove(image_path)
-            os.rename(temp_compressed_path, image_path)
+            
+            # Windows-safe file replacement with retries
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    os.remove(image_path)
+                    os.rename(temp_compressed_path, image_path)
+                    print(f"Image replaced successfully")
+                    break
+                except (PermissionError, FileNotFoundError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        print(f"Attempt {attempt + 1} failed: {e}")
+                        time.sleep(2)
+                    else:
+                        raise
             
             print(f"Image compression completed and replaced in place")
             
@@ -190,70 +203,73 @@ class QCow2CloneResizer:
             }
             
         except subprocess.CalledProcessError as e:
-            # Clean up temp file on error
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
             print(f"ERROR - compression command failed: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
         except subprocess.TimeoutExpired as e:
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
             print(f"ERROR - compression timed out: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
         except FileNotFoundError as e:
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
             print(f"ERROR - file not found during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
         except PermissionError as e:
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
             print(f"ERROR - permission denied during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
         except OSError as e:
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
             print(f"ERROR - OS error during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
         except json.JSONDecodeError as e:
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
             print(f"ERROR - JSON parsing error during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
         except ValueError as e:
-            temp_compressed_path = f"{image_path}.compressed.tmp"
-            if os.path.exists(temp_compressed_path):
-                try:
-                    os.remove(temp_compressed_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
             print(f"ERROR - invalid value during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
-    
+        finally:
+            # Clear process reference
+            if process_tracker is not None:
+                process_tracker.compression_process = None
+
+    @staticmethod
+    def _force_remove_file(file_path):
+        """Force remove a file with retries (for Windows file locking)
+        
+        Gère le cas où le fichier a déjà été supprimé par qemu-img lors de son interruption
+        """
+        if not file_path:
+            return True
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            print(f"✓ File already cleaned up: {Path(file_path).name}")
+            return True
+        
+        print(f"\nCleaning up temporary file: {file_path}")
+        max_retries = 5
+        
+        for attempt in range(max_retries):
+            try:
+                os.remove(file_path)
+                print(f"✓ Temporary file successfully removed: {Path(file_path).name}")
+                return True
+            except FileNotFoundError:
+                print(f"✓ File already cleaned up: {Path(file_path).name}")
+                return True
+            except (PermissionError, OSError) as e:
+                if attempt < max_retries - 1:
+                    print(f"  Attempt {attempt + 1}/{max_retries}: File locked, retrying in 1 second...")
+                    time.sleep(1)
+                else:
+                    print(f"✗ Could not remove temporary file after {max_retries} attempts: {e}")
+                    return False
+        
+        return False
+        
     @staticmethod
     def parse_size(size_str):
         """Parse size string like '20G', '512M' to bytes"""
@@ -927,8 +943,9 @@ class QCow2CloneResizer:
             ]
             
             print(f"Creating new image: {' '.join(cmd)}")
+            print(f"This may take several minutes for large disks...")
             
-            # Start the process
+            # Start the process WITHOUT timeout - let it finish naturally
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -937,11 +954,11 @@ class QCow2CloneResizer:
                 bufsize=1
             )
             
-            # Monitor progress with periodic updates
+            # Monitor progress with periodic updates (no timeout limit)
             start_time = time.time()
             last_update = start_time
-            update_interval = 2.0  # Update every 2 seconds
-            max_wait_time = 600  # 10 minutes maximum
+            update_interval = 5.0  # Update every 5 seconds instead of 2
+            last_percent = 20
             
             while process.poll() is None:
                 current_time = time.time()
@@ -950,29 +967,28 @@ class QCow2CloneResizer:
                 # Update progress periodically
                 if current_time - last_update >= update_interval:
                     if progress_callback:
-                        # Calculate pseudo-progress based on time elapsed
-                        # Assume it should take about 30 seconds for a typical image
-                        estimated_time = 30
-                        percent = min(29, int((elapsed / estimated_time) * 9) + 20)  # 20-29%
+                        # Linear progress based on time (assume 1 minute per GB)
+                        size_gb = size_bytes / (1024**3)
+                        estimated_time = max(60, size_gb * 60)  # 1 minute per GB minimum
+                        percent = min(29, 20 + int((elapsed / estimated_time) * 9))
                         
-                        progress_callback(
-                            percent,
-                            f"Creating image... {int(elapsed)}s elapsed"
-                        )
+                        if percent > last_percent:
+                            progress_callback(
+                                percent,
+                                f"Creating image... {int(elapsed)}s elapsed ({int(size_gb)}GB)"
+                            )
+                            last_percent = percent
                     
                     last_update = current_time
                 
-                # Check for timeout
-                if elapsed > max_wait_time:
-                    print(f"WARNING: Image creation taking longer than {max_wait_time}s")
-                    process.kill()
-                    process.wait()
-                    raise subprocess.TimeoutExpired(cmd, max_wait_time)
+                # NO HARD TIMEOUT - just a warning every 5 minutes
+                if elapsed > 300 and int(elapsed) % 300 == 0:
+                    print(f"Note: Image creation still in progress ({int(elapsed)}s elapsed)...")
                 
-                time.sleep(0.5)
+                time.sleep(1)  # Check process status every 1 second
             
             # Get final output
-            stdout, stderr = process.communicate(timeout=10)
+            stdout, stderr = process.communicate(timeout=30)
             
             if stdout:
                 print(f"qemu-img output: {stdout}")
@@ -990,7 +1006,7 @@ class QCow2CloneResizer:
             if not os.path.exists(target_path):
                 raise Exception(f"Image file was not created: {target_path}")
             
-            # Brief wait for filesystem to catch up (especially on USB drives)
+            # Brief wait for filesystem to catch up
             time.sleep(2)
             
             # Verify image properties
@@ -1014,9 +1030,13 @@ class QCow2CloneResizer:
             print(f"ERROR: {error_msg}")
             raise Exception(error_msg)
         except subprocess.TimeoutExpired:
-            error_msg = f"Image creation timed out after {max_wait_time} seconds. "
-            error_msg += "This can happen on slow USB drives. Try creating the image on a faster drive."
+            error_msg = f"Image creation communication timed out. "
+            error_msg += "The image may have been created successfully. Check: " + target_path
             print(f"ERROR: {error_msg}")
+            # Don't fail - image might still be created
+            if os.path.exists(target_path):
+                print("Image file exists, continuing...")
+                return target_path
             raise Exception(error_msg)
         except FileNotFoundError:
             raise Exception("qemu-img command not found")

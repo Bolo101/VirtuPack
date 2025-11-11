@@ -20,6 +20,7 @@ from pathlib import Path
 import tempfile
 from NewSizeDialog import NewSizeDialog
 from QCow2CloneResizer import QCow2CloneResizer
+import queue
 
 
 class QCow2CloneResizerGUI:
@@ -27,7 +28,6 @@ class QCow2CloneResizerGUI:
     
     def __init__(self, parent):
         self.parent = parent
-
         self.root = tk.Toplevel(parent)
         self.root.title("QCOW2 Clone Resizer - GParted + Safe Cloning")
         
@@ -38,26 +38,303 @@ class QCow2CloneResizerGUI:
         self.image_path = tk.StringVar()
         self.image_info = None
         self.operation_active = False
+        self.compression_process = None
+        self.worker_thread = None
+        
+        # Track created files for cleanup on error
+        self.created_temp_files = []
+        self.source_image_path = None
         
         # Threading event system for dialog handling
         self.dialog_result_event = threading.Event()
         self.dialog_result_value = None
+        
+        # QUEUE pour communication thread-safe entre worker et main thread
+        self.dialog_queue = queue.Queue()
         
         self.setup_ui()
         self.check_prerequisites()
         
         # Set up proper close protocol
         self.root.protocol("WM_DELETE_WINDOW", self.close_window)
+        
+        # Vérifier périodiquement la queue pour les demandes de dialog
+        self._check_dialog_queue()
+
+    def _show_file_selection_dialog_main_thread(self, files_to_clean, original_path):
+        """Show file selection dialog - called ONLY from main thread via queue check"""
+        try:
+            print("Creating file selection dialog in MAIN thread...")
+            
+            # Create window
+            selection_window = tk.Toplevel(self.root)
+            selection_window.title("Select Files to Delete")
+            selection_window.geometry("700x450")
+            selection_window.resizable(True, True)
+            
+            # Make window modal
+            selection_window.transient(self.root)
+            selection_window.grab_set()
+            selection_window.lift()
+            selection_window.focus_force()
+            
+            # Main frame
+            main_frame = ttk.Frame(selection_window, padding="15")
+            main_frame.pack(fill="both", expand=True)
+            
+            # Title
+            title_label = ttk.Label(main_frame, 
+                                text="ERROR CLEANUP - Select files to delete",
+                                font=("Arial", 12, "bold"))
+            title_label.pack(fill="x", pady=(0, 10))
+            
+            # Description
+            desc_label = ttk.Label(main_frame,
+                                text="The following temporary files were created during the cloning operation.\n"
+                                    "Select which files to delete. The original image will be preserved.",
+                                font=("Arial", 10),
+                                wraplength=600,
+                                justify="left")
+            desc_label.pack(fill="x", pady=(0, 15))
+            
+            # File listbox
+            list_frame = ttk.LabelFrame(main_frame, text="Temporary Files", padding="10")
+            list_frame.pack(fill="both", expand=True, pady=(0, 15))
+            
+            scrollbar = ttk.Scrollbar(list_frame)
+            scrollbar.pack(side="right", fill="y")
+            
+            file_listbox = tk.Listbox(list_frame, 
+                                    yscrollcommand=scrollbar.set,
+                                    height=10,
+                                    font=("Consolas", 9),
+                                    selectmode=tk.MULTIPLE)
+            file_listbox.pack(side="left", fill="both", expand=True)
+            scrollbar.config(command=file_listbox.yview)
+            
+            # Add files
+            file_info = []
+            for file_path in files_to_clean:
+                try:
+                    size = os.path.getsize(file_path)
+                    size_str = self._format_size_compact(size)
+                    display_text = f"{file_path.name} ({size_str})"
+                except OSError:
+                    display_text = f"{file_path.name} (size unknown)"
+                
+                file_listbox.insert("end", display_text)
+                file_info.append((file_path, display_text))
+                print(f"  Added: {display_text}")
+            
+            file_listbox.select_set(0, "end")
+            
+            # Buttons frame
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill="x", pady=(0, 10))
+            
+            def select_all():
+                file_listbox.select_set(0, "end")
+                update_total_size()
+            
+            def deselect_all():
+                file_listbox.selection_clear(0, "end")
+                update_total_size()
+            
+            ttk.Button(button_frame, text="Select All", command=select_all).pack(side="left", padx=(0, 5))
+            ttk.Button(button_frame, text="Deselect All", command=deselect_all).pack(side="left", padx=(0, 15))
+            
+            total_size_label = ttk.Label(button_frame, text="", font=("Arial", 9))
+            total_size_label.pack(side="left")
+            
+            def update_total_size():
+                try:
+                    selected_indices = file_listbox.curselection()
+                    total_size = 0
+                    for idx in selected_indices:
+                        if idx < len(file_info):
+                            total_size += os.path.getsize(file_info[idx][0])
+                    size_str = self._format_size_compact(total_size)
+                    total_size_label.config(text=f"Total to delete: {size_str}")
+                except OSError:
+                    total_size_label.config(text="Total to delete: calculating...")
+            
+            file_listbox.bind("<<ListboxSelect>>", lambda e: update_total_size())
+            update_total_size()
+            
+            # Info
+            info_frame = ttk.Frame(main_frame)
+            info_frame.pack(fill="x", pady=(0, 15))
+            
+            info_label = ttk.Label(info_frame,
+                                text="⚠ WARNING: Files will be permanently deleted\n"
+                                    "Original image: " + original_path.name + " (will be preserved)",
+                                font=("Arial", 9),
+                                foreground="red",
+                                justify="left")
+            info_label.pack(fill="x")
+            
+            # Action buttons
+            action_frame = ttk.Frame(main_frame)
+            action_frame.pack(fill="x")
+            
+            def on_delete():
+                selected_indices = file_listbox.curselection()
+                selected_files = [file_info[idx][0] for idx in selected_indices]
+                self.dialog_result_value = selected_files
+                print(f"User selected {len(selected_files)} files to delete")
+                selection_window.destroy()
+                self.dialog_result_event.set()
+            
+            def on_keep():
+                self.dialog_result_value = []
+                print("User chose to keep all files")
+                selection_window.destroy()
+                self.dialog_result_event.set()
+            
+            def on_cancel():
+                self.dialog_result_value = None
+                print("User cancelled cleanup")
+                selection_window.destroy()
+                self.dialog_result_event.set()
+            
+            ttk.Button(action_frame, text="Delete Selected Files", 
+                    command=on_delete).pack(side="left", padx=(0, 10))
+            ttk.Button(action_frame, text="Keep All Files", 
+                    command=on_keep).pack(side="left", padx=(0, 10))
+            ttk.Button(action_frame, text="Cancel", 
+                    command=on_cancel).pack(side="right")
+            
+            # Center window
+            selection_window.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - selection_window.winfo_width()) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - selection_window.winfo_height()) // 2
+            selection_window.geometry(f"+{x}+{y}")
+            
+            print("File selection dialog displayed successfully")
+            
+        except Exception as e:
+            print(f"ERROR creating selection dialog: {e}")
+            import traceback
+            traceback.print_exc()
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+
+
+    def _check_dialog_queue(self):
+        """Check queue for pending dialog requests - called from main thread"""
+        try:
+            while True:
+                try:
+                    msg = self.dialog_queue.get_nowait()
+                    
+                    if msg.get('type') == 'file_selection':
+                        files = msg.get('files')
+                        original_path = msg.get('original_path')
+                        self._show_file_selection_dialog_main_thread(files, original_path)
+                        
+                except queue.Empty:
+                    break
+        except Exception as e:
+            print(f"Error checking dialog queue: {e}")
+        
+        # Re-schedule check
+        self.root.after(100, self._check_dialog_queue)
     
     def close_window(self):
-        """Handle window close event"""
+        """Handle window close event - forcefully stop operations"""
         if self.operation_active:
             result = messagebox.askyesno("Operation in Progress", 
-                                    "An operation is currently running. Stop and close?")
+                                    "An operation is currently running.\n\n"
+                                    "This will STOP the operation immediately.\n"
+                                    "Temporary files will be handled appropriately.\n\n"
+                                    "Continue?")
             if not result:
                 return
+            
+            print("\n" + "="*60)
+            print("FORCE STOPPING OPERATION (User clicked Close)")
+            print("="*60)
+            
+            # Kill the compression process if it's running
+            if self.compression_process and self.compression_process.poll() is None:
+                print(f"Killing qemu-img process (PID: {self.compression_process.pid})...")
+                try:
+                    self.compression_process.terminate()
+                    time.sleep(1)
+                    if self.compression_process.poll() is None:
+                        print("Process didn't terminate, forcing kill...")
+                        self.compression_process.kill()
+                        self.compression_process.wait(timeout=5)
+                    print("✓ Process killed successfully")
+                except Exception as e:
+                    print(f"Error killing process: {e}")
+            
+            # Auto-cleanup .compressed.tmp files from source directory
+            self._auto_cleanup_compressed_tmp()
+            
+            # Show dialog for intermediate/optimized files if any exist
+            if self.created_temp_files:
+                self._cleanup_on_error(self.source_image_path, self.created_temp_files)
+            
+            # Stop operation flag
+            self.operation_active = False
         
-        self.root.destroy()
+        print("Closing QCOW2 Clone Resizer...")
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+
+
+    def _force_cleanup_temp_files(self):
+        """Forcefully remove all known temporary files"""
+        print("\n" + "="*60)
+        print("FORCE CLEANUP OF TEMPORARY FILES")
+        print("="*60)
+        
+        # Common temporary file patterns to clean
+        temp_patterns = [
+            "*.compressed.tmp",
+            "*_intermediate.qcow2",
+            "*_optimized.qcow2",
+            "*_compressed.qcow2",
+            "*.tmp.qcow2",
+        ]
+        
+        search_dir = Path.cwd()
+        print(f"Searching in: {search_dir}\n")
+        
+        total_removed = 0
+        total_failed = 0
+        
+        for pattern in temp_patterns:
+            matching_files = list(search_dir.glob(pattern))
+            
+            if matching_files:
+                print(f"Pattern: {pattern}")
+                for file_path in matching_files:
+                    try:
+                        # Try multiple times with delays (for file locks)
+                        max_retries = 5
+                        for attempt in range(max_retries):
+                            try:
+                                os.remove(file_path)
+                                print(f"  ✓ Removed: {file_path.name}")
+                                total_removed += 1
+                                break
+                            except (PermissionError, OSError) as e:
+                                if attempt < max_retries - 1:
+                                    time.sleep(1)
+                                else:
+                                    raise
+                    except Exception as e:
+                        print(f"  ✗ Failed: {file_path.name} - {e}")
+                        total_failed += 1
+        
+        print(f"\nCleanup complete:")
+        print(f"  Removed: {total_removed} files")
+        print(f"  Failed: {total_failed} files")
+        print("="*60 + "\n")
 
     def setup_ui(self):
         """Setup simplified user interface with single action button"""
@@ -474,6 +751,10 @@ class QCow2CloneResizerGUI:
         
         path = self.image_path.get()
         
+        # Store source image path for cleanup tracking
+        self.source_image_path = path
+        self.created_temp_files = []  # Reset list
+        
         # Detailed confirmation dialog
         msg = f"GPARTED + CLONE OPERATION\n\n"
         msg += f"File: {os.path.basename(path)}\n"
@@ -503,12 +784,12 @@ class QCow2CloneResizerGUI:
         # Check root privileges
         if os.geteuid() != 0:
             root_msg = ("ROOT PRIVILEGES REQUIRED\n\n"
-                       "This operation requires root privileges for NBD device management.\n\n"
-                       "The application will attempt to use privilege escalation (pkexec, sudo) "
-                       "when launching GParted.\n\n"
-                       "For best experience, run entire application with:\n"
-                       "sudo python3 qcow2_clone_resizer.py\n\n"
-                       "Continue anyway?")
+                    "This operation requires root privileges for NBD device management.\n\n"
+                    "The application will attempt to use privilege escalation (pkexec, sudo) "
+                    "when launching GParted.\n\n"
+                    "For best experience, run entire application with:\n"
+                    "sudo python3 qcow2_clone_resizer.py\n\n"
+                    "Continue anyway?")
             
             if not messagebox.askyesno("Root Privileges Required", root_msg):
                 return
@@ -519,124 +800,27 @@ class QCow2CloneResizerGUI:
         self.backup_btn.config(state="disabled")
         self.status_label.config(text="GParted + Clone operation in progress...")
         
-        thread = threading.Thread(target=self._gparted_clone_worker, args=(path,))
-        thread.daemon = True
-        thread.start()
+        self.worker_thread = threading.Thread(target=self._gparted_clone_worker, args=(path,))
+        self.worker_thread.daemon = True
+        self.worker_thread.start()
 
-    def _cleanup_all_temporary_files(self, original_image_path):
-        """Clean up all temporary and intermediate files, keeping only the original image"""
+
+
+    def _format_size_compact(self, size_bytes):
+        """Format bytes to compact size string"""
         try:
-            print("=" * 60)
-            print("CLEANING UP ALL TEMPORARY FILES")
-            print("=" * 60)
-            
-            original_path = Path(original_image_path)
-            original_dir = original_path.parent
-            original_stem = original_path.stem
-            original_suffix = original_path.suffix
-            
-            # List of all possible temporary file patterns
-            temp_patterns = [
-                f"{original_stem}_intermediate{original_suffix}",
-                f"{original_stem}_optimized{original_suffix}",
-                f"{original_stem}.compressed.tmp",
-                f"{original_stem}_compressed{original_suffix}",
-                f"{original_stem}_backup_*{original_suffix}",  # Only auto-created backups
-                f"{original_stem}.tmp{original_suffix}",
-                f"{original_stem}_temp{original_suffix}",
-                f"{original_stem}_clone{original_suffix}",
-            ]
-            
-            files_removed = []
-            files_failed = []
-            
-            for pattern in temp_patterns:
-                # Handle wildcards
-                if '*' in pattern:
-                    import glob
-                    matching_files = glob.glob(str(original_dir / pattern))
-                    for file_path in matching_files:
-                        file_path_obj = Path(file_path)
-                        # Don't delete the original image
-                        if file_path_obj.resolve() == original_path.resolve():
-                            continue
-                        
-                        try:
-                            if file_path_obj.exists():
-                                print(f"Removing: {file_path_obj.name}")
-                                os.remove(file_path_obj)
-                                files_removed.append(file_path_obj.name)
-                        except FileNotFoundError:
-                            print(f"File already removed: {file_path_obj.name}")
-                        except PermissionError as e:
-                            print(f"Permission denied removing {file_path_obj.name}: {e}")
-                            files_failed.append(file_path_obj.name)
-                        except OSError as e:
-                            print(f"OS error removing {file_path_obj.name}: {e}")
-                            files_failed.append(file_path_obj.name)
-                else:
-                    file_path = original_dir / pattern
-                    
-                    # Don't delete the original image
-                    if file_path.resolve() == original_path.resolve():
-                        continue
-                    
-                    try:
-                        if file_path.exists():
-                            print(f"Removing: {file_path.name}")
-                            os.remove(file_path)
-                            files_removed.append(file_path.name)
-                    except FileNotFoundError:
-                        print(f"File already removed: {file_path.name}")
-                    except PermissionError as e:
-                        print(f"Permission denied removing {file_path.name}: {e}")
-                        files_failed.append(file_path.name)
-                    except OSError as e:
-                        print(f"OS error removing {file_path.name}: {e}")
-                        files_failed.append(file_path.name)
-            
-            # Verify original image still exists
-            if not original_path.exists():
-                print(f"ERROR: Original image was deleted! {original_image_path}")
-                return False
-            
-            print("\nCLEANUP SUMMARY:")
-            print(f"  Files removed: {len(files_removed)}")
-            if files_removed:
-                for f in files_removed:
-                    print(f"    ✓ {f}")
-            
-            if files_failed:
-                print(f"  Files failed to remove: {len(files_failed)}")
-                for f in files_failed:
-                    print(f"    ✗ {f}")
-            
-            print(f"  Original image preserved: {original_path.name}")
-            print("=" * 60)
-            
-            return True
-            
-        except FileNotFoundError as e:
-            print(f"File not found during cleanup: {e}")
-            return False
-        except PermissionError as e:
-            print(f"Permission error during cleanup: {e}")
-            return False
-        except OSError as e:
-            print(f"OS error during cleanup: {e}")
-            return False
-        except ValueError as e:
-            print(f"Value error during cleanup: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                if size_bytes < 1024.0:
+                    return f"{size_bytes:.1f}{unit}"
+                size_bytes /= 1024.0
+            return f"{size_bytes:.1f}PB"
+        except (TypeError, ValueError):
+            return "unknown"
+
 
     def _gparted_clone_worker(self, image_path):
-        """Worker thread for GParted + clone resize operation with OS-specific handling and automatic cleanup"""
+        """Worker thread for GParted + clone resize operation with proper signal handling"""
         source_nbd = None
-        intermediate_path = None
-        final_path = None
-        temp_compressed_path = None
         
         try:
             print(f"Starting GParted + Clone operation for: {image_path}")
@@ -649,7 +833,9 @@ class QCow2CloneResizerGUI:
             original_path = Path(image_path)
             intermediate_path = str(original_path.parent / f"{original_path.stem}_intermediate{original_path.suffix}")
             final_path = str(original_path.parent / f"{original_path.stem}_optimized{original_path.suffix}")
-            temp_compressed_path = f"{image_path}.compressed.tmp"
+            
+            # TRACK these files for error cleanup
+            self.created_temp_files = [intermediate_path, final_path]
             
             # Setup NBD device for GParted
             self.update_progress(10, "Setting up NBD device for GParted...")
@@ -717,7 +903,7 @@ class QCow2CloneResizerGUI:
                     f"detected OS type."
                 )
             
-            # Show instructions and wait for OK using event
+            # Show instructions and wait for OK
             self._show_message_and_wait("GParted Session Starting", instructions)
             
             print("Launching GParted...")
@@ -728,7 +914,7 @@ class QCow2CloneResizerGUI:
             if os_type == 'linux' and boot_mode == 'uefi':
                 print("=== LINUX UEFI VM DETECTED - PERFORMING FULL CLONING ===")
                 
-                # *** AUTOMATIC BOOTLOADER REINSTALLATION ***
+                # AUTOMATIC BOOTLOADER REINSTALLATION
                 self.update_progress(35, "Reinstalling UEFI bootloader after partition changes...")
                 print("Attempting to reinstall UEFI bootloader to prevent boot issues...")
                 
@@ -739,16 +925,13 @@ class QCow2CloneResizerGUI:
                 
                 if bootloader_fixed:
                     print("UEFI bootloader successfully reinstalled")
-                    
                     self._show_message_and_wait(
                         "Bootloader Fixed",
                         "UEFI bootloader has been automatically reinstalled.\n\n"
                         "Your VM will boot correctly with the resized partitions."
                     )
-                    
                 else:
                     print("WARNING: UEFI bootloader reinstall unsuccessful")
-                    
                     warning_msg = (
                         "Could not automatically reinstall UEFI bootloader.\n\n"
                         "POSSIBLE REASONS:\n"
@@ -764,7 +947,6 @@ class QCow2CloneResizerGUI:
                         "Continue with cloning?"
                     )
                     
-                    # Use event-based confirmation
                     if not self._show_yesno_and_wait("Bootloader Warning", warning_msg):
                         print("User cancelled operation after bootloader warning")
                         raise RuntimeError("Operation cancelled by user after bootloader warning")
@@ -802,7 +984,7 @@ class QCow2CloneResizerGUI:
                 if new_size is not None:
                     print(f"User selected to create new image with size: {QCow2CloneResizer.format_size(new_size)}")
                     
-                    # Clone to intermediate image (NO compression here)
+                    # Clone to intermediate image
                     self.update_progress(55, "Cloning modified partitions to intermediate image...")
                     print(f"Starting clone operation to intermediate: {intermediate_path}")
                     
@@ -823,7 +1005,7 @@ class QCow2CloneResizerGUI:
                     print(f"Starting compression: {intermediate_path} -> {final_path}")
 
                     try:
-                        # Copy intermediate to final with progress
+                        # Copy intermediate to final
                         print(f"Copying intermediate image to final location...")
                         shutil.copy2(intermediate_path, final_path)
                         self.update_progress(92, "Copy complete, starting compression...")
@@ -832,43 +1014,13 @@ class QCow2CloneResizerGUI:
                         compression_stats = QCow2CloneResizer.compress_qcow2_image(
                             final_path, 
                             self.update_progress,
-                            delete_original_source=None
+                            delete_original_source=None,
+                            process_tracker=self
                         )
                         print(f"Compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
-                    except subprocess.CalledProcessError as compression_error:
-                        print(f"ERROR: Compression command failed: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except subprocess.TimeoutExpired as compression_error:
-                        print(f"ERROR: Compression timed out: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except FileNotFoundError as compression_error:
-                        print(f"ERROR: Compression file not found: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except PermissionError as compression_error:
-                        print(f"ERROR: Compression permission denied: {compression_error}")
-                        compression_stats = {
-                            'space_saved': 0,
-                            'compression_ratio': 0.0,
-                            'original_size': 0,
-                            'compressed_size': 0,
-                        }
-                    except OSError as compression_error:
-                        print(f"ERROR: Compression OS error: {compression_error}")
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, 
+                        FileNotFoundError, PermissionError, OSError) as compression_error:
+                        print(f"ERROR: Compression error: {compression_error}")
                         compression_stats = {
                             'space_saved': 0,
                             'compression_ratio': 0.0,
@@ -895,44 +1047,41 @@ class QCow2CloneResizerGUI:
                         compression_stats
                     )
                     
+                    # Clear temp files list on success
+                    self.created_temp_files = []
+                    
                 else:
-                    # User chose to skip cloning
                     print("User chose to skip cloning - operation will exit")
                     raise RuntimeError("Operation cancelled by user - cloning skipped")
             
             elif os_type == 'linux' and boot_mode == 'bios':
                 print("=== LINUX BIOS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
                 
-                # IMPROVED: Sync with proper error handling
                 self.update_progress(40, "Finalizing BIOS partition changes...")
                 print("Performing final sync before NBD disconnect...")
                 self._perform_safe_sync("BIOS pre-disconnect sync")
                 
-                # Disconnect NBD device
                 print(f"Disconnecting NBD device: {source_nbd}")
                 QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                source_nbd = None  # Mark as cleaned up
+                source_nbd = None
                 
-                # Wait for device to be fully released
                 print("Waiting for device release...")
                 time.sleep(5)
                 
                 self.update_progress(50, "Compressing BIOS Linux image for space optimization...")
                 
-                # Compress the original image in place (temp file will be created)
                 compression_stats = QCow2CloneResizer.compress_qcow2_image(
                     image_path,
                     self.update_progress,
-                    delete_original_source=None
+                    delete_original_source=None,
+                    process_tracker=self
                 )
                 
                 print(f"BIOS Linux image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
                 
-                # Get final compressed image info
                 final_image_info = QCow2CloneResizer.get_image_info(image_path)
                 final_image_size = os.path.getsize(image_path)
                 
-                # Show BIOS completion dialog
                 self._show_bios_completion_dialog(
                     image_path,
                     original_info,
@@ -941,40 +1090,38 @@ class QCow2CloneResizerGUI:
                     final_image_size,
                     compression_stats
                 )
+                
+                # Clear temp files list on success
+                self.created_temp_files = []
             
             elif os_type == 'windows':
                 print("=== WINDOWS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
                 
-                # IMPROVED: Sync with proper error handling
                 self.update_progress(40, "Finalizing Windows partition changes...")
                 print("Performing final sync before NBD disconnect...")
                 self._perform_safe_sync("Windows pre-disconnect sync")
                 
-                # Disconnect NBD device
                 print(f"Disconnecting NBD device: {source_nbd}")
                 QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                source_nbd = None  # Mark as cleaned up
+                source_nbd = None
                 
-                # Wait for device to be fully released
                 print("Waiting for device release...")
                 time.sleep(5)
                 
                 self.update_progress(50, "Compressing Windows image for space optimization...")
                 
-                # Compress the original image in place (temp file will be created)
                 compression_stats = QCow2CloneResizer.compress_qcow2_image(
                     image_path,
                     self.update_progress,
-                    delete_original_source=None
+                    delete_original_source=None,
+                    process_tracker=self
                 )
                 
                 print(f"Windows image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
                 
-                # Get final compressed image info
                 final_image_info = QCow2CloneResizer.get_image_info(image_path)
                 final_image_size = os.path.getsize(image_path)
                 
-                # Show Windows completion dialog
                 self._show_windows_completion_dialog(
                     image_path,
                     original_info,
@@ -983,11 +1130,13 @@ class QCow2CloneResizerGUI:
                     final_image_size,
                     compression_stats
                 )
+                
+                # Clear temp files list on success
+                self.created_temp_files = []
             
             else:
-                print("=== UNKNOWN OS TYPE - SKIPPING OPERATIONS ===")
+                print("=== UNKNOWN OS TYPE ===")
                 
-                # Disconnect NBD device
                 if source_nbd:
                     print(f"Disconnecting NBD device: {source_nbd}")
                     self._perform_safe_sync("Unknown OS pre-disconnect sync")
@@ -1000,126 +1149,334 @@ class QCow2CloneResizerGUI:
                     f"Your original image has been modified in place:\n"
                     f"{image_path}\n\n"
                     f"If you want to compress the image, please run the operation again.")
+                
+                # Clear temp files list on completion
+                self.created_temp_files = []
             
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            print(f"\n{'='*60}")
+            print(f"SUBPROCESS ERROR: {type(e).__name__}")
+            print(f"{'='*60}")
+            self.log(f"Subprocess error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Auto-cleanup .compressed.tmp
+            self._auto_cleanup_compressed_tmp()
+            
+            # Show dialog for intermediate/optimized if any
+            if self.created_temp_files:
+                self._cleanup_on_error(image_path, self.created_temp_files)
+        
+        except (FileNotFoundError, PermissionError, OSError, ValueError, json.JSONDecodeError, RuntimeError) as e:
+            print(f"\n{'='*60}")
+            print(f"ERROR: {type(e).__name__}: {e}")
+            print(f"{'='*60}")
+            self.log(f"Operation error: {e}")
+            
+            # Auto-cleanup .compressed.tmp
+            self._auto_cleanup_compressed_tmp()
+            
+            # Show dialog for intermediate/optimized if any
+            if self.created_temp_files:
+                self._cleanup_on_error(image_path, self.created_temp_files)
+        
         except KeyboardInterrupt:
-            error_msg = "OPERATION INTERRUPTED BY USER\n\nCleaning up temporary files..."
-            print(f"\n{error_msg}")
+            print(f"\n{'='*60}")
+            print("OPERATION INTERRUPTED BY USER (Ctrl+C)")
+            print(f"{'='*60}")
             self.log(f"Operation interrupted by user")
-            self.root.after(0, lambda: messagebox.showwarning("Operation Interrupted", error_msg))
             
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
+            # Auto-cleanup .compressed.tmp
+            self._auto_cleanup_compressed_tmp()
             
-        except RuntimeError as e:
-            error_msg = f"OPERATION CANCELLED\n\n{e}\n\nCleaning up temporary files..."
-            print(f"{error_msg}")
-            self.log(f"Operation cancelled: {e}")
-            self.root.after(0, lambda: messagebox.showwarning("Operation Cancelled", error_msg))
-            
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
+            # Show dialog for intermediate/optimized if any
+            if self.created_temp_files:
+                self._cleanup_on_error(image_path, self.created_temp_files)
         
-        except subprocess.CalledProcessError as e:
-            error_msg = f"COMMAND EXECUTION FAILED\n\nCommand: {' '.join(e.cmd) if hasattr(e, 'cmd') else 'unknown'}\n"
-            error_msg += f"Return code: {e.returncode}\n"
-            if e.stderr:
-                error_msg += f"Error: {e.stderr}\n"
-            error_msg += "\nCleaning up temporary files..."
-            self.log(f"Command execution failed: {e}")
-            print(f"ERROR: {error_msg}")
+        except Exception as e:
+            print(f"\n{'='*60}")
+            print(f"UNEXPECTED ERROR: {type(e).__name__}: {e}")
+            print(f"{'='*60}")
+            self.log(f"Unexpected error: {e}")
             import traceback
             traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("Command Failed", error_msg))
             
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
-        
-        except subprocess.TimeoutExpired as e:
-            error_msg = f"OPERATION TIMED OUT\n\nCommand timed out after {e.timeout} seconds\n"
-            error_msg += f"Command: {' '.join(e.cmd) if hasattr(e, 'cmd') else 'unknown'}\n\n"
-            error_msg += "Cleaning up temporary files..."
-            self.log(f"Operation timed out: {e}")
-            print(f"ERROR: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("Timeout", error_msg))
+            # Auto-cleanup .compressed.tmp
+            self._auto_cleanup_compressed_tmp()
             
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
-        
-        except FileNotFoundError as e:
-            error_msg = f"FILE NOT FOUND\n\n{e}\n\nCleaning up temporary files..."
-            self.log(f"File not found: {e}")
-            print(f"ERROR: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+            # Show dialog for intermediate/optimized if any
+            if self.created_temp_files:
+                self._cleanup_on_error(image_path, self.created_temp_files)
             
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
-        
-        except PermissionError as e:
-            error_msg = f"PERMISSION DENIED\n\n{e}\n\nTry running with sudo privileges.\n\nCleaning up temporary files..."
-            self.log(f"Permission denied: {e}")
-            print(f"ERROR: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
-            
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
-        
-        except OSError as e:
-            error_msg = f"SYSTEM ERROR\n\n{e}\n\nCheck disk space and system resources.\n\nCleaning up temporary files..."
-            self.log(f"OS error: {e}")
-            print(f"ERROR: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
-            
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
-        
-        except ValueError as e:
-            error_msg = f"INVALID VALUE\n\n{e}\n\nCleaning up temporary files..."
-            self.log(f"Value error: {e}")
-            print(f"ERROR: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("Invalid Value", error_msg))
-            
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
-        
-        except json.JSONDecodeError as e:
-            error_msg = f"JSON PARSING ERROR\n\n{e}\n\nCleaning up temporary files..."
-            self.log(f"JSON decode error: {e}")
-            print(f"ERROR: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("Parse Error", error_msg))
-            
-            # CLEANUP ALL TEMPORARY FILES
-            self._cleanup_all_temporary_files(image_path)
-        
         finally:
             # Clean up NBD device
             if source_nbd:
                 try:
                     print(f"Final cleanup of NBD device: {source_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                except subprocess.CalledProcessError as cleanup_e:
-                    print(f"Error cleaning up NBD device (command failed): {cleanup_e}")
-                except subprocess.TimeoutExpired as cleanup_e:
-                    print(f"Error cleaning up NBD device (timeout): {cleanup_e}")
-                except FileNotFoundError as cleanup_e:
-                    print(f"Error cleaning up NBD device (command not found): {cleanup_e}")
-                except PermissionError as cleanup_e:
-                    print(f"Error cleaning up NBD device (permission denied): {cleanup_e}")
-                except OSError as cleanup_e:
-                    print(f"Error cleaning up NBD device (OS error): {cleanup_e}")
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, 
+                    FileNotFoundError, PermissionError, OSError) as cleanup_e:
+                    print(f"Error cleaning up NBD device: {cleanup_e}")
             
             self.root.after(0, self.reset_ui)
+
+
+    def _cleanup_on_error(self, original_image_path, temp_files_to_show):
+        """Show dialog to let user select which files to delete - SYNCHRONE approach"""
+        try:
+            print("\n" + "="*60)
+            print("CLEANUP - MANAGING INTERMEDIATE/OPTIMIZED FILES")
+            print("="*60)
+            
+            # Filter only existing files
+            existing_files = []
+            for file_path in temp_files_to_show:
+                if file_path and os.path.exists(file_path):
+                    existing_files.append(Path(file_path))
+            
+            if not existing_files:
+                print("No intermediate/optimized files found")
+                return True
+            
+            print(f"Found {len(existing_files)} files to manage:")
+            for f in existing_files:
+                try:
+                    size = os.path.getsize(f)
+                    print(f"  - {f.name} ({self._format_size_compact(size)})")
+                except OSError:
+                    print(f"  - {f.name}")
+            
+            # Prepare dialog data
+            print("Creating file selection dialog...")
+            self.dialog_result_event.clear()
+            self.dialog_result_value = None
+            
+            # Call dialog creation and wait for it to complete
+            # Utilise une approche qui force Tkinter à traiter le dialog
+            self.root.update()  # Process pending events
+            
+            # Create and show dialog
+            self._create_and_show_file_selection_dialog(existing_files, Path(original_image_path))
+            
+            # Wait for user response with timeout
+            if not self.dialog_result_event.wait(timeout=300):
+                print("Dialog timeout - user didn't respond in 5 minutes")
+                return False
+            
+            selected_files = self.dialog_result_value
+            
+            if selected_files is None:
+                print("User cancelled cleanup")
+                return False
+            
+            if not selected_files:
+                print("User chose to keep all files")
+                return True
+            
+            # Delete selected files
+            files_removed = []
+            files_failed = []
+            
+            for file_path in selected_files:
+                try:
+                    print(f"Removing: {file_path.name}")
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            os.remove(file_path)
+                            files_removed.append(file_path.name)
+                            break
+                        except (PermissionError, OSError) as e:
+                            if attempt < max_retries - 1:
+                                time.sleep(1)
+                            else:
+                                raise
+                except Exception as e:
+                    print(f"Failed to remove {file_path.name}: {e}")
+                    files_failed.append(file_path.name)
+            
+            print(f"\nCleanup: {len(files_removed)} deleted, {len(files_failed)} failed")
+            return True
+            
+        except Exception as e:
+            print(f"Error during error cleanup: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+
+    def _create_and_show_file_selection_dialog(self, files_to_clean, original_path):
+        """Create and show file selection dialog - called from worker thread
+        
+        Utilise Tk après(0, ...) puis traite les événements manuellement
+        """
+        try:
+            # Create window
+            selection_window = tk.Toplevel(self.root)
+            selection_window.title("Select Files to Delete")
+            selection_window.geometry("700x450")
+            selection_window.resizable(True, True)
+            
+            # Make window modal
+            selection_window.transient(self.root)
+            selection_window.grab_set()
+            selection_window.lift()
+            
+            # Main frame
+            main_frame = ttk.Frame(selection_window, padding="15")
+            main_frame.pack(fill="both", expand=True)
+            
+            # Title
+            title_label = ttk.Label(main_frame, 
+                                text="ERROR CLEANUP - Select files to delete",
+                                font=("Arial", 12, "bold"))
+            title_label.pack(fill="x", pady=(0, 10))
+            
+            # Description
+            desc_label = ttk.Label(main_frame,
+                                text="The following temporary files were created during the cloning operation.\n"
+                                    "Select which files to delete. The original image will be preserved.",
+                                font=("Arial", 10),
+                                wraplength=600,
+                                justify="left")
+            desc_label.pack(fill="x", pady=(0, 15))
+            
+            # File listbox
+            list_frame = ttk.LabelFrame(main_frame, text="Temporary Files", padding="10")
+            list_frame.pack(fill="both", expand=True, pady=(0, 15))
+            
+            scrollbar = ttk.Scrollbar(list_frame)
+            scrollbar.pack(side="right", fill="y")
+            
+            file_listbox = tk.Listbox(list_frame, 
+                                    yscrollcommand=scrollbar.set,
+                                    height=10,
+                                    font=("Consolas", 9),
+                                    selectmode=tk.MULTIPLE)
+            file_listbox.pack(side="left", fill="both", expand=True)
+            scrollbar.config(command=file_listbox.yview)
+            
+            # Add files
+            file_info = []
+            for file_path in files_to_clean:
+                try:
+                    size = os.path.getsize(file_path)
+                    size_str = self._format_size_compact(size)
+                    display_text = f"{file_path.name} ({size_str})"
+                except OSError:
+                    display_text = f"{file_path.name} (size unknown)"
+                
+                file_listbox.insert("end", display_text)
+                file_info.append((file_path, display_text))
+            
+            file_listbox.select_set(0, "end")
+            
+            # Buttons frame
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill="x", pady=(0, 10))
+            
+            def select_all():
+                file_listbox.select_set(0, "end")
+                update_total_size()
+            
+            def deselect_all():
+                file_listbox.selection_clear(0, "end")
+                update_total_size()
+            
+            ttk.Button(button_frame, text="Select All", command=select_all).pack(side="left", padx=(0, 5))
+            ttk.Button(button_frame, text="Deselect All", command=deselect_all).pack(side="left", padx=(0, 15))
+            
+            total_size_label = ttk.Label(button_frame, text="", font=("Arial", 9))
+            total_size_label.pack(side="left")
+            
+            def update_total_size():
+                try:
+                    selected_indices = file_listbox.curselection()
+                    total_size = 0
+                    for idx in selected_indices:
+                        if idx < len(file_info):
+                            total_size += os.path.getsize(file_info[idx][0])
+                    size_str = self._format_size_compact(total_size)
+                    total_size_label.config(text=f"Total to delete: {size_str}")
+                except OSError:
+                    total_size_label.config(text="Total to delete: calculating...")
+            
+            file_listbox.bind("<<ListboxSelect>>", lambda e: update_total_size())
+            update_total_size()
+            
+            # Info
+            info_frame = ttk.Frame(main_frame)
+            info_frame.pack(fill="x", pady=(0, 15))
+            
+            info_label = ttk.Label(info_frame,
+                                text="⚠ WARNING: Files will be permanently deleted\n"
+                                    "Original image: " + original_path.name + " (will be preserved)",
+                                font=("Arial", 9),
+                                foreground="red",
+                                justify="left")
+            info_label.pack(fill="x")
+            
+            # Action buttons
+            action_frame = ttk.Frame(main_frame)
+            action_frame.pack(fill="x")
+            
+            def on_delete():
+                selected_indices = file_listbox.curselection()
+                selected_files = [file_info[idx][0] for idx in selected_indices]
+                self.dialog_result_value = selected_files
+                print(f"User selected {len(selected_files)} files to delete")
+                selection_window.destroy()
+                self.dialog_result_event.set()
+            
+            def on_keep():
+                self.dialog_result_value = []
+                print("User chose to keep all files")
+                selection_window.destroy()
+                self.dialog_result_event.set()
+            
+            def on_cancel():
+                self.dialog_result_value = None
+                print("User cancelled cleanup")
+                selection_window.destroy()
+                self.dialog_result_event.set()
+            
+            ttk.Button(action_frame, text="Delete Selected Files", 
+                    command=on_delete).pack(side="left", padx=(0, 10))
+            ttk.Button(action_frame, text="Keep All Files", 
+                    command=on_keep).pack(side="left", padx=(0, 10))
+            ttk.Button(action_frame, text="Cancel", 
+                    command=on_cancel).pack(side="right")
+            
+            # Center window
+            selection_window.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - selection_window.winfo_width()) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - selection_window.winfo_height()) // 2
+            selection_window.geometry(f"+{x}+{y}")
+            
+            # Focus and show
+            selection_window.focus_force()
+            
+            print("File selection dialog created and displayed")
+            
+            # Process Tkinter events until dialog is closed
+            print("Waiting for user interaction...")
+            while selection_window.winfo_exists():
+                try:
+                    self.root.update()
+                    time.sleep(0.1)
+                except tk.TclError:
+                    # Window was destroyed
+                    break
+            
+            print("Dialog closed, proceeding with cleanup")
+            
+        except Exception as e:
+            print(f"ERROR creating selection dialog: {e}")
+            import traceback
+            traceback.print_exc()
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
 
 
     def _perform_safe_sync(self, operation_name="Sync"):
@@ -1285,62 +1642,6 @@ class QCow2CloneResizerGUI:
                 f"BIOS Linux image compression completed!\n\n"
                 f"Invalid values encountered in statistics.")
             
-    def _show_uefi_compression_completion_dialog(self, image_path, original_info, original_source_size,
-                                    final_image_info, final_image_size, compression_stats):
-        """Show completion dialog for UEFI Linux image compression (when cloning was skipped)"""
-        try:
-            original_virtual_size = original_info['virtual_size']
-            final_virtual_size = final_image_info['virtual_size']
-            
-            success_msg = f"UEFI LINUX IMAGE COMPRESSION COMPLETED!\n\n"
-            success_msg += f"OPERATION RESULTS:\n"
-            success_msg += f"{'='*50}\n"
-            success_msg += f"Image: {os.path.basename(image_path)}\n\n"
-            
-            success_msg += f"IMAGE COMPRESSION RESULTS:\n"
-            success_msg += f"Original file size: {QCow2CloneResizer.format_size(original_source_size)}\n"
-            success_msg += f"Compressed file size: {QCow2CloneResizer.format_size(final_image_size)}\n"
-            
-            if final_image_size < original_source_size:
-                file_saved = original_source_size - final_image_size
-                file_ratio = file_saved / original_source_size * 100
-                success_msg += f"\n✓ Space optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
-            
-            if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
-                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
-            
-            success_msg += f"\n✓ All partition changes preserved\n"
-            success_msg += f"✓ UEFI bootloader reinstalled\n"
-            success_msg += f"✓ Ready for VM use\n\n"
-            
-            success_msg += f"Your UEFI Linux image has been optimized for storage.\n"
-            success_msg += f"Cloning was skipped - the image was compressed in place.\n"
-            success_msg += f"The bootloader has been reinstalled and should boot normally."
-            
-            self._show_message_and_wait("Compression Complete", success_msg)
-            
-        except KeyError as e:
-            self.log(f"UEFI compression completion dialog error - missing key: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"UEFI Linux image compression completed!\n\n"
-                f"Original: {original_source_size / (1024**3):.2f} GB\n"
-                f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
-                f"Note: Some statistics unavailable.")
-        except ZeroDivisionError as e:
-            self.log(f"UEFI compression completion dialog error - division by zero: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"UEFI Linux image compression completed!\n\n"
-                f"Cannot calculate compression ratio (zero size detected).")
-        except TypeError as e:
-            self.log(f"UEFI compression completion dialog error - type error: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"UEFI Linux image compression completed!\n\n"
-                f"Some statistics could not be calculated.")
-        except ValueError as e:
-            self.log(f"UEFI compression completion dialog error - value error: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"UEFI Linux image compression completed!\n\n"
-                f"Invalid values encountered in statistics.")
 
     def _show_completion_and_replacement_dialog(self, source_path, final_path, intermediate_path,
                                         original_info, original_source_size,
@@ -1838,129 +2139,6 @@ class QCow2CloneResizerGUI:
             traceback.print_exc()
             return False
 
-    @staticmethod
-    def _update_fstab_uuids(mount_point, nbd_device, partitions):
-        """Update /etc/fstab with new partition UUIDs after resize"""
-        try:
-            fstab_path = os.path.join(mount_point, 'etc', 'fstab')
-            
-            if not os.path.exists(fstab_path):
-                print("/etc/fstab not found")
-                return
-            
-            print("Reading current /etc/fstab...")
-            with open(fstab_path, 'r') as f:
-                fstab_content = f.read()
-            
-            # Get current UUIDs for all partitions
-            uuid_map = {}
-            for part in partitions:
-                part_num = part['number']
-                part_paths = [f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"]
-                
-                for part_dev in part_paths:
-                    if os.path.exists(part_dev):
-                        # Get UUID using blkid
-                        result = subprocess.run(
-                            ['blkid', '-s', 'UUID', '-o', 'value', part_dev],
-                            capture_output=True, text=True, timeout=10, check=False
-                        )
-                        
-                        if result.returncode == 0 and result.stdout.strip():
-                            uuid = result.stdout.strip()
-                            uuid_map[part_num] = uuid
-                            print(f"Partition {part_num}: UUID={uuid}")
-                        break
-            
-            # Backup original fstab
-            backup_path = f"{fstab_path}.backup"
-            with open(backup_path, 'w') as f:
-                f.write(fstab_content)
-            print(f"Backed up fstab to {backup_path}")
-            
-            # Update fstab with new UUIDs
-            # This is a simple approach - just ensure entries exist
-            # The real fix is regenerating grub.cfg which reads fstab
-            
-            print("fstab update completed")
-            
-        except Exception as e:
-            print(f"Could not update fstab: {e}")
-
-    @staticmethod
-    def _fix_windows_mbr(disk_device):
-        """Fix Windows MBR - same as before"""
-        try:
-            windows_mbr_code = bytes([
-                0x33, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0x8E, 0xC0, 0x8E, 0xD8, 0xBE, 0x00, 0x7C, 0xBF, 0x00,
-                0x06, 0xB9, 0x00, 0x02, 0xFC, 0xF3, 0xA4, 0x50, 0x68, 0x1C, 0x06, 0xCB, 0xFB, 0xB9, 0x04, 0x00,
-                0xBD, 0xBE, 0x07, 0x80, 0x7E, 0x00, 0x00, 0x7C, 0x0B, 0x0F, 0x85, 0x0E, 0x01, 0x83, 0xC5, 0x10,
-                0xE2, 0xF1, 0xCD, 0x18, 0x88, 0x56, 0x00, 0x55, 0xC6, 0x46, 0x11, 0x05, 0xC6, 0x46, 0x10, 0x00,
-                0xB4, 0x41, 0xBB, 0xAA, 0x55, 0xCD, 0x13, 0x5D, 0x72, 0x0F, 0x81, 0xFB, 0x55, 0xAA, 0x75, 0x09,
-                0xF7, 0xC1, 0x01, 0x00, 0x74, 0x03, 0xFE, 0x46, 0x10, 0x66, 0x60, 0x80, 0x7E, 0x10, 0x00, 0x74,
-                0x26, 0x66, 0x68, 0x00, 0x00, 0x00, 0x00, 0x66, 0xFF, 0x76, 0x08, 0x68, 0x00, 0x00, 0x68, 0x00,
-                0x7C, 0x68, 0x01, 0x00, 0x68, 0x10, 0x00, 0xB4, 0x42, 0x8A, 0x56, 0x00, 0x8B, 0xF4, 0xCD, 0x13,
-                0x9F, 0x83, 0xC4, 0x10, 0x9E, 0xEB, 0x14, 0xB8, 0x01, 0x02, 0xBB, 0x00, 0x7C, 0x8A, 0x56, 0x00,
-                0x8A, 0x76, 0x01, 0x8A, 0x4E, 0x02, 0x8A, 0x6E, 0x03, 0xCD, 0x13, 0x66, 0x61, 0x73, 0x1C, 0xFE,
-                0x4E, 0x11, 0x75, 0x0C, 0x80, 0x7E, 0x00, 0x80, 0x0F, 0x84, 0x8A, 0x00, 0xB2, 0x80, 0xEB, 0x84,
-                0x55, 0x32, 0xE4, 0x8A, 0x56, 0x00, 0xCD, 0x13, 0x5D, 0xEB, 0x9E, 0x81, 0x3E, 0xFE, 0x7D, 0x55,
-                0xAA, 0x75, 0x6E, 0xFF, 0x76, 0x00, 0xE8, 0x8D, 0x00, 0x75, 0x17, 0xFA, 0xB0, 0xD1, 0xE6, 0x64,
-                0xE8, 0x83, 0x00, 0xB0, 0xDF, 0xE6, 0x60, 0xE8, 0x7C, 0x00, 0xB0, 0xFF, 0xE6, 0x64, 0xE8, 0x75,
-                0x00, 0xFB, 0xB8, 0x00, 0xBB, 0xCD, 0x1A, 0x66, 0x23, 0xC0, 0x75, 0x3B, 0x66, 0x81, 0xFB, 0x54,
-                0x43, 0x50, 0x41, 0x75, 0x32, 0x81, 0xF9, 0x02, 0x01, 0x72, 0x2C, 0x66, 0x68, 0x07, 0xBB, 0x00,
-                0x00, 0x66, 0x68, 0x00, 0x02, 0x00, 0x00, 0x66, 0x68, 0x08, 0x00, 0x00, 0x00, 0x66, 0x53, 0x66,
-                0x53, 0x66, 0x55, 0x66, 0x68, 0x00, 0x00, 0x00, 0x00, 0x66, 0x68, 0x00, 0x7C, 0x00, 0x00, 0x66,
-                0x61, 0x68, 0x00, 0x00, 0x07, 0xCD, 0x1A, 0x5A, 0x32, 0xF6, 0xEA, 0x00, 0x7C, 0x00, 0x00, 0xCD,
-                0x18, 0xA0, 0xB7, 0x07, 0xEB, 0x08, 0xA0, 0xB6, 0x07, 0xEB, 0x03, 0xA0, 0xB5, 0x07, 0x32, 0xE4,
-                0x05, 0x07, 0x00, 0x50, 0xE8, 0x16, 0x00, 0x58, 0x88, 0xE0, 0x88, 0xE0, 0x88, 0xE0, 0xF6, 0xE4,
-                0x30, 0xE4, 0xCD, 0x16, 0xCD, 0x19, 0x66, 0x60, 0x66, 0xA1, 0x1C, 0x7C, 0x66, 0x03, 0x06, 0x3E,
-                0x7C, 0x66, 0x3B, 0x06, 0x42, 0x7C, 0x0F, 0x82, 0x1A, 0x00, 0x66, 0x6A, 0x00, 0x66, 0x50, 0x06,
-                0x53, 0x66, 0x68, 0x10, 0x00, 0x01, 0x00, 0xB4, 0x42, 0x8A, 0x56, 0x00, 0x8B, 0xF4, 0xCD, 0x13,
-                0x66, 0x58, 0x66, 0x58, 0x66, 0x58, 0x66, 0x58, 0xEB, 0x33, 0x66, 0x3B, 0x46, 0xF8, 0x72, 0x03,
-                0xF9, 0xEB, 0x2A, 0x66, 0x33, 0xD2, 0x66, 0x0F, 0xB7, 0x4E, 0xF0, 0x66, 0xF7, 0xF1, 0xFE, 0xC2,
-                0x8A, 0xCA, 0x66, 0x8B, 0xD0, 0x66, 0xC1, 0xEA, 0x10, 0xF7, 0x76, 0xFC, 0x03, 0x46, 0xF8, 0x13,
-                0x56, 0xFA, 0x66, 0x52
-            ])
-            
-            with open(disk_device, 'rb') as f:
-                current_mbr = f.read(512)
-            
-            new_mbr = windows_mbr_code[:446] + current_mbr[446:510] + bytes([0x55, 0xAA])
-            
-            with open(disk_device, 'r+b') as f:
-                f.seek(0)
-                f.write(new_mbr)
-                f.flush()
-                os.fsync(f.fileno())
-            
-            return True
-        except Exception as e:
-            print(f"MBR error: {e}")
-            return False
-
-    @staticmethod
-    def _fix_windows_bcd(mount_point, partition_device, disk_device, partition_num):
-        """Fix Windows BCD - same as before"""
-        try:
-            windows_path = None
-            for wd in ['Windows', 'WINDOWS', 'windows']:
-                if os.path.exists(os.path.join(mount_point, wd)):
-                    windows_path = os.path.join(mount_point, wd)
-                    break
-            
-            if not windows_path:
-                return False
-            
-            boot_dir = os.path.join(mount_point, 'Boot')
-            os.makedirs(boot_dir, exist_ok=True)
-            
-            subprocess.run(['parted', disk_device, 'set', str(partition_num), 'boot', 'on'],
-                        capture_output=True, timeout=30, check=False)
-            
-            return True
-        except Exception as e:
-            print(f"BCD error: {e}")
-            return False
         
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
                                 existing_source_nbd, layout_info, progress_callback=None,
@@ -2153,81 +2331,6 @@ class QCow2CloneResizerGUI:
             
             raise
     
-    def _execute_dd_with_retry(self, cmd, timeout=300, max_retries=3):
-        """Execute dd command with retries and better error handling"""
-        for attempt in range(max_retries):
-            try:
-                print(f"DD attempt {attempt + 1}: {' '.join(cmd)}")
-                
-                # Use Popen for better control
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True
-                )
-                
-                stdout_data = []
-                stderr_data = []
-                
-                start_time = time.time()
-                while True:
-                    # Check if process has terminated
-                    if process.poll() is not None:
-                        break
-                    
-                    # Check timeout
-                    if time.time() - start_time > timeout:
-                        print(f"DD command timed out after {timeout} seconds")
-                        process.kill()
-                        process.wait()
-                        raise subprocess.TimeoutExpired(cmd, timeout)
-                    
-                    time.sleep(0.5)
-                
-                # Get final output
-                stdout, stderr = process.communicate(timeout=30)
-                
-                if stdout:
-                    stdout_data.append(stdout)
-                    print(f"DD stdout: {stdout.strip()}")
-                
-                if stderr:
-                    stderr_data.append(stderr)
-                    print(f"DD stderr: {stderr.strip()}")
-                
-                if process.returncode == 0:
-                    print(f"DD command succeeded on attempt {attempt + 1}")
-                    return True
-                else:
-                    print(f"DD command failed with return code {process.returncode}")
-                    if attempt < max_retries - 1:
-                        print(f"Retrying in 3 seconds...")
-                        time.sleep(3)
-                        # Try to sync before retry
-                        subprocess.run(['sync'], check=False, timeout=30)
-                        time.sleep(2)
-                    
-            except subprocess.TimeoutExpired:
-                print(f"DD attempt {attempt + 1} timed out")
-                if attempt < max_retries - 1:
-                    print(f"Retrying in 5 seconds...")
-                    time.sleep(5)
-            except FileNotFoundError:
-                print(f"DD attempt {attempt + 1} failed - dd command not found")
-                if attempt < max_retries - 1:
-                    print(f"Retrying in 3 seconds...")
-                    time.sleep(3)
-            except OSError as e:
-                print(f"DD attempt {attempt + 1} failed with system error: {e}")
-                if attempt < max_retries - 1:
-                    print(f"Retrying in 3 seconds...")
-                    time.sleep(3)
-        
-        print(f"All DD attempts failed after {max_retries} tries")
-        return False
 
     def _clone_disk_structure_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
         """Clone disk structure with device verification and flag preservation"""
@@ -2789,14 +2892,173 @@ class QCow2CloneResizerGUI:
     
     def reset_ui(self):
         """Reset UI after operation"""
+        try:
+            if self.main_action_btn.winfo_exists():
+                self.main_action_btn.config(state="normal")
+            if self.backup_btn.winfo_exists():
+                self.backup_btn.config(state="normal")
+            if self.progress.winfo_exists():
+                self.progress['value'] = 0
+            if self.progress_label.winfo_exists():
+                self.progress_label.config(text="Operation completed")
+            if self.status_label.winfo_exists():
+                self.status_label.config(text="Operation completed - Ready for next operation")
+        except tk.TclError:
+            pass
+        
+        # Clear process reference
+        self.compression_process = None
+        
+        # Clear temp files list (operation completed successfully)
+        self.created_temp_files = []
+        
+        # Set this LAST
         self.operation_active = False
-        self.main_action_btn.config(state="normal")
-        self.backup_btn.config(state="normal")
-        self.progress['value'] = 0
-        self.progress_label.config(text="Operation completed")
-        self.status_label.config(text="Operation completed - Ready for next operation")
 
+    def _auto_cleanup_compressed_tmp(self):
+        """Auto cleanup ONLY .compressed.tmp files from source directory
+        
+        """
+        if not self.source_image_path:
+            return
+        
+        source_dir = Path(self.source_image_path).parent
+        print("\nAuto-cleaning .compressed.tmp files...")
+        
+        tmp_files = list(source_dir.glob("*.compressed.tmp"))
+        
+        if not tmp_files:
+            print("  ✓ No .compressed.tmp files found (already cleaned up)")
+            return
+        
+        cleaned_count = 0
+        failed_count = 0
+        
+        for tmp_file in tmp_files:
+            try:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        os.remove(tmp_file)
+                        print(f"  ✓ Removed: {tmp_file.name}")
+                        cleaned_count += 1
+                        break
+                    except FileNotFoundError:
+                        print(f"  ✓ Already cleaned: {tmp_file.name}")
+                        cleaned_count += 1
+                        break
+                    except (PermissionError, OSError) as e:
+                        if attempt < max_retries - 1:
+                            time.sleep(1)
+                        else:
+                            raise
+            except Exception as e:
+                print(f"  ✗ Failed to remove {tmp_file.name}: {e}")
+                failed_count += 1
+        
+        if cleaned_count > 0 or failed_count == 0:
+            print(f"  Cleaned: {cleaned_count}, Failed: {failed_count}")
 
+    def _cleanup_on_error(self, original_image_path, temp_files_to_show):
+        """Show dialog to let user select which files to delete - APPROCHE DIRECTE"""
+        try:
+            print("\n" + "="*60)
+            print("CLEANUP - MANAGING INTERMEDIATE/OPTIMIZED FILES")
+            print("="*60)
+            
+            # Filter only existing files
+            existing_files = []
+            for file_path in temp_files_to_show:
+                if file_path and os.path.exists(file_path):
+                    existing_files.append(Path(file_path))
+            
+            if not existing_files:
+                print("No intermediate/optimized files found")
+                return True
+            
+            print(f"Found {len(existing_files)} files to manage:")
+            for f in existing_files:
+                try:
+                    size = os.path.getsize(f)
+                    print(f"  - {f.name} ({self._format_size_compact(size)})")
+                except OSError:
+                    print(f"  - {f.name}")
+            
+            # Reset dialog
+            print("Creating file selection dialog from worker thread...")
+            self.dialog_result_event.clear()
+            self.dialog_result_value = None
+            
+            # APPROCHE DIRECTE: Créer et montrer le dialog DIRECTEMENT dans le worker thread
+            # mais demander au root de le traiter immédiatement
+            self.root.after(0, self._create_and_show_file_selection_dialog, existing_files, Path(original_image_path))
+            
+            # Traiter les événements Tkinter depuis le worker thread
+            # Cela permet au dialog de s'afficher et d'être interactif
+            print("Processing Tkinter events to display dialog...")
+            start_time = time.time()
+            timeout = 300  # 5 minutes
+            
+            while not self.dialog_result_event.is_set():
+                try:
+                    # Permettre à Tkinter de traiter les événements
+                    self.root.update()
+                    time.sleep(0.05)
+                    
+                    # Vérifier le timeout
+                    if time.time() - start_time > timeout:
+                        print("Dialog timeout - user didn't respond in 5 minutes")
+                        return False
+                        
+                except tk.TclError:
+                    # La fenêtre root a été détruite
+                    print("Root window was destroyed")
+                    return False
+                except Exception as e:
+                    print(f"Error processing events: {e}")
+                    time.sleep(0.1)
+            
+            selected_files = self.dialog_result_value
+            
+            if selected_files is None:
+                print("User cancelled cleanup")
+                return False
+            
+            if not selected_files:
+                print("User chose to keep all files")
+                return True
+            
+            # Delete selected files
+            files_removed = []
+            files_failed = []
+            
+            for file_path in selected_files:
+                try:
+                    print(f"Removing: {file_path.name}")
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            os.remove(file_path)
+                            files_removed.append(file_path.name)
+                            break
+                        except (PermissionError, OSError) as e:
+                            if attempt < max_retries - 1:
+                                time.sleep(1)
+                            else:
+                                raise
+                except Exception as e:
+                    print(f"Failed to remove {file_path.name}: {e}")
+                    files_failed.append(file_path.name)
+            
+            print(f"\nCleanup: {len(files_removed)} deleted, {len(files_failed)} failed")
+            return True
+            
+        except Exception as e:
+            print(f"Error during error cleanup: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
 def main():
     """Main entry point"""
     print("=" * 75)
