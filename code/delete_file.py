@@ -1,16 +1,21 @@
-#!/usr/bin/env python3
-"""
-File Deletion Manager - Independent class for file deletion with GUI
-Provides file selection and deletion interface matching the existing cleanup dialogs
-"""
-
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import time
 import threading
 from pathlib import Path
-from log_handler import log_info, log_error, log_warning
+# Supposons que log_info, log_error, log_warning sont définis ou importés comme dans votre code original
+# from log_handler import log_info, log_error, log_warning
+
+# Définitions de log_info, log_error, log_warning pour que le code soit exécutable
+def log_info(message):
+    print(f"INFO: {message}")
+
+def log_error(message):
+    print(f"ERROR: {message}")
+
+def log_warning(message):
+    print(f"WARNING: {message}")
 
 
 class FileDeleteManager:
@@ -46,8 +51,8 @@ class FileDeleteManager:
             # Create file selection window
             selection_window = tk.Toplevel(self.parent_window)
             selection_window.title("Delete Files - Select files to remove")
-            selection_window.geometry("900x600")
-            selection_window.resizable(True, True)
+            selection_window.geometry("900x600") 
+            selection_window.resizable(False, False)
             
             # Make window modal
             selection_window.transient(self.parent_window)
@@ -59,8 +64,8 @@ class FileDeleteManager:
             
             # Main frame
             main_frame = ttk.Frame(selection_window, padding="15")
-            main_frame.pack(fill="both", expand=True)
-            
+            main_frame.pack(fill="both", expand=True) 
+
             # Title
             title_label = ttk.Label(main_frame, 
                                 text="FILE DELETION - Select files to permanently delete",
@@ -72,7 +77,7 @@ class FileDeleteManager:
                                 text="Navigate the file system and select files to delete.\n"
                                     "Selected files will be permanently removed after confirmation.",
                                 font=("Arial", 10),
-                                wraplength=850,
+                                wraplength=850, 
                                 justify="left")
             desc_label.pack(fill="x", pady=(0, 15))
             
@@ -84,7 +89,7 @@ class FileDeleteManager:
             
             ttk.Label(nav_frame, text="Current Directory:").pack(side="left", padx=(0, 5))
             dir_entry = ttk.Entry(nav_frame, textvariable=current_dir_var, font=("Arial", 9))
-            dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+            dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 5)) 
             
             def browse_directory():
                 """Open directory browser"""
@@ -98,27 +103,38 @@ class FileDeleteManager:
                         current_dir_var.set(directory)
                         refresh_file_list()
                         log_info(f"User navigated to directory: {directory}")
-                except Exception as e:
-                    log_error(f"Error browsing directory: {e}")
-                    messagebox.showerror("Browse Error", f"Could not browse directory:\n{e}")
+                except FileNotFoundError as e:
+                    log_error(f"Directory not found: {e}")
+                    messagebox.showerror("Browse Error", f"Directory not found:\n{e}")
+                except PermissionError as e:
+                    log_error(f"Permission denied accessing directory: {e}")
+                    messagebox.showerror("Browse Error", f"Permission denied:\n{e}")
+                except tk.TclError as e:
+                    log_error(f"Tkinter error in browse dialog: {e}")
+                    messagebox.showerror("Browse Error", f"Dialog error:\n{e}")
             
             ttk.Button(nav_frame, text="Browse", command=browse_directory).pack(side="left", padx=(0, 5))
             
             def go_to_home():
                 """Navigate to home directory"""
-                home_dir = str(Path.home())
-                current_dir_var.set(home_dir)
-                refresh_file_list()
-                log_info(f"User navigated to home directory: {home_dir}")
+                try:
+                    home_dir = str(Path.home())
+                    current_dir_var.set(home_dir)
+                    refresh_file_list()
+                    log_info(f"User navigated to home directory: {home_dir}")
+                except RuntimeError as e:
+                    log_error(f"Could not determine home directory: {e}")
+                    messagebox.showerror("Home Directory Error", f"Could not access home directory:\n{e}")
             
             ttk.Button(nav_frame, text="Home", command=go_to_home).pack(side="left")
             
             # File browser frame
             browser_frame = ttk.LabelFrame(main_frame, text="Files in Directory", padding="10")
-            browser_frame.pack(fill="both", expand=True, pady=(0, 15))
-            browser_frame.grid_rowconfigure(0, weight=1)
-            browser_frame.grid_columnconfigure(0, weight=1)
+            browser_frame.pack(fill="both", expand=True, pady=(0, 15)) 
             
+            browser_frame.grid_rowconfigure(0, weight=1) 
+            browser_frame.grid_columnconfigure(0, weight=1) 
+
             # Scrollbars
             scrollbar_v = ttk.Scrollbar(browser_frame, orient="vertical")
             scrollbar_h = ttk.Scrollbar(browser_frame, orient="horizontal")
@@ -127,19 +143,19 @@ class FileDeleteManager:
             file_listbox = tk.Listbox(browser_frame, 
                                     yscrollcommand=scrollbar_v.set,
                                     xscrollcommand=scrollbar_h.set,
-                                    height=15,
+                                    height=15, 
                                     font=("Consolas", 9),
                                     selectmode=tk.EXTENDED)
-            file_listbox.grid(row=0, column=0, sticky="nsew")
+            file_listbox.grid(row=0, column=0, sticky="nsew") 
             scrollbar_v.config(command=file_listbox.yview)
-            scrollbar_v.grid(row=0, column=1, sticky="ns")
+            scrollbar_v.grid(row=0, column=1, sticky="ns") 
             scrollbar_h.config(command=file_listbox.xview)
-            scrollbar_h.grid(row=1, column=0, sticky="ew")
+            scrollbar_h.grid(row=1, column=0, sticky="ew") 
             
-            file_info_list = []  # Store (path, display_text) tuples
+            file_info_list = [] 
             
             def refresh_file_list():
-                """Refresh file list from current directory"""
+                """Recharge la liste des fichiers du répertoire courant"""
                 try:
                     current_dir = current_dir_var.get()
                     
@@ -153,7 +169,7 @@ class FileDeleteManager:
                     
                     try:
                         entries = os.listdir(current_dir)
-                    except PermissionError:
+                    except PermissionError as e:
                         messagebox.showwarning("Permission Denied", 
                                             f"Permission denied accessing:\n{current_dir}")
                         log_warning(f"Permission denied listing directory: {current_dir}")
@@ -176,24 +192,29 @@ class FileDeleteManager:
                                     size = os.path.getsize(entry_path)
                                     size_str = self._format_size_compact(size)
                                     display_text = f"{entry} ({size_str})"
-                                except OSError:
+                                except OSError as e:
+                                    log_warning(f"Could not get size for {entry_path}: {e}")
                                     display_text = f"{entry}"
                             
                             file_listbox.insert(tk.END, display_text)
                             file_info_list.append((entry_path, display_text))
                             
-                        except (OSError, PermissionError):
+                        except (OSError, PermissionError) as e:
+                            log_warning(f"Could not process entry {entry}: {e}")
                             continue
                     
                     log_info(f"File list refreshed for directory: {current_dir}")
                     update_selection_info()
                     
-                except Exception as e:
-                    log_error(f"Error refreshing file list: {e}")
-                    messagebox.showerror("Refresh Error", f"Error refreshing file list:\n{e}")
+                except ValueError as e:
+                    log_error(f"Invalid value in file list refresh: {e}")
+                    messagebox.showerror("Refresh Error", f"Invalid value:\n{e}")
+                except IOError as e:
+                    log_error(f"I/O error refreshing file list: {e}")
+                    messagebox.showerror("Refresh Error", f"I/O error:\n{e}")
             
             def update_selection_info():
-                """Update selection info label"""
+                """Met à jour l'étiquette d'information de sélection"""
                 try:
                     selected_indices = file_listbox.curselection()
                     total_size = 0
@@ -205,60 +226,31 @@ class FileDeleteManager:
                             try:
                                 if os.path.isfile(file_path):
                                     total_size += os.path.getsize(file_path)
-                            except OSError:
-                                pass
+                            except OSError as e:
+                                log_warning(f"Could not get size for {file_path}: {e}")
                     
                     size_str = self._format_size_compact(total_size) if total_size > 0 else "0B"
                     selection_label.config(text=f"Selected: {file_count} item(s), Total size: {size_str}")
                     
-                except Exception as e:
-                    log_warning(f"Error updating selection info: {e}")
+                except IndexError as e:
+                    log_warning(f"Index error updating selection info: {e}")
+                except tk.TclError as e:
+                    log_warning(f"Tkinter error updating selection info: {e}")
             
             # Selection info label
             selection_label = ttk.Label(main_frame, text="Selected: 0 item(s), Total size: 0B", 
-                                       font=("Arial", 9), foreground="blue")
+                                    font=("Arial", 9), foreground="blue")
             selection_label.pack(fill="x", pady=(0, 10))
             
             # Bind selection changes
             file_listbox.bind("<<ListboxSelect>>", lambda e: update_selection_info())
             
-            # Control buttons frame
-            control_frame = ttk.Frame(main_frame)
-            control_frame.pack(fill="x", pady=(0, 10))
-            
-            def select_all():
-                """Select all files"""
-                file_listbox.select_set(0, tk.END)
-                update_selection_info()
-                log_info("User selected all files")
-            
-            def deselect_all():
-                """Deselect all files"""
-                file_listbox.selection_clear(0, tk.END)
-                update_selection_info()
-                log_info("User deselected all files")
-            
-            ttk.Button(control_frame, text="Select All", command=select_all).pack(side="left", padx=(0, 5))
-            ttk.Button(control_frame, text="Deselect All", command=deselect_all).pack(side="left", padx=(0, 15))
-            ttk.Button(control_frame, text="Refresh", command=refresh_file_list).pack(side="left")
-            
-            # Confirmation frame
-            confirm_frame = ttk.Frame(main_frame)
-            confirm_frame.pack(fill="x")
-            
-            # Warning
-            warning_label = ttk.Label(confirm_frame,
-                                    text="⚠  WARNING: Selected files will be permanently deleted and cannot be recovered!",
-                                    font=("Arial", 9),
-                                    foreground="red")
-            warning_label.pack(fill="x", pady=(0, 10))
-            
-            # Action buttons
-            action_frame = ttk.Frame(confirm_frame)
-            action_frame.pack(fill="x")
+            # Bouton Delete en noir sur fond rouge
+            all_buttons_frame = ttk.Frame(main_frame)
+            all_buttons_frame.pack(fill="x", pady=(0, 10))
             
             def on_delete():
-                """Confirm deletion"""
+                """Confirme la suppression"""
                 selected_indices = file_listbox.curselection()
                 if not selected_indices:
                     messagebox.showwarning("No Selection", "Please select files to delete")
@@ -273,26 +265,59 @@ class FileDeleteManager:
                 selection_window.destroy()
             
             def on_cancel():
-                """Cancel operation"""
+                """Annule l'opération"""
                 selected_files.clear()
                 log_info("User cancelled file selection")
                 selection_window.destroy()
             
-            ttk.Button(action_frame, text="Delete Selected Files", 
-                    command=on_delete).pack(side="left", padx=(0, 10))
-            ttk.Button(action_frame, text="Cancel", 
-                    command=on_cancel).pack(side="right")
+            def select_all():
+                """Sélectionne tous les fichiers"""
+                file_listbox.select_set(0, tk.END)
+                update_selection_info()
+                log_info("User selected all files")
             
-            # Center window
+            def deselect_all():
+                """Désélectionne tous les fichiers"""
+                file_listbox.selection_clear(0, tk.END)
+                update_selection_info()
+                log_info("User deselected all files")
+            
+            left_buttons_frame = ttk.Frame(all_buttons_frame)
+            left_buttons_frame.pack(side="left", fill="x", expand=True)
+            
+            right_buttons_frame = ttk.Frame(all_buttons_frame)
+            right_buttons_frame.pack(side="right")
+
+            ttk.Button(left_buttons_frame, text="Select All", command=select_all).pack(side="left", padx=(0, 5))
+            ttk.Button(left_buttons_frame, text="Deselect All", command=deselect_all).pack(side="left", padx=(0, 15))
+            ttk.Button(left_buttons_frame, text="Refresh", command=refresh_file_list).pack(side="left")
+
+            # Bouton Delete en noir sur fond rouge
+            delete_btn = tk.Button(right_buttons_frame, text="Delete Selected Files", 
+                                command=on_delete, bg="red", fg="black", 
+                                font=("Arial", 9, "bold"), padx=10, pady=5)
+            delete_btn.pack(side="left", padx=(0, 10))
+            
+            ttk.Button(right_buttons_frame, text="Cancel", 
+                    command=on_cancel).pack(side="left")
+            
+            # Warning label
+            warning_label = ttk.Label(main_frame,
+                                    text="⚠ WARNING: Selected files will be permanently deleted and cannot be recovered!",
+                                    font=("Arial", 9),
+                                    foreground="red")
+            warning_label.pack(fill="x", pady=(0, 10))
+            
+            # Centrer la fenêtre
             selection_window.update_idletasks()
             x = self.parent_window.winfo_x() + (self.parent_window.winfo_width() - selection_window.winfo_width()) // 2
             y = self.parent_window.winfo_y() + (self.parent_window.winfo_height() - selection_window.winfo_height()) // 2
             selection_window.geometry(f"+{x}+{y}")
             
-            # Load initial directory
+            # Charger le répertoire initial
             refresh_file_list()
             
-            # Wait for window to close
+            # Attendre que la fenêtre se ferme
             self.parent_window.wait_window(selection_window)
             
             return selected_files
@@ -301,36 +326,32 @@ class FileDeleteManager:
             log_error(f"Tkinter error in file selection dialog: {e}")
             messagebox.showerror("Dialog Error", f"Error creating file selection dialog:\n{e}")
             return []
-        except Exception as e:
-            log_error(f"Unexpected error in file selection dialog: {e}")
-            messagebox.showerror("Error", f"Unexpected error:\n{e}")
+        except ValueError as e:
+            log_error(f"Value error in file selection dialog: {e}")
+            messagebox.showerror("Dialog Error", f"Invalid value in dialog:\n{e}")
+            return []
+        except IOError as e:
+            log_error(f"I/O error in file selection dialog: {e}")
+            messagebox.showerror("Dialog Error", f"I/O error:\n{e}")
             return []
     
     def delete_files_with_confirmation(self, files_to_delete):
         """
         Delete selected files with confirmation dialog
-        
-        Args:
-            files_to_delete: List of Path objects to delete
-            
-        Returns:
-            dict: Statistics about deletion (removed, failed)
         """
         if not files_to_delete:
             log_warning("No files provided for deletion")
             return {'removed': 0, 'failed': 0}
         
         try:
-            # Calculate total size
             total_size = 0
             for file_path in files_to_delete:
                 try:
                     if os.path.isfile(file_path):
                         total_size += os.path.getsize(file_path)
-                except OSError:
-                    pass
+                except OSError as e:
+                    log_warning(f"Could not get size for {file_path}: {e}")
             
-            # Show confirmation dialog
             confirm_msg = f"PERMANENT DELETION CONFIRMATION\n\n"
             confirm_msg += f"Files to DELETE ({len(files_to_delete)}):\n"
             confirm_msg += f"{'='*50}\n\n"
@@ -343,7 +364,8 @@ class FileDeleteManager:
                         confirm_msg += f"• {file_path.name} ({size_str})\n"
                     else:
                         confirm_msg += f"• {file_path.name} [DIRECTORY]\n"
-                except OSError:
+                except OSError as e:
+                    log_warning(f"Could not get info for {file_path}: {e}")
                     confirm_msg += f"• {file_path.name}\n"
             
             if len(files_to_delete) > 10:
@@ -351,7 +373,7 @@ class FileDeleteManager:
             
             confirm_msg += f"\n{'='*50}\n"
             confirm_msg += f"Total size: {self._format_size_compact(total_size)}\n\n"
-            confirm_msg += f"⚠  WARNING: This action CANNOT be undone!\n"
+            confirm_msg += f"⚠ WARNING: This action CANNOT be undone!\n"
             confirm_msg += f"Files will be permanently deleted.\n\n"
             confirm_msg += f"Are you absolutely sure?"
             
@@ -363,16 +385,13 @@ class FileDeleteManager:
             
             log_info(f"User confirmed deletion of {len(files_to_delete)} file(s), total size: {self._format_size_compact(total_size)}")
             
-            # Perform deletion in separate thread to avoid freezing GUI
             stats = {'removed': 0, 'failed': 0}
             
             def delete_worker():
-                """Worker thread for file deletion"""
                 try:
                     for i, file_path in enumerate(files_to_delete):
                         try:
                             if os.path.isfile(file_path) or os.path.isdir(file_path):
-                                # Try multiple times in case of file locks
                                 max_retries = 3
                                 deleted = False
                                 
@@ -389,7 +408,12 @@ class FileDeleteManager:
                                         deleted = True
                                         break
                                         
-                                    except (PermissionError, OSError) as e:
+                                    except PermissionError as e:
+                                        if attempt < max_retries - 1:
+                                            time.sleep(1)
+                                        else:
+                                            raise
+                                    except OSError as e:
                                         if attempt < max_retries - 1:
                                             time.sleep(1)
                                         else:
@@ -402,24 +426,32 @@ class FileDeleteManager:
                                 stats['failed'] += 1
                                 log_warning(f"File/directory not found: {file_path}")
                                 
-                        except Exception as e:
+                        except PermissionError as e:
                             stats['failed'] += 1
-                            log_error(f"Error deleting {file_path}: {e}")
-                except Exception as e:
-                    log_error(f"Error in deletion worker thread: {e}")
+                            log_error(f"Permission denied deleting {file_path}: {e}")
+                        except OSError as e:
+                            stats['failed'] += 1
+                            log_error(f"OS error deleting {file_path}: {e}")
+                        except ValueError as e:
+                            stats['failed'] += 1
+                            log_error(f"Value error deleting {file_path}: {e}")
+                except PermissionError as e:
+                    log_error(f"Permission error in deletion worker thread: {e}")
+                except OSError as e:
+                    log_error(f"OS error in deletion worker thread: {e}")
+                except RuntimeError as e:
+                    log_error(f"Runtime error in deletion worker thread: {e}")
             
-            # Start deletion in thread
             delete_thread = threading.Thread(target=delete_worker, daemon=True)
             delete_thread.start()
             delete_thread.join(timeout=300)  # Wait up to 5 minutes
             
-            # Show results
             result_msg = f"FILE DELETION RESULTS\n\n"
             result_msg += f"✓ Successfully deleted: {stats['removed']} file(s)\n"
-            result_msg += f"✗ Failed to delete: {stats['failed']} file(s)\n\n"
+            result_msg += f"✗ Failed to delete: {stats['failed']} file(s)\n"
             
             if stats['removed'] > 0:
-                result_msg += f"Freed disk space: {self._format_size_compact(total_size)}\n\n"
+                result_msg += f"\nFreed disk space: {self._format_size_compact(total_size)}\n"
                 messagebox.showinfo("Deletion Complete", result_msg)
                 log_info(f"Deletion complete - removed: {stats['removed']}, failed: {stats['failed']}")
             else:
@@ -428,48 +460,54 @@ class FileDeleteManager:
             
             return stats
             
-        except Exception as e:
-            log_error(f"Error in delete_files_with_confirmation: {e}")
-            messagebox.showerror("Deletion Error", f"Error during file deletion:\n{e}")
+        except OSError as e:
+            log_error(f"OS error in delete_files_with_confirmation: {e}")
+            messagebox.showerror("Deletion Error", f"OS error during file deletion:\n{e}")
             return {'removed': 0, 'failed': 0}
+        except ValueError as e:
+            log_error(f"Value error in delete_files_with_confirmation: {e}")
+            messagebox.showerror("Deletion Error", f"Invalid value during file deletion:\n{e}")
+            return {'removed': 0, 'failed': 0}
+        except TypeError as e:
+            log_error(f"Type error in delete_files_with_confirmation: {e}")
+            messagebox.showerror("Deletion Error", f"Type error during file deletion:\n{e}")
+            return {'removed': 0, 'failed': 0}
+
     
     def delete_files_interactive(self):
         """
         Interactive file deletion: Select files then delete them
-        
-        Returns:
-            dict: Deletion statistics
         """
         try:
             log_info("Starting interactive file deletion process")
             
-            # Step 1: Show file selection dialog
             selected_files = self.show_file_selection_dialog()
             
             if not selected_files:
                 log_info("No files selected for deletion")
                 return {'removed': 0, 'failed': 0}
             
-            # Step 2: Delete selected files with confirmation
             stats = self.delete_files_with_confirmation(selected_files)
             
             return stats
             
-        except Exception as e:
-            log_error(f"Error in delete_files_interactive: {e}")
-            messagebox.showerror("Error", f"Error during file deletion process:\n{e}")
+        except ValueError as e:
+            log_error(f"Value error in delete_files_interactive: {e}")
+            messagebox.showerror("Error", f"Invalid value during file deletion process:\n{e}")
+            return {'removed': 0, 'failed': 0}
+        except IOError as e:
+            log_error(f"I/O error in delete_files_interactive: {e}")
+            messagebox.showerror("Error", f"I/O error during file deletion process:\n{e}")
+            return {'removed': 0, 'failed': 0}
+        except RuntimeError as e:
+            log_error(f"Runtime error in delete_files_interactive: {e}")
+            messagebox.showerror("Error", f"Runtime error during file deletion process:\n{e}")
             return {'removed': 0, 'failed': 0}
     
     @staticmethod
     def _format_size_compact(size_bytes):
         """
         Format bytes to compact size string
-        
-        Args:
-            size_bytes: Size in bytes
-            
-        Returns:
-            str: Formatted size string
         """
         try:
             for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
