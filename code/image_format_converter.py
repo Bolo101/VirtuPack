@@ -78,6 +78,10 @@ class ImageFormatConverter:
         self.target_format = tk.StringVar(value='qcow2')
         self.compress_option = tk.BooleanVar(value=False)
         
+        # Threading event system for dialog handling (same as QCow2CloneResizerGUI)
+        self.dialog_result_event = threading.Event()
+        self.dialog_result_value = None
+        
         self.setup_ui()
         self.check_prerequisites()
         
@@ -96,6 +100,31 @@ class ImageFormatConverter:
         
         self.root.destroy()
     
+    def _show_message_and_wait(self, title, message):
+        """Show info message and wait for user to click OK"""
+        self.dialog_result_event.clear()
+        self.dialog_result_value = None
+        
+        def show_dialog():
+            messagebox.showinfo(title, message)
+            self.dialog_result_event.set()
+        
+        self.root.after(0, show_dialog)
+        self.dialog_result_event.wait()
+
+
+    def _show_error_and_wait(self, title, message):
+        """Show error message and wait for user to click OK"""
+        self.dialog_result_event.clear()
+        self.dialog_result_value = None
+        
+        def show_dialog():
+            messagebox.showerror(title, message)
+            self.dialog_result_event.set()
+        
+        self.root.after(0, show_dialog)
+        self.dialog_result_event.wait()
+
     def setup_ui(self):
         """Setup user interface"""
         # Main container with padding
@@ -581,75 +610,54 @@ class ImageFormatConverter:
             
             print("Conversion completed successfully")
             
-            # Show success dialog
-            self.root.after(
-                0,
-                lambda: self._show_conversion_complete(
-                    source_path,
-                    target_path,
-                    target_info,
-                    target_size
-                )
+            # Show success dialog - DIRECT CALL from worker thread
+            self._show_conversion_complete(
+                source_path,
+                target_path,
+                target_info,
+                target_size
             )
             
         except FileNotFoundError as e:
             print(f"ERROR: File not found - {e}")
-            self.root.after(
-                0,
-                lambda: messagebox.showerror(
-                    "File Not Found",
-                    f"Conversion failed - file not found:\n\n{e}"
-                )
+            self._show_error_and_wait(
+                "File Not Found",
+                f"Conversion failed - file not found:\n\n{e}"
             )
         except PermissionError as e:
             print(f"ERROR: Permission denied - {e}")
-            self.root.after(
-                0,
-                lambda: messagebox.showerror(
-                    "Permission Denied",
-                    f"Conversion failed - permission denied:\n\n{e}\n\n"
-                    f"Check file permissions and available disk space."
-                )
+            self._show_error_and_wait(
+                "Permission Denied",
+                f"Conversion failed - permission denied:\n\n{e}\n\n"
+                f"Check file permissions and available disk space."
             )
         except subprocess.CalledProcessError as e:
             print(f"ERROR: Command failed - {e}")
-            self.root.after(
-                0,
-                lambda: messagebox.showerror(
-                    "Conversion Failed",
-                    f"qemu-img conversion failed:\n\n{e}\n\n"
-                    f"Check that the source image is not corrupted."
-                )
+            self._show_error_and_wait(
+                "Conversion Failed",
+                f"qemu-img conversion failed:\n\n{e}\n\n"
+                f"Check that the source image is not corrupted."
             )
         except ValueError as e:
             print(f"ERROR: Invalid value - {e}")
-            self.root.after(
-                0,
-                lambda: messagebox.showerror(
-                    "Invalid Value",
-                    f"Conversion failed - invalid value:\n\n{e}"
-                )
+            self._show_error_and_wait(
+                "Invalid Value",
+                f"Conversion failed - invalid value:\n\n{e}"
             )
         except OSError as e:
             print(f"ERROR: System error - {e}")
-            self.root.after(
-                0,
-                lambda: messagebox.showerror(
-                    "System Error",
-                    f"Conversion failed - system error:\n\n{e}\n\n"
-                    f"Check available disk space and system resources."
-                )
+            self._show_error_and_wait(
+                "System Error",
+                f"Conversion failed - system error:\n\n{e}\n\n"
+                f"Check available disk space and system resources."
             )
         except Exception as e:
             print(f"ERROR: Unexpected error - {e}")
             import traceback
             traceback.print_exc()
-            self.root.after(
-                0,
-                lambda: messagebox.showerror(
-                    "Unexpected Error",
-                    f"Conversion failed with unexpected error:\n\n{e}"
-                )
+            self._show_error_and_wait(
+                "Unexpected Error",
+                f"Conversion failed with unexpected error:\n\n{e}"
             )
         finally:
             self.root.after(0, self.reset_ui)
@@ -692,11 +700,11 @@ class ImageFormatConverter:
             msg += f"✓ Ready for use in virtual machine\n\n"
             msg += f"Location: {target_path}"
             
-            messagebox.showinfo("Conversion Complete", msg)
+            self._show_message_and_wait("Conversion Complete", msg)
             
         except KeyError as e:
             print(f"Error in completion dialog: {e}")
-            messagebox.showinfo(
+            self._show_message_and_wait(
                 "Conversion Complete",
                 f"Image conversion completed successfully!\n\n"
                 f"Target file: {target_path}"
