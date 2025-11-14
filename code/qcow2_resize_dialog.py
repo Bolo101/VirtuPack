@@ -212,13 +212,22 @@ class QCow2CloneResizerGUI:
             
             print("File selection dialog displayed successfully")
             
-        except Exception as e:
-            print(f"ERROR creating selection dialog: {e}")
-            import traceback
-            traceback.print_exc()
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error creating selection dialog: {tcl_e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
-
+        except OSError as os_e:
+            print(f"OS error in file selection dialog: {os_e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except AttributeError as attr_e:
+            print(f"Attribute error in file selection dialog: {attr_e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except IndexError as idx_e:
+            print(f"Index error in file selection dialog: {idx_e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
 
     def _check_dialog_queue(self):
         """Check queue for pending dialog requests - called from main thread"""
@@ -234,12 +243,17 @@ class QCow2CloneResizerGUI:
                         
                 except queue.Empty:
                     break
-        except Exception as e:
-            print(f"Error checking dialog queue: {e}")
+        except TypeError as type_e:
+            print(f"Type error checking dialog queue: {type_e}")
+        except AttributeError as attr_e:
+            print(f"Attribute error checking dialog queue: {attr_e}")
         
         # Re-schedule check
-        self.root.after(100, self._check_dialog_queue)
-    
+        try:
+            self.root.after(100, self._check_dialog_queue)
+        except tk.TclError:
+            pass
+
     def close_window(self):
         """Handle window close event - forcefully stop operations"""
         if self.operation_active:
@@ -308,28 +322,37 @@ class QCow2CloneResizerGUI:
         total_failed = 0
         
         for pattern in temp_patterns:
-            matching_files = list(search_dir.glob(pattern))
-            
-            if matching_files:
-                print(f"Pattern: {pattern}")
-                for file_path in matching_files:
-                    try:
-                        # Try multiple times with delays (for file locks)
-                        max_retries = 5
-                        for attempt in range(max_retries):
-                            try:
-                                os.remove(file_path)
-                                print(f"  ✓ Removed: {file_path.name}")
-                                total_removed += 1
-                                break
-                            except (PermissionError, OSError) as e:
-                                if attempt < max_retries - 1:
-                                    time.sleep(1)
-                                else:
-                                    raise
-                    except Exception as e:
-                        print(f"  ✗ Failed: {file_path.name} - {e}")
-                        total_failed += 1
+            try:
+                matching_files = list(search_dir.glob(pattern))
+                
+                if matching_files:
+                    print(f"Pattern: {pattern}")
+                    for file_path in matching_files:
+                        try:
+                            max_retries = 5
+                            for attempt in range(max_retries):
+                                try:
+                                    os.remove(file_path)
+                                    print(f"  ✓ Removed: {file_path.name}")
+                                    total_removed += 1
+                                    break
+                                except (PermissionError, OSError) as e:
+                                    if attempt < max_retries - 1:
+                                        time.sleep(1)
+                                    else:
+                                        raise
+                        except FileNotFoundError as fnf_e:
+                            print(f"  ✓ Already removed: {file_path.name}")
+                            total_removed += 1
+                        except PermissionError as perm_e:
+                            print(f"  ✗ Failed: {file_path.name} - Permission denied")
+                            total_failed += 1
+                        except OSError as os_e:
+                            print(f"  ✗ Failed: {file_path.name} - {os_e}")
+                            total_failed += 1
+            except TypeError as type_e:
+                print(f"Type error with pattern {pattern}: {type_e}")
+                continue
         
         print(f"\nCleanup complete:")
         print(f"  Removed: {total_removed} files")
@@ -623,13 +646,11 @@ class QCow2CloneResizerGUI:
             self.log(f"Starting backup: {source_path} -> {backup_path}")
             self.update_progress(5, "Initializing backup...")
             
-            # Get source file size for progress calculation
             source_size = os.path.getsize(source_path)
             
-            # Build rsync command with progress
             rsync_cmd = [
                 'rsync',
-                '-ah',  # archive mode, human-readable
+                '-ah',
                 '--progress',
                 source_path,
                 backup_path
@@ -637,7 +658,6 @@ class QCow2CloneResizerGUI:
             
             self.update_progress(10, "Starting file transfer...")
             
-            # Execute rsync with progress monitoring
             process = subprocess.Popen(
                 rsync_cmd,
                 stdout=subprocess.PIPE,
@@ -646,21 +666,16 @@ class QCow2CloneResizerGUI:
                 bufsize=1
             )
             
-            # Monitor rsync progress
             for line in process.stdout:
                 line = line.strip()
                 if line:
-                    # Parse rsync progress output
-                    # Format: "bytes transferred/total size percentage speed time"
                     if '%' in line:
                         try:
-                            # Extract percentage from rsync output
                             parts = line.split()
                             for part in parts:
                                 if '%' in part:
                                     percent_str = part.replace('%', '')
                                     percent = float(percent_str)
-                                    # Scale to 10-90% range
                                     scaled_percent = 10 + (percent * 0.8)
                                     self.update_progress(
                                         int(scaled_percent),
@@ -670,13 +685,11 @@ class QCow2CloneResizerGUI:
                         except (ValueError, IndexError):
                             pass
             
-            # Wait for process completion
             return_code = process.wait()
             
             if return_code != 0:
                 raise subprocess.CalledProcessError(return_code, rsync_cmd)
             
-            # Verify backup
             if not os.path.exists(backup_path):
                 raise FileNotFoundError(f"Backup file not created: {backup_path}")
             
@@ -687,10 +700,8 @@ class QCow2CloneResizerGUI:
                 )
             
             self.update_progress(100, "Backup completed successfully")
-            
             self.log(f"Backup created successfully: {backup_path}")
             
-            # Show success message
             backup_msg = f"BACKUP CREATED SUCCESSFULLY!\n\n"
             backup_msg += f"Original: {os.path.basename(source_path)}\n"
             backup_msg += f"Backup: {os.path.basename(backup_path)}\n"
@@ -700,47 +711,44 @@ class QCow2CloneResizerGUI:
             backup_msg += f"You can now safely proceed with the resizing process."
             
             self.root.after(0, lambda: messagebox.showinfo("Backup Complete", backup_msg))
-            
-            # Reset progress
             self.root.after(100, lambda: self.update_progress(0, "Backup complete"))
             
-        except FileNotFoundError as e:
-            error_msg = f"Backup failed - file not found: {str(e)}"
+        except FileNotFoundError as fnf_e:
+            error_msg = f"Backup failed - file not found: {str(fnf_e)}"
             self.log(error_msg)
             self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
             self.update_progress(0, "Backup failed")
-        except PermissionError as e:
-            error_msg = f"Backup failed - permission denied: {str(e)}"
+        except PermissionError as perm_e:
+            error_msg = f"Backup failed - permission denied: {str(perm_e)}"
             self.log(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
             self.update_progress(0, "Backup failed")
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Backup failed - rsync error (code {e.returncode})"
+        except subprocess.CalledProcessError as cpe:
+            error_msg = f"Backup failed - rsync error (code {cpe.returncode})"
             self.log(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Backup Failed", error_msg))
             self.update_progress(0, "Backup failed")
-        except subprocess.TimeoutExpired as e:
+        except subprocess.TimeoutExpired as timeout_e:
             error_msg = f"Backup failed - operation timed out"
             self.log(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Timeout", error_msg))
             self.update_progress(0, "Backup failed")
-        except ValueError as e:
-            error_msg = f"Backup failed - verification error: {str(e)}"
+        except ValueError as val_e:
+            error_msg = f"Backup failed - verification error: {str(val_e)}"
             self.log(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Verification Failed", error_msg))
             self.update_progress(0, "Backup failed")
-        except OSError as e:
-            error_msg = f"Backup failed - system error: {str(e)}"
+        except OSError as os_e:
+            error_msg = f"Backup failed - system error: {str(os_e)}"
             self.log(error_msg)
             self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
             self.update_progress(0, "Backup failed")
-        except IOError as e:
-            error_msg = f"Backup failed - I/O error: {str(e)}"
+        except IOError as io_e:
+            error_msg = f"Backup failed - I/O error: {str(io_e)}"
             self.log(error_msg)
             self.root.after(0, lambda: messagebox.showerror("I/O Error", error_msg))
             self.update_progress(0, "Backup failed")
         finally:
-            # Re-enable buttons
             self.root.after(0, lambda: self.backup_btn.config(state="normal"))
             self.root.after(0, lambda: self.main_action_btn.config(state="normal"))
     
@@ -1307,33 +1315,25 @@ class QCow2CloneResizerGUI:
 
 
     def _create_and_show_file_selection_dialog(self, files_to_clean, original_path):
-        """Create and show file selection dialog - called from worker thread
-        
-        Utilise Tk après(0, ...) puis traite les événements manuellement
-        """
+        """Create and show file selection dialog"""
         try:
-            # Create window
             selection_window = tk.Toplevel(self.root)
             selection_window.title("Select Files to Delete")
             selection_window.geometry("700x450")
             selection_window.resizable(True, True)
             
-            # Make window modal
             selection_window.transient(self.root)
             selection_window.grab_set()
             selection_window.lift()
             
-            # Main frame
             main_frame = ttk.Frame(selection_window, padding="15")
             main_frame.pack(fill="both", expand=True)
             
-            # Title
             title_label = ttk.Label(main_frame, 
                                 text="ERROR CLEANUP - Select files to delete",
                                 font=("Arial", 12, "bold"))
             title_label.pack(fill="x", pady=(0, 10))
             
-            # Description
             desc_label = ttk.Label(main_frame,
                                 text="The following temporary files were created during the cloning operation.\n"
                                     "Select which files to delete. The original image will be preserved.",
@@ -1342,7 +1342,6 @@ class QCow2CloneResizerGUI:
                                 justify="left")
             desc_label.pack(fill="x", pady=(0, 15))
             
-            # File listbox
             list_frame = ttk.LabelFrame(main_frame, text="Temporary Files", padding="10")
             list_frame.pack(fill="both", expand=True, pady=(0, 15))
             
@@ -1357,7 +1356,6 @@ class QCow2CloneResizerGUI:
             file_listbox.pack(side="left", fill="both", expand=True)
             scrollbar.config(command=file_listbox.yview)
             
-            # Add files
             file_info = []
             for file_path in files_to_clean:
                 try:
@@ -1372,7 +1370,6 @@ class QCow2CloneResizerGUI:
             
             file_listbox.select_set(0, "end")
             
-            # Buttons frame
             button_frame = ttk.Frame(main_frame)
             button_frame.pack(fill="x", pady=(0, 10))
             
@@ -1399,13 +1396,12 @@ class QCow2CloneResizerGUI:
                             total_size += os.path.getsize(file_info[idx][0])
                     size_str = self._format_size_compact(total_size)
                     total_size_label.config(text=f"Total to delete: {size_str}")
-                except OSError:
+                except (OSError, IndexError):
                     total_size_label.config(text="Total to delete: calculating...")
             
             file_listbox.bind("<<ListboxSelect>>", lambda e: update_total_size())
             update_total_size()
             
-            # Info
             info_frame = ttk.Frame(main_frame)
             info_frame.pack(fill="x", pady=(0, 15))
             
@@ -1417,7 +1413,6 @@ class QCow2CloneResizerGUI:
                                 justify="left")
             info_label.pack(fill="x")
             
-            # Action buttons
             action_frame = ttk.Frame(main_frame)
             action_frame.pack(fill="x")
             
@@ -1448,36 +1443,41 @@ class QCow2CloneResizerGUI:
             ttk.Button(action_frame, text="Cancel", 
                     command=on_cancel).pack(side="right")
             
-            # Center window
             selection_window.update_idletasks()
             x = self.root.winfo_x() + (self.root.winfo_width() - selection_window.winfo_width()) // 2
             y = self.root.winfo_y() + (self.root.winfo_height() - selection_window.winfo_height()) // 2
             selection_window.geometry(f"+{x}+{y}")
             
-            # Focus and show
             selection_window.focus_force()
             
             print("File selection dialog created and displayed")
             
-            # Process Tkinter events until dialog is closed
             print("Waiting for user interaction...")
             while selection_window.winfo_exists():
                 try:
                     self.root.update()
                     time.sleep(0.1)
                 except tk.TclError:
-                    # Window was destroyed
                     break
             
             print("Dialog closed, proceeding with cleanup")
             
-        except Exception as e:
-            print(f"ERROR creating selection dialog: {e}")
-            import traceback
-            traceback.print_exc()
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error creating selection dialog: {tcl_e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
-
+        except OSError as os_e:
+            print(f"OS error in file selection dialog: {os_e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except AttributeError as attr_e:
+            print(f"Attribute error in file selection dialog: {attr_e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
+        except IndexError as idx_e:
+            print(f"Index error in file selection dialog: {idx_e}")
+            self.dialog_result_value = None
+            self.dialog_result_event.set()
 
     def _perform_safe_sync(self, operation_name="Sync"):
         """Perform sync operation with proper error handling and no timeout"""
@@ -1489,21 +1489,21 @@ class QCow2CloneResizerGUI:
                 print(f"{operation_name}: Attempting full sync...")
                 process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 
-                # Wait up to 2 minutes, but don't fail if it takes longer
                 try:
                     stdout, stderr = process.communicate(timeout=120)
                     if process.returncode == 0:
                         print(f"{operation_name}: Full sync completed successfully")
                         time.sleep(2)
                         return True
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as timeout_e:
                     print(f"{operation_name}: Full sync taking longer than expected, continuing anyway...")
-                    # Don't kill the process - let it finish in background
                     time.sleep(5)
                     return True
                     
-            except Exception as e:
-                print(f"{operation_name}: Full sync error: {e}")
+            except FileNotFoundError as fnf_e:
+                print(f"{operation_name}: sync command not found: {fnf_e}")
+            except OSError as os_e:
+                print(f"{operation_name}: Full sync error: {os_e}")
             
             # Method 2: Try syncfs on specific device if we have NBD info
             try:
@@ -1512,7 +1512,7 @@ class QCow2CloneResizerGUI:
                 print(f"{operation_name}: Filesystem sync completed")
                 time.sleep(2)
                 return True
-            except:
+            except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
                 pass
             
             # Method 3: Just wait a bit for kernel buffers to flush
@@ -1522,9 +1522,12 @@ class QCow2CloneResizerGUI:
             print(f"{operation_name}: Sync operation completed (or timed out safely)")
             return True
             
+        except KeyboardInterrupt as ki_e:
+            print(f"{operation_name}: Sync interrupted: {ki_e}")
+            time.sleep(5)
+            return False
         except Exception as e:
             print(f"{operation_name}: Sync error (non-fatal): {e}")
-            # Don't fail the entire operation just because sync had issues
             time.sleep(5)
             return False
 
@@ -2943,52 +2946,63 @@ class QCow2CloneResizerGUI:
         # Set this LAST
         self.operation_active = False
 
-    def _auto_cleanup_compressed_tmp(self):
-        """Auto cleanup ONLY .compressed.tmp files from source directory
-        
-        """
-        if not self.source_image_path:
-            return
-        
-        source_dir = Path(self.source_image_path).parent
-        print("\nAuto-cleaning .compressed.tmp files...")
-        
+def _auto_cleanup_compressed_tmp(self):
+    """Auto cleanup ONLY .compressed.tmp files from source directory"""
+    if not self.source_image_path:
+        return
+    
+    source_dir = Path(self.source_image_path).parent
+    print("\nAuto-cleaning .compressed.tmp files...")
+    
+    try:
         tmp_files = list(source_dir.glob("*.compressed.tmp"))
-        
-        if not tmp_files:
-            print("  ✓ No .compressed.tmp files found (already cleaned up)")
-            return
-        
-        cleaned_count = 0
-        failed_count = 0
-        
-        for tmp_file in tmp_files:
-            try:
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        os.remove(tmp_file)
-                        print(f"  ✓ Removed: {tmp_file.name}")
-                        cleaned_count += 1
-                        break
-                    except FileNotFoundError:
-                        print(f"  ✓ Already cleaned: {tmp_file.name}")
-                        cleaned_count += 1
-                        break
-                    except (PermissionError, OSError) as e:
-                        if attempt < max_retries - 1:
-                            time.sleep(1)
-                        else:
-                            raise
-            except Exception as e:
-                print(f"  ✗ Failed to remove {tmp_file.name}: {e}")
-                failed_count += 1
-        
-        if cleaned_count > 0 or failed_count == 0:
-            print(f"  Cleaned: {cleaned_count}, Failed: {failed_count}")
+    except OSError as os_e:
+        print(f"OS error listing temporary files: {os_e}")
+        return
+    except TypeError as type_e:
+        print(f"Type error listing temporary files: {type_e}")
+        return
+    
+    if not tmp_files:
+        print("  ✓ No .compressed.tmp files found (already cleaned up)")
+        return
+    
+    cleaned_count = 0
+    failed_count = 0
+    
+    for tmp_file in tmp_files:
+        try:
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    os.remove(tmp_file)
+                    print(f"  ✓ Removed: {tmp_file.name}")
+                    cleaned_count += 1
+                    break
+                except FileNotFoundError:
+                    print(f"  ✓ Already cleaned: {tmp_file.name}")
+                    cleaned_count += 1
+                    break
+                except (PermissionError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                    else:
+                        raise
+        except FileNotFoundError as fnf_e:
+            print(f"  ✓ Already removed {tmp_file.name}")
+            cleaned_count += 1
+        except PermissionError as perm_e:
+            print(f"  ✗ Permission denied: {tmp_file.name}")
+            failed_count += 1
+        except OSError as os_e:
+            print(f"  ✗ Failed to remove {tmp_file.name}: {os_e}")
+            failed_count += 1
+    
+    if cleaned_count > 0 or failed_count == 0:
+        print(f"  Cleaned: {cleaned_count}, Failed: {failed_count}")
 
     def _cleanup_on_error(self, original_image_path, temp_files_to_show):
-        """Show dialog to let user select which files to delete - APPROCHE DIRECTE"""
+        """Show dialog to let user select which files to delete"""
         try:
             print("\n" + "="*60)
             print("CLEANUP - MANAGING INTERMEDIATE/OPTIMIZED FILES")
@@ -3012,39 +3026,17 @@ class QCow2CloneResizerGUI:
                 except OSError:
                     print(f"  - {f.name}")
             
-            # Reset dialog
-            print("Creating file selection dialog from worker thread...")
+            print("Creating file selection dialog...")
             self.dialog_result_event.clear()
             self.dialog_result_value = None
             
-            # APPROCHE DIRECTE: Créer et montrer le dialog DIRECTEMENT dans le worker thread
-            # mais demander au root de le traiter immédiatement
-            self.root.after(0, self._create_and_show_file_selection_dialog, existing_files, Path(original_image_path))
+            self.root.update()
+            self._create_and_show_file_selection_dialog(existing_files, Path(original_image_path))
             
-            # Traiter les événements Tkinter depuis le worker thread
-            # Cela permet au dialog de s'afficher et d'être interactif
-            print("Processing Tkinter events to display dialog...")
-            start_time = time.time()
-            timeout = 300  # 5 minutes
-            
-            while not self.dialog_result_event.is_set():
-                try:
-                    # Permettre à Tkinter de traiter les événements
-                    self.root.update()
-                    time.sleep(0.05)
-                    
-                    # Vérifier le timeout
-                    if time.time() - start_time > timeout:
-                        print("Dialog timeout - user didn't respond in 5 minutes")
-                        return False
-                        
-                except tk.TclError:
-                    # La fenêtre root a été détruite
-                    print("Root window was destroyed")
-                    return False
-                except Exception as e:
-                    print(f"Error processing events: {e}")
-                    time.sleep(0.1)
+            # Wait for user response with timeout
+            if not self.dialog_result_event.wait(timeout=300):
+                print("Dialog timeout - user didn't respond in 5 minutes")
+                return False
             
             selected_files = self.dialog_result_value
             
@@ -3074,18 +3066,32 @@ class QCow2CloneResizerGUI:
                                 time.sleep(1)
                             else:
                                 raise
-                except Exception as e:
-                    print(f"Failed to remove {file_path.name}: {e}")
+                except FileNotFoundError as fnf_e:
+                    print(f"File already removed {file_path.name}: {fnf_e}")
+                    files_removed.append(file_path.name)
+                except PermissionError as perm_e:
+                    print(f"Permission denied removing {file_path.name}: {perm_e}")
+                    files_failed.append(file_path.name)
+                except OSError as os_e:
+                    print(f"Failed to remove {file_path.name}: {os_e}")
                     files_failed.append(file_path.name)
             
             print(f"\nCleanup: {len(files_removed)} deleted, {len(files_failed)} failed")
             return True
             
-        except Exception as e:
-            print(f"Error during error cleanup: {e}")
-            import traceback
-            traceback.print_exc()
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error during cleanup: {tcl_e}")
             return False
+        except ValueError as val_e:
+            print(f"Value error during cleanup: {val_e}")
+            return False
+        except TypeError as type_e:
+            print(f"Type error during cleanup: {type_e}")
+            return False
+        except AttributeError as attr_e:
+            print(f"Attribute error during cleanup: {attr_e}")
+            return False
+
     
 def main():
     """Main entry point"""
