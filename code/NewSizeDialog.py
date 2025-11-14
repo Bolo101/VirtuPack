@@ -13,55 +13,67 @@ class NewSizeDialog:
         self.partition_changes = partition_changes
         self.result = None
         
-        # Create dialog with better sizing
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title("New Image Size - Based on Final Partition Layout")
-        
-        # Make dialog modal and ensure it stays on top
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.focus_force()
-        
-        # Get screen dimensions for proper sizing
-        screen_width = self.dialog.winfo_screenwidth()
-        screen_height = self.dialog.winfo_screenheight()
-        
-        # Set dialog size to 80% of screen height, max 800px wide
-        dialog_width = min(800, int(screen_width * 0.6))
-        dialog_height = min(700, int(screen_height * 0.8))
-        
-        # Center on screen
-        x = (screen_width - dialog_width) // 2
-        y = (screen_height - dialog_height) // 2
-        self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
-        
-        # Make dialog resizable
-        self.dialog.resizable(True, True)
-        self.dialog.minsize(600, 500)
-        
-        # Ensure dialog is properly displayed before continuing
-        self.dialog.update_idletasks()
-        
-        self.setup_ui()
-        
-        # Add proper dialog close handling
-        self.dialog.protocol("WM_DELETE_WINDOW", self.skip_cloning)
-        
-        # CRITICAL: Use wait_window instead of custom event handling
-        # This is safe when called from root.after(0, ...) in the worker thread
         try:
-            self.dialog.lift()
-            self.dialog.attributes('-topmost', True)
-            self.dialog.after_idle(lambda: self.dialog.attributes('-topmost', False))
+            # Create dialog with better sizing
+            self.dialog = tk.Toplevel(parent)
+            self.dialog.title("New Image Size - Based on Final Partition Layout")
             
-            # Wait for the dialog to complete
-            self.dialog.wait_window()
-        except tk.TclError as e:
-            print(f"Dialog wait TCL error: {e}")
+            # Make dialog modal and ensure it stays on top
+            self.dialog.transient(parent)
+            self.dialog.grab_set()
+            self.dialog.focus_force()
+            
+            # Get screen dimensions for proper sizing
+            screen_width = self.dialog.winfo_screenwidth()
+            screen_height = self.dialog.winfo_screenheight()
+            
+            # Set dialog size to 80% of screen height, max 800px wide
+            dialog_width = min(800, int(screen_width * 0.6))
+            dialog_height = min(700, int(screen_height * 0.8))
+            
+            # Center on screen
+            x = (screen_width - dialog_width) // 2
+            y = (screen_height - dialog_height) // 2
+            self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+            
+            # Make dialog resizable
+            self.dialog.resizable(True, True)
+            self.dialog.minsize(600, 500)
+            
+            # Ensure dialog is properly displayed before continuing
+            self.dialog.update_idletasks()
+            
+            self.setup_ui()
+            
+            # Add proper dialog close handling
+            self.dialog.protocol("WM_DELETE_WINDOW", self.skip_cloning)
+            
+            # CRITICAL: Use wait_window instead of custom event handling
+            # This is safe when called from root.after(0, ...) in the worker thread
+            try:
+                self.dialog.lift()
+                self.dialog.attributes('-topmost', True)
+                self.dialog.after_idle(lambda: self.dialog.attributes('-topmost', False))
+                
+                # Wait for the dialog to complete
+                self.dialog.wait_window()
+            except tk.TclError as tcl_e:
+                print(f"Dialog wait TCL error: {tcl_e}")
+                self.result = None
+            except AttributeError as attr_e:
+                print(f"Dialog attribute error during wait: {attr_e}")
+                self.result = None
+            
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error during dialog initialization: {tcl_e}")
             self.result = None
-        except Exception as e:
-            print(f"Dialog wait error: {e}")
+        except TypeError as type_e:
+            print(f"Type error during dialog initialization: {type_e}")
             self.result = None
+        except AttributeError as attr_e:
+            print(f"Attribute error during dialog initialization: {attr_e}")
+            self.result = None
+
 
     def setup_ui(self):
         """Setup dialog UI with scrollable content"""
@@ -83,15 +95,13 @@ class NewSizeDialog:
             canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
             canvas.configure(yscrollcommand=scrollbar.set)
             
-            # Pack scrollable components
             canvas.pack(side="left", fill="both", expand=True)
             scrollbar.pack(side="right", fill="y")
             
-            # Enable mouse wheel scrolling
             def _on_mousewheel(event):
                 try:
                     canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-                except:
+                except (AttributeError, ZeroDivisionError, TypeError):
                     pass
             
             canvas.bind_all("<MouseWheel>", _on_mousewheel)
@@ -163,7 +173,6 @@ class NewSizeDialog:
                 ttk.Radiobutton(size_frame, text=f"Keep Original Size: {QCow2CloneResizer.format_size(self.original_size)} (no space savings)", 
                             variable=self.choice, value="original").pack(anchor="w", pady=2)
             else:
-                # Original is too small
                 shortage = min_size_with_buffer - self.original_size
                 ttk.Label(size_frame, text=f"Original size insufficient - needs {QCow2CloneResizer.format_size(shortage)} more space", 
                         foreground="red", font=("Arial", 8)).pack(anchor="w", pady=2)
@@ -175,7 +184,6 @@ class NewSizeDialog:
             ttk.Radiobutton(custom_frame, text="Custom size:", 
                         variable=self.choice, value="custom").pack(side="left")
             
-            # Default custom size
             default_gb = max(1, int(min_size_with_buffer / (1024**3)) + 1)
             self.custom_size = tk.StringVar(value=f"{default_gb}G")
             custom_entry = ttk.Entry(custom_frame, textvariable=self.custom_size, width=12, font=("Arial", 9))
@@ -202,15 +210,13 @@ class NewSizeDialog:
             exp_label = ttk.Label(exp_frame, text=explanation, wraplength=500, justify="left", font=("Arial", 9))
             exp_label.pack()
             
-            # Buttons outside scrollable area, always visible
+            # Buttons outside scrollable area
             button_container = ttk.Frame(main_container)
             button_container.pack(fill="x", pady=(10, 0))
             
-            # Separator line
             separator = ttk.Separator(button_container, orient="horizontal")
             separator.pack(fill="x", pady=(0, 10))
             
-            # Buttons frame
             button_frame = ttk.Frame(button_container)
             button_frame.pack(fill="x")
             
@@ -222,15 +228,25 @@ class NewSizeDialog:
                                 command=self.skip_cloning)
             cancel_btn.pack(side="right", pady=5)
             
-            # Add keyboard shortcuts
             self.dialog.bind('<Return>', lambda e: self.create_new())
             self.dialog.bind('<Escape>', lambda e: self.skip_cloning())
             
-            # Focus on the create button
             create_btn.focus_set()
             
-        except Exception as e:
-            print(f"UI setup error: {e}")
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error during UI setup: {tcl_e}")
+            self._create_fallback_ui()
+        except KeyError as key_e:
+            print(f"Missing key in layout_info during UI setup: {key_e}")
+            self._create_fallback_ui()
+        except TypeError as type_e:
+            print(f"Type error in UI setup: {type_e}")
+            self._create_fallback_ui()
+        except AttributeError as attr_e:
+            print(f"Attribute error during UI setup: {attr_e}")
+            self._create_fallback_ui()
+        except ValueError as val_e:
+            print(f"Value error during UI setup: {val_e}")
             self._create_fallback_ui()
     
     def _create_fallback_ui(self):
@@ -240,22 +256,29 @@ class NewSizeDialog:
             fallback_frame.pack(fill="both", expand=True)
             
             ttk.Label(fallback_frame, text="Dialog Error - Using Fallback Interface", 
-                     font=("Arial", 12, "bold"), foreground="red").pack(pady=(0, 20))
+                    font=("Arial", 12, "bold"), foreground="red").pack(pady=(0, 20))
             
             ttk.Label(fallback_frame, text="Use calculated minimum size?", 
-                     font=("Arial", 10)).pack(pady=(0, 20))
+                    font=("Arial", 10)).pack(pady=(0, 20))
             
             button_frame = ttk.Frame(fallback_frame)
             button_frame.pack(fill="x")
             
             ttk.Button(button_frame, text="Yes - Create New Image", 
-                      command=self._fallback_create).pack(side="right", padx=(10, 0))
+                    command=self._fallback_create).pack(side="right", padx=(10, 0))
             ttk.Button(button_frame, text="No - Skip Cloning", 
-                      command=self.skip_cloning).pack(side="right")
+                    command=self.skip_cloning).pack(side="right")
             
-        except Exception as e:
-            print(f"Fallback UI creation failed: {e}")
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error in fallback UI: {tcl_e}")
             self.result = None
+        except AttributeError as attr_e:
+            print(f"Attribute error in fallback UI: {attr_e}")
+            self.result = None
+        except TypeError as type_e:
+            print(f"Type error in fallback UI: {type_e}")
+            self.result = None
+
     
     def _fallback_create(self):
         """Fallback create method using minimum size"""
@@ -263,8 +286,16 @@ class NewSizeDialog:
             self.result = self.final_layout_info['required_minimum_bytes']
             # CRITICAL: Just destroy, don't call quit()
             self.dialog.destroy()
-        except Exception as e:
-            print(f"Fallback create error: {e}")
+        except KeyError as key_e:
+            print(f"Missing 'required_minimum_bytes' key in fallback create: {key_e}")
+            self.result = None
+            self.skip_cloning()
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error in fallback create: {tcl_e}")
+            self.result = None
+            self.skip_cloning()
+        except AttributeError as attr_e:
+            print(f"Attribute error in fallback create: {attr_e}")
             self.result = None
             self.skip_cloning()
     
@@ -293,24 +324,26 @@ class NewSizeDialog:
                     f"Need {QCow2CloneResizer.format_size(shortage)} more space.")
                 return
             
-            # Store result and close dialog
             self.result = new_size
             print(f"NewSizeDialog: User selected size {new_size} bytes")
             
-            # CRITICAL: Just destroy, don't call quit()
-            # quit() can cause the mainloop to exit completely
             self.dialog.destroy()
             
-        except ValueError as e:
-            messagebox.showerror("Invalid Size", f"Error parsing size: {e}")
-        except Exception as e:
-            print(f"Create new error: {e}")
-            # Try to set result anyway
+        except KeyError as key_e:
+            print(f"Missing key in dialog data: {key_e}")
+            messagebox.showerror("Data Error", f"Missing configuration data: {key_e}")
+        except ValueError as val_e:
+            messagebox.showerror("Invalid Size", f"Error parsing size: {val_e}")
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error during create: {tcl_e}")
             try:
                 self.result = self.final_layout_info['required_minimum_bytes']
                 self.dialog.destroy()
-            except:
+            except (KeyError, tk.TclError):
                 self.result = None
+        except AttributeError as attr_e:
+            print(f"Attribute error: {attr_e}")
+            messagebox.showerror("Error", f"Configuration attribute missing: {attr_e}")
     
     def skip_cloning(self):
         """Skip cloning - keep original image with changes"""
@@ -319,6 +352,9 @@ class NewSizeDialog:
             print("NewSizeDialog: User skipped cloning")
             # CRITICAL: Just destroy, don't call quit()
             self.dialog.destroy()
-        except Exception as e:
-            print(f"Skip cloning error: {e}")
+        except tk.TclError as tcl_e:
+            print(f"Tkinter error destroying dialog on skip: {tcl_e}")
+            self.result = None
+        except AttributeError as attr_e:
+            print(f"Attribute error destroying dialog on skip: {attr_e}")
             self.result = None
