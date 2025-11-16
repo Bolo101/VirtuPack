@@ -44,6 +44,10 @@ parted
 ntfs-3g
 python3
 qemu-utils
+qemu-kvm
+virt-manager
+bridge-utils
+libvirt-daemon
 python3-tk
 dosfstools
 firmware-linux-free
