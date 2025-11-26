@@ -21,6 +21,7 @@ from disk_mount_dialog import DiskMountDialog
 from qcow2_resize_dialog import QCow2CloneResizerGUI
 from image_format_converter import ImageFormatConverter
 from delete_file import FileDeleteManager
+from virt_launcher import VirtManagerLauncher
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
@@ -252,11 +253,17 @@ class P2VConverterGUI:
                                     width=14)
             convert_btn.grid(row=0, column=3, padx=(0, 2))
             
-            # NEW: Delete Files button
+            # Delete Files button
             delete_files_btn = ttk.Button(browse_frame, text="Delete Files", 
                                         command=self.open_delete_files_manager, 
                                         width=12)
             delete_files_btn.grid(row=0, column=4, padx=(0, 0))
+
+            # Virt-Manager button
+            virt_btn = ttk.Button(browse_frame, text="Virt-Manager", 
+                                command=self.open_virt_manager, 
+                                width=12)
+            virt_btn.grid(row=0, column=5, padx=(5, 0))
 
             # Add tooltip/description for the tools buttons
             tools_info_frame = ttk.Frame(vm_config_frame)
@@ -552,6 +559,192 @@ class P2VConverterGUI:
             log_error(error_msg)
             messagebox.showerror("Dialog Error", error_msg)
     
+    def open_virt_manager(self):
+        """Open virt-manager with proper permissions for VM management"""
+        try:
+            log_info("Checking virt-manager availability")
+            
+            # Check if virt-manager is available
+            missing_tools, available = VirtManagerLauncher.check_virt_manager()
+            
+            if not available:
+                error_msg = "Required virtualization tools are missing:\n\n"
+                error_msg += "\n".join(f"• {tool}" for tool in missing_tools)
+                error_msg += "\n\nPlease install the missing packages"
+                
+                log_error(f"Virt-manager check failed: {', '.join(missing_tools)}")
+                messagebox.showerror("Missing Virtualization Tools", error_msg)
+                return
+            
+            log_info("Virt-manager is available, launching...")
+            
+            # Show confirmation dialog
+            confirm_msg = (
+                "Launch Virt-Manager\n\n"
+                "This will open virt-manager for virtual machine management.\n\n"
+                "You can:\n"
+                "• Create new VMs\n"
+                "• Import/manage existing VM images\n"
+                "• Configure VM hardware settings\n"
+                "• Install guest operating systems\n\n"
+                "Continue?"
+            )
+            
+            if not messagebox.askyesno("Launch Virt-Manager", confirm_msg):
+                log_info("User cancelled virt-manager launch")
+                return
+            
+            log_info("User confirmed virt-manager launch")
+            
+            # Disable button during launch
+            self.status_var.set("Launching virt-manager...")
+            self.root.update_idletasks()
+            
+            # Launch virt-manager
+            try:
+                VirtManagerLauncher.launch_virt_manager(log_callback=log_info)
+                
+                log_info("Virt-manager launched successfully")
+                self.status_var.set("Virt-manager is running")
+                self.operation_details.config(text="Virt-manager opened in background", 
+                                            foreground="green")
+                
+                messagebox.showinfo("Virt-Manager Launched", 
+                                  "Virt-manager is now running.\n\n"
+                                  "You can import or create virtual machines from your disk images.\n"
+                                  "Close this dialog and virt-manager window when finished.")
+            
+            except FileNotFoundError as e:
+                error_msg = f"Virt-manager not found: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("Virt-Manager Not Found", error_msg)
+            
+            except PermissionError as e:
+                error_msg = (
+                    f"Permission denied: {str(e)}\n\n"
+                    "Virt-manager requires root privileges.\n\n"
+                    "Solutions:\n"
+                    "• Run the application with: sudo python3 p2v_dialog.py\n"
+                    "• Install and configure polkit for privilege escalation\n"
+                    "• Ensure you have sudo access"
+                )
+                log_error(error_msg)
+                messagebox.showerror("Permission Denied", error_msg)
+            
+            except OSError as e:
+                error_msg = f"System error launching virt-manager: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("System Error", error_msg)
+            
+            except subprocess.CalledProcessError as e:
+                error_msg = f"Virt-manager failed to start: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("Launch Error", error_msg)
+            
+            except subprocess.TimeoutExpired as e:
+                error_msg = f"Virt-manager launch timed out: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("Timeout Error", error_msg)
+            
+            except subprocess.SubprocessError as e:
+                error_msg = f"Subprocess error: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("Subprocess Error", error_msg)
+            
+            except ImportError as e:
+                error_msg = f"Virt-Manager launcher not available: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("Import Error", error_msg)
+            
+            except (AttributeError, TypeError) as e:
+                error_msg = f"Internal error: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("Internal Error", error_msg)
+        
+        except tk.TclError as e:
+            error_msg = f"GUI error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("GUI Error", error_msg)
+        
+        except (KeyError, ValueError) as e:
+            error_msg = f"Configuration error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Configuration Error", error_msg)
+        
+        finally:
+            self.status_var.set("Ready")
+    
+    def launch_virt_manager_with_image(self, image_path):
+        """
+        Launch virt-manager with a specific VM image
+        
+        Args:
+            image_path: Path to the VM image file
+        """
+        try:
+            if not os.path.exists(image_path):
+                error_msg = f"Image file not found: {image_path}"
+                log_error(error_msg)
+                messagebox.showerror("File Not Found", error_msg)
+                return
+            
+            log_info(f"Launching virt-manager with image: {image_path}")
+            
+            # Disable button during launch
+            self.status_var.set("Preparing VM image...")
+            self.root.update_idletasks()
+            
+            # Launch with image
+            try:
+                VirtManagerLauncher.launch_virt_manager_with_image(
+                    image_path, 
+                    log_callback=log_info
+                )
+                
+                log_info(f"Virt-manager launched with image: {image_path}")
+                self.status_var.set("Virt-manager is running")
+                self.operation_details.config(
+                    text=f"Virt-manager opened with: {Path(image_path).name}", 
+                    foreground="green"
+                )
+                
+                messagebox.showinfo("Virt-Manager Launched", 
+                                  f"Virt-manager is now running with your VM image.\n\n"
+                                  f"File: {Path(image_path).name}\n"
+                                  f"Size: {VirtManagerLauncher.format_size(os.path.getsize(image_path))}")
+            
+            except FileNotFoundError as e:
+                error_msg = f"Error: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("File Error", error_msg)
+            
+            except PermissionError as e:
+                error_msg = (
+                    f"Permission error: {str(e)}\n\n"
+                    "Cannot access the VM image file.\n\n"
+                    "Ensure proper file permissions and ownership."
+                )
+                log_error(error_msg)
+                messagebox.showerror("Permission Error", error_msg)
+            
+            except OSError as e:
+                error_msg = f"System error: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("System Error", error_msg)
+            
+            except subprocess.SubprocessError as e:
+                error_msg = f"Subprocess error: {str(e)}"
+                log_error(error_msg)
+                messagebox.showerror("Subprocess Error", error_msg)
+        
+        except tk.TclError as e:
+            error_msg = f"GUI error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("GUI Error", error_msg)
+        
+        finally:
+            self.status_var.set("Ready")
+
     def create_status_frame(self):
         """Create the status frame at the bottom"""
         status_frame = ttk.Frame(self.root, padding="10")
