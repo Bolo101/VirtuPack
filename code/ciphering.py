@@ -240,7 +240,7 @@ class LUKSCiphering:
             return False
         
         password = self.password.get()
-        password_confirm = self.password_confirm.get()
+        mode = self.mode.get()
         
         if not password:
             messagebox.showwarning("No Password", "Please enter a password")
@@ -252,10 +252,13 @@ class LUKSCiphering:
             log_warning("Validation failed: password too weak (less than 8 characters)")
             return False
         
-        if password != password_confirm:
-            messagebox.showerror("Password Mismatch", "Passwords do not match")
-            log_error("Validation failed: password mismatch")
-            return False
+        # En mode encryption, vérifier la confirmation
+        if mode == 'encrypt':
+            password_confirm = self.password_confirm.get()
+            if password != password_confirm:
+                messagebox.showerror("Password Mismatch", "Passwords do not match")
+                log_error("Validation failed: password mismatch")
+                return False
         
         log_info("All inputs validated successfully")
         return True
@@ -881,6 +884,9 @@ class LUKSCiphering:
             
             log_info(f"Opening encrypted container: {source_path}")
             
+            # Nettoyer le mot de passe (supprimer espaces inutiles)
+            password = password.strip()
+            
             open_cmd = [
                 'cryptsetup', 'open',
                 source_path,
@@ -896,10 +902,12 @@ class LUKSCiphering:
                 preexec_fn=self._restrict_process
             )
             
-            stdout, stderr = proc.communicate(input=password + "\n")
+            # Utiliser communicate() pour un meilleur handling du password
+            stdout, stderr = proc.communicate(input=password + "\n", timeout=30)
             
             if proc.returncode != 0:
-                log_error("Failed to open encrypted container - invalid password or corrupted container")
+                log_error(f"Failed to open encrypted container - Return code: {proc.returncode}")
+                log_error(f"stderr: {stderr}")
                 raise subprocess.CalledProcessError(proc.returncode, 'cryptsetup open', 
                     "Mot de passe invalide ou conteneur corrompu")
             
