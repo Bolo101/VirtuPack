@@ -22,6 +22,7 @@ from qcow2_resize_dialog import QCow2CloneResizerGUI
 from image_format_converter import ImageFormatConverter
 from delete_file import FileDeleteManager
 from virt_launcher import VirtManagerLauncher
+from ciphering import LUKSCiphering
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
@@ -188,10 +189,10 @@ class P2VConverterGUI:
         separator.grid(row=0, column=0, sticky="ew", pady=(0, 5), columnspan=1)
     
     def create_main_frame(self):
-            """Create the main content frame - Updated with Format Converter and Delete Files buttons"""
+            """Create the main content frame - Updated with reorganized tool buttons"""
             main_frame = ttk.Frame(self.root, padding="10")
             main_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
-            main_frame.grid_rowconfigure(4, weight=1)
+            main_frame.grid_rowconfigure(8, weight=1)
             main_frame.grid_columnconfigure(0, weight=1)
             
             # Source disk selection frame
@@ -232,51 +233,57 @@ class P2VConverterGUI:
             output_entry = ttk.Entry(output_frame, textvariable=self.output_path, font=("Arial", 9))
             output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
             
-            # Enhanced browse button with dropdown - Updated with Format Converter and Delete Files buttons
-            browse_frame = ttk.Frame(output_frame)
-            browse_frame.grid(row=0, column=1)
+            # Primary action buttons row (Browse, Mount, Delete Files)
+            primary_tools_frame = ttk.Frame(output_frame)
+            primary_tools_frame.grid(row=0, column=1)
             
-            browse_btn = ttk.Button(browse_frame, text="Browse", command=self.browse_output_dir)
+            browse_btn = ttk.Button(primary_tools_frame, text="Browse", command=self.browse_output_dir)
             browse_btn.grid(row=0, column=0, padx=(0, 2))
             
-            mount_btn = ttk.Button(browse_frame, text="Mount Disk", command=self.mount_disk_dialog)
+            mount_btn = ttk.Button(primary_tools_frame, text="Mount Disk", command=self.mount_disk_dialog)
             mount_btn.grid(row=0, column=1, padx=(0, 2))
             
-            # QCOW2 Clone Resize button
-            resize_btn = ttk.Button(browse_frame, text="QCOW2 Resize", command=self.open_qcow2_resizer,
-                                width=12)
-            resize_btn.grid(row=0, column=2, padx=(0, 2))
-
-            # Format Converter button
-            convert_btn = ttk.Button(browse_frame, text="Format Converter", 
-                                    command=self.open_format_converter, 
-                                    width=14)
-            convert_btn.grid(row=0, column=3, padx=(0, 2))
+            delete_files_btn = ttk.Button(primary_tools_frame, text="Delete Files", 
+                                        command=self.open_delete_files_manager)
+            delete_files_btn.grid(row=0, column=2)
             
-            # Delete Files button
-            delete_files_btn = ttk.Button(browse_frame, text="Delete Files", 
-                                        command=self.open_delete_files_manager, 
-                                        width=12)
-            delete_files_btn.grid(row=0, column=4, padx=(0, 0))
-
-            # Virt-Manager button
-            virt_btn = ttk.Button(browse_frame, text="Virt-Manager", 
-                                command=self.open_virt_manager, 
-                                width=12)
-            virt_btn.grid(row=0, column=5, padx=(5, 0))
-
-            # Add tooltip/description for the tools buttons
-            tools_info_frame = ttk.Frame(vm_config_frame)
-            tools_info_frame.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=(5, 0))
+            # Secondary tools row (QCOW2 Resize, Format Converter, LUKS Cipher, Virt-Manager)
+            secondary_tools_label = ttk.Label(vm_config_frame, text="Utility Tools:", font=("Arial", 9, "bold"))
+            secondary_tools_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 8))
             
-            tools_info_label = ttk.Label(tools_info_frame, 
-                                        text="Tools: QCOW2 Resize | Format Converter | Delete Files (cleanup utility)",
+            # Tools in two rows with equal weight distribution
+            tools_row1_frame = ttk.Frame(vm_config_frame)
+            tools_row1_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=(10, 0), pady=(0, 5))
+            tools_row1_frame.grid_columnconfigure(0, weight=1)
+            tools_row1_frame.grid_columnconfigure(1, weight=1)
+            tools_row1_frame.grid_columnconfigure(2, weight=1)
+            tools_row1_frame.grid_columnconfigure(3, weight=1)
+            
+            resize_btn = ttk.Button(tools_row1_frame, text="QCOW2 Resize", 
+                                command=self.open_qcow2_resizer)
+            resize_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
+            
+            convert_btn = ttk.Button(tools_row1_frame, text="Format Converter", 
+                                    command=self.open_format_converter)
+            convert_btn.grid(row=0, column=1, padx=(0, 5), sticky="ew")
+            
+            cipher_btn = ttk.Button(tools_row1_frame, text="LUKS Encryption", 
+                                command=self.open_luks_ciphering)
+            cipher_btn.grid(row=0, column=2, padx=(0, 5), sticky="ew")
+            
+            virt_btn = ttk.Button(tools_row1_frame, text="Virt-Manager", 
+                                command=self.open_virt_manager)
+            virt_btn.grid(row=0, column=3, sticky="ew")
+            
+            # Tools description
+            tools_info_label = ttk.Label(vm_config_frame, 
+                                        text="Resize QCOW2 images • Convert disk formats • Encrypt/decrypt with LUKS • Manage virtual machines",
                                         font=("Arial", 8), foreground="gray")
-            tools_info_label.grid(row=0, column=0, sticky="w")
+            tools_info_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(5, 0))
             
             # Space information frame
             space_frame = ttk.LabelFrame(main_frame, text="Storage Space Information", padding="10")
-            space_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+            space_frame.grid(row=6, column=0, sticky="ew", pady=(0, 10))
             
             self.space_info_text = tk.Text(space_frame, height=6, wrap=tk.WORD, state=tk.DISABLED, 
                                         font=("Consolas", 9), bg="#f8f8f8")
@@ -291,7 +298,8 @@ class P2VConverterGUI:
             
             # Control buttons frame
             control_frame = ttk.Frame(main_frame)
-            control_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+            control_frame.grid(row=7, column=0, sticky="ew", pady=(0, 10))
+            control_frame.grid_columnconfigure(1, weight=1)
             
             self.check_space_btn = ttk.Button(control_frame, text="Check Space Requirements", 
                                             command=self.check_space_requirements)
@@ -299,19 +307,19 @@ class P2VConverterGUI:
             
             self.convert_btn = ttk.Button(control_frame, text="Start P2V Conversion", 
                                         command=self.start_conversion)
-            self.convert_btn.grid(row=0, column=1, padx=(0, 10))
+            self.convert_btn.grid(row=0, column=1, padx=(0, 10), sticky="w")
             
             self.stop_btn = ttk.Button(control_frame, text="Stop Operation", 
                                     command=self.stop_operation, state=tk.DISABLED)
-            self.stop_btn.grid(row=0, column=2, padx=(0, 10))
+            self.stop_btn.grid(row=0, column=1, padx=(0, 10), sticky="e")
             
             self.clear_log_btn = ttk.Button(control_frame, text="Clear Display", 
                                         command=self.clear_log_display)
-            self.clear_log_btn.grid(row=0, column=3)
+            self.clear_log_btn.grid(row=0, column=2)
             
             # Progress and log area
             log_frame = ttk.LabelFrame(main_frame, text="Operation Log", padding="5")
-            log_frame.grid(row=4, column=0, sticky="nsew")
+            log_frame.grid(row=5, column=0, sticky="nsew")
             log_frame.grid_rowconfigure(0, weight=1)
             log_frame.grid_columnconfigure(0, weight=1)
             
@@ -389,6 +397,64 @@ class P2VConverterGUI:
             log_error(error_msg)
             messagebox.showerror("System Error", 
                             f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
+            
+    def open_luks_ciphering(self):
+        """Open the LUKS Encryption dialog as a modal window"""
+        try:
+            log_info("Opening LUKS Encryption dialog")
+            
+            # Create the ciphering directly - it creates its own Toplevel window
+            ciphering_app = LUKSCiphering(self.root)
+            
+            log_info("LUKS Encryption dialog opened")
+            
+        except ImportError as e:
+            error_msg = f"LUKS Ciphering not available: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Feature Not Available", 
+                            "LUKS Encryption feature is not available.\n\n"
+                            "Please ensure ciphering.py is in the same directory.\n\n"
+                            f"Missing dependency: {str(e)}")
+        except AttributeError as e:
+            error_msg = f"Error initializing LUKS Ciphering: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Initialization Error", 
+                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
+        except tk.TclError as e:
+            error_msg = f"Window creation error: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Window Error", 
+                            f"Failed to create LUKS Ciphering window:\n\n{error_msg}")
+        except TypeError as e:
+            error_msg = f"Type error initializing LUKS Ciphering: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Type Error", 
+                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
+        except ValueError as e:
+            error_msg = f"Invalid value for LUKS Ciphering: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Value Error", 
+                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
+        except MemoryError as e:
+            error_msg = "Insufficient memory to open LUKS Ciphering"
+            log_error(error_msg)
+            messagebox.showerror("Memory Error", 
+                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+        except OSError as e:
+            error_msg = f"System error opening LUKS Ciphering: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("System Error", 
+                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+        except FileNotFoundError as e:
+            error_msg = f"Required file not found: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("File Not Found", 
+                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+        except PermissionError as e:
+            error_msg = f"Permission denied: {str(e)}"
+            log_error(error_msg)
+            messagebox.showerror("Permission Error", 
+                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
 
     def open_delete_files_manager(self):
             """Open the Delete Files Manager for interactive file deletion"""
