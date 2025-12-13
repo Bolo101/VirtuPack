@@ -48,6 +48,7 @@ qemu-kvm
 virt-manager
 bridge-utils
 libvirt-daemon
+libvirt-clients
 python3-tk
 dosfstools
 firmware-linux-free
@@ -196,14 +197,55 @@ Section "Monitor"
 EndSection
 EOF
 
+# Configure libvirt to allow access to external drives
+echo "Configuring libvirt for external drive access..."
+mkdir -p config/includes.chroot/etc/libvirt/
+
+# Create custom qemu.conf to allow access to /mnt and /media
+cat << 'EOF' > config/includes.chroot/etc/libvirt/qemu.conf
+# Run qemu as root to access external drives
+user = "root"
+group = "root"
+
+# Disable security driver restrictions - needed for external drives
+security_driver = "none"
+
+# Allow dynamic ownership of files
+dynamic_ownership = 0
+
+# Set VNC listen address
+vnc_listen = "0.0.0.0"
+
+# Allow stdio in monitor
+stdio_handler = "file"
+EOF
+
+# Ensure libvirtd starts and runs on boot
+mkdir -p config/includes.chroot/etc/systemd/system/
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/libvirtd-startup.service
+[Unit]
+Description=Start libvirtd daemon on boot
+After=network.target
+Before=virt-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl start libvirtd
+ExecStart=/bin/sleep 2
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 # Copy all files from CODE_DIR to /usr/local/bin
 echo "Copying all files from $CODE_DIR to /usr/local/bin..."
 mkdir -p config/includes.chroot/usr/local/bin/
 cp -r "$CODE_DIR"/* config/includes.chroot/usr/local/bin/
 chmod +x config/includes.chroot/usr/local/bin/*
 
-# Create symbolic link 'de' -> main.py
-ln -s /usr/local/bin/main.py config/includes.chroot/usr/local/bin/d2q
+# Create symbolic link 'd2q' -> main.py
+ln -sf /usr/local/bin/main.py config/includes.chroot/usr/local/bin/d2q
 
 # Allow sudo without password
 echo "Configuring sudo to be passwordless..."
@@ -287,6 +329,36 @@ if grep -q "boot=live" /proc/cmdline; then
 fi
 EOF
 
+# Create a boot hook script to ensure libvirtd starts properly
+echo "Creating libvirtd boot initialization hook..."
+mkdir -p config/includes.chroot/lib/live/boot
+cat << 'EOF' > config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
+#!/bin/sh
+# Initialize libvirtd for live system
+
+echo "Initializing libvirt daemon for live system..."
+
+# Create necessary directories
+mkdir -p /var/lib/libvirt/images
+mkdir -p /var/lib/libvirt/qemu
+mkdir -p /var/run/libvirt
+
+# Ensure directories have correct permissions
+chmod 755 /var/lib/libvirt
+chmod 755 /var/lib/libvirt/images
+chmod 755 /var/lib/libvirt/qemu
+chmod 755 /var/run/libvirt
+
+# Start libvirtd daemon
+/usr/sbin/libvirtd -d
+
+# Give it a moment to start
+sleep 2
+
+echo "libvirt daemon initialized"
+EOF
+chmod +x config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
+
 # Configure Boot Menu (Syslinux)
 mkdir -p config/includes.binary/isolinux
 cat << 'EOF' > config/includes.binary/isolinux/menu.cfg
@@ -345,4 +417,4 @@ mv live-image-amd64.hybrid.iso "$ISO_NAME"
 # Cleanup
 sudo lb clean
 
-echo "Done."
+echo "Done. ISO created at: $ISO_NAME"
