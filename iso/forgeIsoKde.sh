@@ -11,7 +11,11 @@ CODE_DIR="$(pwd)/../code"
 # Install necessary tools
 echo "Installing live-build and required dependencies..."
 sudo apt update
-sudo apt install -y live-build python3 calamares calamares-settings-debian syslinux
+sudo apt install -y live-build python3 calamares calamares-settings-debian syslinux osinfo-db osinfo-db-tools
+
+# Update osinfo database for libvirt
+echo "Updating osinfo database for libvirt..."
+sudo osinfo-db-import --local --latest
 
 # Create working directory
 echo "Setting up live-build workspace..."
@@ -72,6 +76,8 @@ keyboard-configuration
 cryptsetup
 dmsetup
 systemd
+osinfo-db
+osinfo-db-tools
 EOF
 
 # Set system locale and keyboard layout to French AZERTY
@@ -319,7 +325,7 @@ if grep -q "boot=live" /proc/cmdline; then
 fi
 EOF
 
-# Create a boot hook script to ensure libvirtd starts properly
+# Create a boot hook script to ensure libvirtd starts properly and osinfo-db is updated
 echo "Creating libvirtd boot initialization hook..."
 mkdir -p config/includes.chroot/lib/live/boot
 cat << 'EOF' > config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
@@ -338,6 +344,12 @@ chmod 755 /var/lib/libvirt
 chmod 755 /var/lib/libvirt/images
 chmod 755 /var/lib/libvirt/qemu
 chmod 755 /var/run/libvirt
+
+# Update osinfo database if network is available
+if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    echo "Updating osinfo database..."
+    osinfo-db-import --local --latest >/dev/null 2>&1 || true
+fi
 
 # Start libvirtd daemon
 /usr/sbin/libvirtd -d
