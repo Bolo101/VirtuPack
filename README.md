@@ -1,181 +1,306 @@
 # P2V Converter – Turn Physical Machines into Virtual Ones
 
-Ever needed to convert an old physical computer into a virtual machine? Whether you want to preserve a legacy system or migrate seamlessly to virtualized infrastructure, this tool takes a physical disk and creates a **qcow2 virtual machine image** ready for most hypervisors.
-
-The utility is safety-focused, prevents accidental imaging of running system disks, and provides a graphical interface. Optional scripts let you build a **bootable ISO** for safe offline conversion.
+Transform physical disks into **qcow2 virtual machine images** ready for any hypervisor. Safety-focused tool with intuitive GUI, preventing accidental imaging of running systems. Build a **bootable ISO** for safe offline conversion of any physical machine.
 
 ***
 
 ## Features
 
-- Converts any physical disk to a **compressed qcow2** image compatible with most virtualization software.
-- Progress bar and cancel button—see what's happening in real-time.
-- Prevents accidental imaging of the currently running system.
-- Optional mounting of extra disks for additional storage.
-- Disk resize utilities.
-- Detailed logging and optional PDF reporting.
-- **Supports QEMU/KVM, virt-manager, VirtualBox, VMware, Hyper-V, and more.**
+### Core Conversion
+- Converts physical disks to **compressed qcow2** images
+- Real-time progress tracking with cancel capability
+- Blocks conversion of active system disks and mounted partitions
+- Intelligent space analysis based on actual usage
+- Comprehensive logging to `/var/log/disk2qcow2.log`
+
+### Advanced Tools
+- **QCOW2 Resizer**: Optimize virtual disk size
+- **Format Converter**: Convert between qcow2, vmdk, vdi, vpc, vhdx, raw
+- **LUKS Encryption**: Secure VMs with password-protected containers
+- **Export Manager**: Transfer images via RSYNC
+- **File Manager**: Workspace cleanup
+- **Virt-Manager Integration**: Direct VM management
+- **External Storage Support**: Mount and use external drives
+
+### Supported Operating Systems
+- ✅ **Windows** (all versions - XP through 11, Server editions)
+- ✅ **Linux** (all distributions - Ubuntu, Debian, Fedora, CentOS, Arch, etc.)
 
 ***
 
-## Getting a Bootable ISO
+## Quick Start
 
-**Option 1:** Download a pre-built ISO  
-*(Update this URL in the future)*
+### Download Pre-built ISO (Recommended)
+**[Download P2V Converter ISO](https://archive.org/details/p2v-converter-iso)** *(insert actual link)*
 
-**Option 2:** Build your own ISO
+### Or Build Your Own
 
-```sh
+```bash
 cd iso/
-# For KDE Plasma:
-./forgeIsoKde.sh
-
-# For XFCE (lighter/faster):
-./forgeIsoXfce.sh
-
-# Or use the makefile:
-make kde-iso     # KDE-based ISO
-make xfce-iso    # XFCE-based ISO
+make kde-iso     # KDE Plasma environment
+make xfce-iso    # XFCE environment (lighter)
 make clean       # Clean build files
 ```
-
-Each script builds a Linux live environment with the P2V converter installed.
 
 ***
 
 ## Requirements
 
-**Running the converter (native install):**
+### ISO Method (Recommended - No Configuration)
+- USB drive (8GB+) or DVD
+- External storage drive for output
+- No additional setup needed
 
-- **On Ubuntu/Debian:**  
-  `sudo apt install qemu-utils python3-tk gparted`
-- **On Fedora/CentOS/RHEL:**  
-  `sudo dnf install qemu-img tkinter gparted`
+### Native Installation
 
-**For ISO building:**  
-Install `debootstrap squashfs-tools xorriso` as needed (the build scripts check for required dependencies).
+**Ubuntu/Debian:**
+```bash
+sudo apt install qemu-utils python3-tk gparted rsync cryptsetup virt-manager libvirt-daemon-system
+```
 
-***
+**Fedora/CentOS/RHEL:**
+```bash
+sudo dnf install qemu-img python3-tkinter gparted rsync cryptsetup virt-manager libvirt
+```
 
-## Getting Started
+**⚠️ Critical for External Storage:** Configure libvirt to access external drives:
 
-**Using the bootable ISO:**
+```bash
+sudo nano /etc/libvirt/qemu.conf
 
-- Download or build the ISO.
-- Write it to USB or DVD.
-- Boot target machine from the ISO.
-- The P2V Converter is available on the desktop or in the applications menu.
+# Add/modify these lines:
+user = "root"
+group = "root"
 
-**Note:** Root privileges are needed for raw disk access.
+cgroup_device_acl = [
+    "/dev/null", "/dev/full", "/dev/zero",
+    "/dev/random", "/dev/urandom",
+    "/dev/ptmx", "/dev/kvm",
+    "/dev/rtc", "/dev/hpet",
+    "/dev/sdb", "/dev/sdc", "/dev/sdd",  # Your external drives
+    "/dev/disk/by-uuid/*"
+]
 
-***
-
-## Workflow Overview
-
-- **Choose source disk:**  
-  Click "Refresh Disks" and select the physical disk for conversion; unsafe selections are blocked.
-
-- **Choose output directory:**  
-  Select where to store the new VM file. Use "Mount Disk" to attach extra storage.
-
-- **Check available space:**  
-  Use "Check Space Requirements" for a smart estimate based on used data.
-
-- **Start conversion:**  
-  Press "Start P2V Conversion"—your compressed qcow2 file will be created.
-
-- **Resize partitions with GParted:**  
-  After the initial image is created, the program offers to launch **GParted** to resize the virtual partitions. This lets you shrink or expand partitions before finalizing the QCOW2 image, helping generate a better-fitted and more compact virtual disk aligned with your partition changes.
-
-  Using GParted inside a VM or live environment allows safe adjustment of each partition’s size (e.g., reducing unused space). After resizing, create a new image reflecting these changes to optimize storage and VM performance.
+sudo systemctl restart libvirtd
+sudo usermod -a -G libvirt $USER
+```
 
 ***
 
-## Running The Converted VMs
+## Usage Workflow
+
+### 1. Boot from ISO
+- Write ISO to USB: `sudo dd if=p2v-converter.iso of=/dev/sdX bs=4M status=progress`
+- Boot target machine from USB
+- Launch "P2V Converter" from desktop
+
+### 2. Connect External Storage
+- Plug in external USB drive (don't mount manually)
+
+### 3. Configure Conversion
+
+**Select Source:**
+- Click **"Refresh Disks"**
+- Select disk to convert (system disks blocked for safety)
+
+**Mount External Storage:**
+- Click **"Mount Disk"** button
+- Select your external drive
+- Choose mount point (e.g., `/mnt/external`)
+- Click "Mount Selected Disk"
+- Output directory updates automatically
+
+**Verify Space:**
+- Click **"Check Space Requirements"**
+- Green indicator = sufficient space
+
+### 4. Convert
+- Click **"Start P2V Conversion"**
+- Monitor progress (cancel anytime if needed)
+- Typical time: 30-120 minutes depending on size
+
+### 5. Optional Post-Processing
+- **"QCOW2 Resize"**: Optimize disk size
+- **"LUKS Encryption"**: Secure with password
+- **"Format Converter"**: Convert to VMDK/VDI/VHD
+- **"Export Image"**: Transfer via RSYNC
+- **"Print Session Log"**: Generate PDF report
+
+***
+
+## Running Converted VMs
 
 ### Using virt-manager
 
-1. **Create a new VM in virt-manager**
-   - Click "New VM" and select "Import existing disk image".
-   - Browse to your qcow2 image.
-   - Choose the matching OS type/version.
-   - Allocate CPUs/RAM as required.
-   - On the last page, check "Customize configuration before install".
-
-2. **Set Firmware to match the source machine**
-   - In the customization window, switch to the "Overview" panel.
-   - Under "Firmware", select either:
-     - **UEFI** (modern systems — often shown as "UEFI x86_64: OVMF")
-     - **BIOS** (legacy systems)
-   - Click "Apply" to confirm your firmware selection.
-
-3. **Configure boot settings and Secure Boot**
-   - Ensure the boot order prioritizes the virtual disk to avoid booting from network or other devices.
-   - **Disable Secure Boot** in the virtual machine’s firmware settings or the host’s BIOS/UEFI, as most converted systems won’t boot with Secure Boot enabled.
-   - If you restore the image to physical hardware, disable Secure Boot and adjust boot device order in that machine’s BIOS/UEFI accordingly.
-
-4. **Start the VM**
-   - Begin installation or boot as usual in virt-manager.
-
-***
-
-## Running VMs Using CLI with qemu-system-x86_64
-
-Run your converted qcow2 VM via command line, specifying memory and boot firmware:
-
 ```bash
-# For BIOS boot
-qemu-system-x86_64 -m <memory_in_MB> -drive file=your_converted_vm.qcow2,format=qcow2 -boot menu=on
+# From ISO (auto-configured) or native installation:
+virt-manager
+
+# Then in GUI:
+# 1. New VM → Import existing disk image
+# 2. Browse to .qcow2 file
+# 3. Select OS type (Windows or Linux)
+# 4. Choose firmware:
+#    - UEFI for modern systems (2010+)
+#    - BIOS for legacy systems
+# 5. DISABLE Secure Boot
+# 6. Start VM
 ```
 
-```bash
-# For UEFI boot (replace OVMF paths if needed)
-/usr/share/OVMF/OVMF_CODE.fd and /usr/share/OVMF/OVMF_VARS.fd are common locations.
+### Using QEMU CLI
 
-qemu-system-x86_64 \
-  -m <memory_in_MB> \
-  -drive if=your_converted_vm.qcow2,format=qcow2,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -boot menu=on
+**BIOS boot:**
+```bash
+qemu-system-x86_64 -m 4096 -drive file=vm.qcow2,format=qcow2 -enable-kvm
 ```
 
-- Replace `<memory_in_MB>` with desired RAM allocation (e.g., 2048 for 2GB).
-- The `-boot menu=on` enables boot device selection during VM start.
-- Adjust OVMF paths for your distribution if necessary.
-- Disable Secure Boot in VM or host BIOS/UEFI if boot fails.
+**UEFI boot:**
+```bash
+qemu-system-x86_64 -m 4096 \
+  -drive file=vm.qcow2,format=qcow2 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -enable-kvm
+```
+
+**From external drive:**
+```bash
+sudo mount /dev/sdb1 /mnt/external
+qemu-system-x86_64 -m 4096 -drive file=/mnt/external/vm.qcow2,format=qcow2 -enable-kvm
+```
 
 ***
 
-## Using qemu-img: Convert qcow2 to Other Formats
+## Format Conversion
 
-Convert your image for various hypervisors and tools:
+| Platform | Format | Command |
+|----------|--------|---------|
+| VMware | vmdk | `qemu-img convert -f qcow2 -O vmdk src.qcow2 output.vmdk` |
+| VirtualBox | vdi | `qemu-img convert -f qcow2 -O vdi src.qcow2 output.vdi` |
+| Hyper-V | vhdx | `qemu-img convert -f qcow2 -O vhdx src.qcow2 output.vhdx` |
+| Generic | raw | `qemu-img convert -f qcow2 -O raw src.qcow2 output.img` |
 
-| Output Format | Command Example |
-|---------------|-----------------|
-| **raw** (generic)        | `qemu-img convert -f qcow2 -O raw  src.qcow2  output.img` |
-| **vmdk** (VMware)        | `qemu-img convert -f qcow2 -O vmdk src.qcow2  output.vmdk` |
-| **vdi** (VirtualBox)     | `qemu-img convert -f qcow2 -O vdi  src.qcow2  output.vdi` |
-| **vpc** (Hyper-V)        | `qemu-img convert -f qcow2 -O vpc  src.qcow2  output.vhd` |
-| **vhdx** (Hyper-V new)   | `qemu-img convert -f qcow2 -O vhdx src.qcow2  output.vhdx` |
-| **qed**                  | `qemu-img convert -f qcow2 -O qed  src.qcow2  output.qed` |
-
-Replace `src.qcow2` and output file names as needed.
+Or use the GUI **"Format Converter"** tool.
 
 ***
 
-## Boot Troubleshooting & Tips
+## Troubleshooting
 
-- Always match your VM’s firmware (UEFI or BIOS) to the original system’s boot method.
-- Check and configure the boot device order to boot from the correct disk first.
-- Disable **Secure Boot** in VM or hardware firmware to avoid boot problems.
-- If unsure, try both BIOS and UEFI modes to find the right one for your system.
+### Common Issues
+
+**"Disk Unavailable"**
+- Boot from ISO to convert system disks
+- Unmount partitions: `sudo umount /dev/sdX1`
+
+**"Insufficient Space"**
+- Use "Mount Disk" for larger external drive
+- Check available space matches requirement
+
+**"Cannot Mount External Drive"**
+- Verify detection: `lsblk`
+- Unmount if already mounted: `sudo umount /dev/sdX1`
+
+**"VM Won't Boot"**
+- Try both UEFI and BIOS modes
+- Disable Secure Boot
+- Windows may need reactivation after conversion
+
+**"Permission Denied" (native installation)**
+- Configure libvirt as shown in Requirements
+- Or run with: `sudo python3 code/main.py`
+
+**"External Drive VM Fails to Start"**
+- Native installation: Configure libvirt `cgroup_device_acl`
+- ISO method: No configuration needed
+
+### Windows-Specific Issues
+
+**"Windows requires activation"**
+- Normal after hardware change
+- Use original product key to reactivate or **slmgr /rearm** command
+
+**"Missing drivers after boot"**
+- Install virtio drivers in guest
+- Or use IDE disk mode in VM settings
+
+**"BSOD on first boot"**
+- Use BIOS mode instead of UEFI
+- Disable virtio, use IDE initially
+
+### Logs
+
+Check `/var/log/disk2qcow2.log` for detailed diagnostics or use "Print Session Log" for PDF reports.
 
 ***
 
 ## Project Structure
 
 ```
-.
-├── code/               # Main application (GUI, core modules)
-├── iso/                # ISO build scripts and assets
-└── README.md           # This file
+disk2qcow2/
+├── code/                      # Application (570 KB total)
+│   ├── main.py                # Entry point
+│   ├── p2v_dialog.py          # Main GUI (88 KB)
+│   ├── vm.py                  # Conversion engine
+│   ├── utils.py               # Disk utilities
+│   ├── log_handler.py         # Logging & PDF
+│   ├── disk_mount_dialog.py   # Mount manager
+│   ├── qcow2_resize_dialog.py # Resize tool (153 KB)
+│   ├── image_format_converter.py # Format converter
+│   ├── ciphering.py           # LUKS encryption (47 KB)
+│   ├── export.py              # RSYNC export
+│   └── virt_launcher.py       # VM management
+├── iso/                       # ISO builders
+│   ├── forgeIsoKde.sh         # KDE ISO (12 KB)
+│   ├── forgeIsoXfce.sh        # XFCE ISO (13 KB)
+│   └── makefile               # Build automation
+└── README.md
 ```
+
+
+## Best Practices
+
+✅ Use ISO method for safe conversions  
+✅ Use USB 3.0+ external drives for performance  
+✅ Create a backup before resizing partitions using **Backup** button
+✅ Keep source disk intact until VM validated  
+✅ Use LUKS encryption for sensitive systems  
+✅ Generate PDF logs for documentation  
+
+
+## Technical Details
+
+- **Format**: QCOW2 with zlib compression
+- **Source Support**: Windows & Linux, any filesystem
+- **Log Location**: `/var/log/disk2qcow2.log`
+- **GUI**: Python 3 + Tkinter
+- **Tools**: qemu-img, cryptsetup, rsync, libvirt, virt-manager, qemu-utils
+- **Target Platforms**: QEMU/KVM, VirtualBox, VMware, Hyper-V
+
+
+## Quick Example
+
+```bash
+# 1. Boot from ISO → Launch P2V Converter
+# 2. Click "Refresh Disks" → Select /dev/sda (Windows disk)
+# 3. Click "Mount Disk" → Select external /dev/sdb1 → Mount at /mnt/external
+# 4. Click "Check Space Requirements" → Verify green indicator
+# 5. Click "Start P2V Conversion" → Wait ~45 min for 250GB disk
+# 6. Click "Print Session Log" → Save PDF report
+# 7. Transfer external drive to host system
+# 8. Run: qemu-system-x86_64 -m 4096 -drive file=/mnt/external/sda_vm.qcow2 -enable-kvm
+```
+
+
+**Supported Systems:**
+- ✅ Windows (XP, Vista, 7, 8, 10, 11, Server 2003-2022)
+- ✅ Linux (Ubuntu, Debian, Fedora, CentOS, RHEL, Arch, openSUSE, etc.)
+
+
+## License
+
+Open source.
+
+---
+
+**Transform any Windows or Linux physical machine into a portable virtual environment.**
+
+**[Download ISO](https://archive.org/details/p2v-converter-iso)** and start virtualizing today!
