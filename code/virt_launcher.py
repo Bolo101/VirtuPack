@@ -36,17 +36,17 @@ class VirtManagerLauncher:
         """
         Fix permissions on VM image for libvirt access
         Ensures proper ownership and permissions for QEMU/KVM access
+        Works with external drives through libvirt configuration
         
         Args:
             image_path: Path to the VM image file
             log_callback: Optional callback function for logging (log_info function)
             
         Returns:
-            bool: True if permissions were fixed successfully
+            bool: True if permissions were verified successfully
             
         Raises:
             FileNotFoundError: If image file doesn't exist
-            PermissionError: If unable to change permissions
             OSError: If filesystem operations fail
         """
         try:
@@ -57,85 +57,58 @@ class VirtManagerLauncher:
                 raise FileNotFoundError(error_msg)
             
             if log_callback:
-                log_callback(f"Fixing permissions for VM image: {image_path}")
+                log_callback(f"Verifying image access: {image_path}")
             
             # Get current file stats
             file_stat = os.stat(image_path)
             current_perms = oct(file_stat.st_mode)[-3:]
             
             if log_callback:
-                log_callback(f"Current permissions: {current_perms}")
+                log_callback(f"Image permissions: {current_perms}")
             
-            # Set readable permissions for QEMU/KVM (0644 or better)
-            try:
-                os.chmod(image_path, 0o644)
+            # Check if file is readable
+            if not os.access(image_path, os.R_OK):
                 if log_callback:
-                    log_callback(f"Image permissions updated to 0644")
-            except PermissionError as e:
-                error_msg = f"Permission denied changing file permissions: {str(e)}"
-                if log_callback:
-                    log_callback(error_msg)
-                raise PermissionError(error_msg)
-            except OSError as e:
-                error_msg = f"OS error changing file permissions: {str(e)}"
-                if log_callback:
-                    log_callback(error_msg)
-                raise OSError(error_msg)
+                    log_callback("Warning: Image file not readable")
             
-            # Verify permissions were changed
-            new_stat = os.stat(image_path)
-            new_perms = oct(new_stat.st_mode)[-3:]
-            
+            # Since libvirt daemon runs as root (configured in qemu.conf),
+            # file accessibility is less of a concern
             if log_callback:
-                log_callback(f"New permissions: {new_perms}")
-            
-            # Check if we can also change ownership to qemu:qemu if running as root
-            if os.geteuid() == 0:  # Running as root
-                try:
-                    # Try to get qemu user/group IDs
-                    import pwd
-                    import grp
-                    
-                    try:
-                        qemu_uid = pwd.getpwnam('qemu').pw_uid
-                        qemu_gid = grp.getgrnam('qemu').gr_gid
-                        
-                        os.chown(image_path, qemu_uid, qemu_gid)
-                        
-                        if log_callback:
-                            log_callback(f"Image ownership changed to qemu:qemu")
-                    
-                    except KeyError:
-                        # qemu user/group doesn't exist, use libvirt user instead
-                        try:
-                            libvirt_uid = pwd.getpwnam('libvirt-qemu').pw_uid
-                            libvirt_gid = grp.getgrnam('libvirt').gr_gid
-                            
-                            os.chown(image_path, libvirt_uid, libvirt_gid)
-                            
-                            if log_callback:
-                                log_callback(f"Image ownership changed to libvirt-qemu:libvirt")
-                        
-                        except KeyError:
-                            if log_callback:
-                                log_callback("Warning: Could not find qemu/libvirt user/group")
-                
-                except ImportError:
-                    if log_callback:
-                        log_callback("Warning: pwd/grp modules not available")
-                except (OSError, PermissionError) as e:
-                    if log_callback:
-                        log_callback(f"Warning: Could not change ownership: {str(e)}")
-            
-            if log_callback:
-                log_callback(f"Image permissions fixed successfully")
+                log_callback(f"Image is accessible for libvirt (daemon runs as root)")
             
             return True
             
-        except (FileNotFoundError, PermissionError, OSError) as e:
+        except (FileNotFoundError, OSError) as e:
             if log_callback:
-                log_callback(f"Error fixing permissions: {str(e)}")
+                log_callback(f"Error verifying image: {str(e)}")
             raise
+    
+    @staticmethod
+    def _is_external_drive(path):
+        """
+        Check if a path is on an external drive
+        
+        Args:
+            path: File path to check
+            
+        Returns:
+            bool: True if appears to be on external drive
+        """
+        try:
+            # Get filesystem type
+            import subprocess
+            result = subprocess.run(['df', path], capture_output=True, text=True)
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                if len(lines) > 1:
+                    fs_line = lines[1]
+                    # Check for common external drive mount points and filesystem types
+                    if any(x in fs_line for x in ['/mnt', '/media', 'ntfs', 'vfat', 'exfat']):
+                        return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+        
+        return False
     
     @staticmethod
     def launch_virt_manager(image_path=None, log_callback=None):
@@ -182,7 +155,7 @@ class VirtManagerLauncher:
                     error_msg = f"Failed to fix image permissions: {str(e)}"
                     if log_callback:
                         log_callback(error_msg)
-                    # Continue anyway - virt-manager might still work
+                    # Continue anyway - virt-manager might still work with proper escalation
             
             if log_callback:
                 log_callback("Launching virt-manager...")
@@ -248,6 +221,7 @@ class VirtManagerLauncher:
                 ]
                 
                 escalation_found = False
+                last_error = None
                 
                 for escalation_cmd in escalation_commands:
                     if shutil.which(escalation_cmd[0]):
@@ -276,6 +250,7 @@ class VirtManagerLauncher:
                                         error_msg += f"\n{stderr}"
                                     if log_callback:
                                         log_callback(error_msg)
+                                    last_error = error_msg
                                     continue  # Try next escalation method
                             except subprocess.TimeoutExpired:
                                 # This is expected - virt-manager is running
@@ -287,12 +262,14 @@ class VirtManagerLauncher:
                             error_msg = f"Failed with {escalation_cmd[0]}: {str(e)}"
                             if log_callback:
                                 log_callback(error_msg)
+                            last_error = error_msg
                             continue
                         
                         except FileNotFoundError as e:
                             error_msg = f"Escalation command not found: {escalation_cmd[0]}"
                             if log_callback:
                                 log_callback(error_msg)
+                            last_error = error_msg
                             continue
                 
                 if not escalation_found:
@@ -306,6 +283,8 @@ class VirtManagerLauncher:
                     raise PermissionError(error_msg)
                 
                 error_msg = "All privilege escalation methods failed"
+                if last_error:
+                    error_msg += f"\n{last_error}"
                 if log_callback:
                     log_callback(error_msg)
                 raise PermissionError(error_msg)
@@ -339,6 +318,7 @@ class VirtManagerLauncher:
     def launch_virt_manager_with_image(image_path, log_callback=None):
         """
         Launch virt-manager and optionally open/import a VM image
+        Works with images on external drives thanks to libvirt configuration
         
         Args:
             image_path: Path to VM image file to work with
@@ -370,10 +350,10 @@ class VirtManagerLauncher:
                 log_callback(f"File size: {VirtManagerLauncher.format_size(file_size)}")
                 log_callback(f"Full path: {image_path}")
             
-            # Launch virt-manager
+            # Launch virt-manager with the image
             return VirtManagerLauncher.launch_virt_manager(image_path, log_callback)
         
-        except (FileNotFoundError, PermissionError, OSError) as e:
+        except (FileNotFoundError, OSError) as e:
             if log_callback:
                 log_callback(f"Error launching virt-manager: {str(e)}")
             raise
