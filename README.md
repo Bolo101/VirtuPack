@@ -31,7 +31,7 @@ Transform physical disks into **qcow2 virtual machine images** ready for any hyp
 ## Quick Start
 
 ### Download Pre-built ISO (Recommended)
-**[Download P2V Converter ISO](https://archive.org/details/p2v-converter-iso)** *(insert actual link)*
+**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v0.1)**
 
 ### Or Build Your Own
 
@@ -80,17 +80,16 @@ cgroup_device_acl = [
     "/dev/sdb", "/dev/sdc", "/dev/sdd",  # Your external drives
     "/dev/disk/by-uuid/*"
 ]
-
+````
+```bash
 sudo systemctl restart libvirtd
 sudo usermod -a -G libvirt $USER
 ```
 
-***
-
 ## Usage Workflow
 
 ### 1. Boot from ISO
-- Write ISO to USB: `sudo dd if=p2v-converter.iso of=/dev/sdX bs=4M status=progress`
+- Write ISO to USB: `sudo dd if=p2v-converter.iso of=/dev/sdX bs=4M status=progress` (or use Ventoy key)
 - Boot target machine from USB
 - Launch "P2V Converter" from desktop
 
@@ -303,4 +302,4 @@ Open source.
 
 **Transform any Windows or Linux physical machine into a portable virtual environment.**
 
-**[Download ISO](https://archive.org/details/p2v-converter-iso)** and start virtualizing today!
+**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v0.1)** and start virtualizing today!
