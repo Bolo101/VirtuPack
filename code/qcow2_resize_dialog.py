@@ -21,6 +21,7 @@ import tempfile
 from NewSizeDialog import NewSizeDialog
 from QCow2CloneResizer import QCow2CloneResizer
 import queue
+from log_handler import log_info, log_error, log_warning
 
 
 class QCow2CloneResizerGUI:
@@ -827,11 +828,14 @@ class QCow2CloneResizerGUI:
 
 
     def _gparted_clone_worker(self, image_path):
-        """Simplified worker: GParted -> Resize -> Clone (all OS types)"""
+        """Simplified worker: GParted -> Resize -> Clone + GRUB reinstall for UEFI"""
+        from log_handler import log_info, log_error, log_warning
+        
         source_nbd = None
         
         try:
             print(f"Starting GParted + Resize + Clone for: {image_path}")
+            log_info(f"Starting GParted + Resize + Clone operation for: {image_path}")
             
             # Store original info
             original_info = self.image_info.copy()
@@ -936,7 +940,33 @@ class QCow2CloneResizerGUI:
             
             print(f"✓ Image resized successfully")
             
-            # 3. Compress with simple qemu-img convert
+            # 3. Setup NBD again for GRUB reinstall if UEFI + Linux
+            if boot_mode == 'uefi' and 'linux' in os_type.lower():
+                self.update_progress(60, "Setting up NBD for bootloader repair...")
+                log_info("Setting up NBD device for GRUB bootloader repair (UEFI system detected)")
+                source_nbd = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
+                
+                self.update_progress(62, "Reinstalling GRUB bootloader...")
+                log_info(f"Starting GRUB bootloader reinstallation on NBD device: {source_nbd}")
+                grub_success = self.reinstall_bootloader(source_nbd, self.update_progress)
+                
+                if grub_success:
+                    print(f"✓ GRUB bootloader reinstalled successfully")
+                    log_info("✓ GRUB bootloader reinstalled successfully on UEFI system")
+                else:
+                    print(f"⚠ GRUB bootloader reinstallation had issues, continuing anyway...")
+                    log_warning("⚠ GRUB bootloader reinstallation encountered issues but operation continues")
+                
+                self.update_progress(65, "Cleaning up after bootloader repair...")
+                log_info("Performing filesystem sync after bootloader repair...")
+                self._perform_safe_sync("Post-GRUB sync")
+                QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                source_nbd = None
+                time.sleep(10)
+            elif boot_mode == 'uefi':
+                log_info(f"Skipping GRUB reinstall: UEFI system detected but OS is {os_type} (not Linux)")
+            
+            # 4. Compress with simple qemu-img convert
             self.update_progress(70, "Compressing optimized image...")
             print(f"Starting compression...")
             
@@ -949,7 +979,7 @@ class QCow2CloneResizerGUI:
             
             print(f"✓ Compression completed: {compression_stats['compression_ratio']:.1f}% saved")
             
-            # 4. Get final image info
+            # 5. Get final image info
             self.update_progress(95, "Finalizing...")
             final_image_info = QCow2CloneResizer.get_image_info(image_path)
             final_image_size = os.path.getsize(image_path)
@@ -970,6 +1000,7 @@ class QCow2CloneResizerGUI:
             print(f"\n{'='*60}")
             print(f"ERROR: {type(e).__name__}: {e}")
             print(f"{'='*60}")
+            log_error(f"Operation error: {type(e).__name__}: {e}")
             self.log(f"Operation error: {e}")
             self._auto_cleanup_compressed_tmp()
             
@@ -979,6 +1010,7 @@ class QCow2CloneResizerGUI:
             print(f"{'='*60}")
             import traceback
             traceback.print_exc()
+            log_error(f"Unexpected error: {type(e).__name__}: {e}")
             self._auto_cleanup_compressed_tmp()
             
         finally:
@@ -1752,31 +1784,33 @@ class QCow2CloneResizerGUI:
 
     @staticmethod
     def reinstall_bootloader(nbd_device, progress_callback=None):
-        """Reinstall bootloader with proper EFI cleanup and fallback setup"""
+        """Reinstall GRUB bootloader pour systèmes UEFI Linux"""
+        from log_handler import log_info, log_error, log_warning
+        
         try:
             if progress_callback:
-                progress_callback(45, "Reinstalling bootloader...")
+                progress_callback(62, "Reinstalling bootloader...")
             
-            print(f"Reinstalling bootloader on {nbd_device}")
+            print(f"Reinstalling GRUB bootloader on {nbd_device}")
+            log_info(f"Starting GRUB bootloader reinstallation on {nbd_device}")
             
-            # Detect partition table
+            # Détecter le type de table de partition
             parted_result = subprocess.run(
                 ['parted', '-s', nbd_device, 'print'],
                 capture_output=True, text=True, check=True, timeout=30
             )
             
             is_gpt = 'gpt' in parted_result.stdout.lower()
-            is_uefi = is_gpt
             
-            if not is_uefi:
-                # Handle BIOS case (your existing code)
-                print("BIOS mode - installing to MBR")
-                # ... existing BIOS code ...
-                return False  # For now, focusing on UEFI
+            if not is_gpt:
+                print("BIOS mode detected - skipping GRUB reinstall (MBR mode)")
+                log_info("Bootloader check: BIOS mode detected - GRUB reinstall skipped")
+                return True
             
-            print("UEFI mode detected")
+            print("UEFI mode detected - proceeding with GRUB reinstall")
+            log_info("Bootloader check: UEFI mode detected - proceeding with GRUB reinstall")
             
-            # Find partitions
+            # Parser les partitions
             partitions = []
             for line in parted_result.stdout.split('\n'):
                 if re.match(r'^\s*\d+\s+', line.strip()):
@@ -1787,7 +1821,7 @@ class QCow2CloneResizerGUI:
                             'flags': line.lower()
                         })
             
-            # Find EFI partition
+            # Trouver la partition EFI
             efi_partition = None
             for part in partitions:
                 if 'esp' in part['flags']:
@@ -1795,10 +1829,14 @@ class QCow2CloneResizerGUI:
                     break
             
             if not efi_partition:
-                print("No EFI partition found")
+                log_error("GRUB Reinstall: No EFI partition found - cannot reinstall GRUB")
+                print("No EFI partition found - cannot reinstall GRUB")
                 return False
             
-            # Find Linux root
+            print(f"EFI partition found: {efi_partition}")
+            log_info(f"GRUB Reinstall: EFI partition detected on partition {efi_partition}")
+            
+            # Trouver la partition Linux root
             for part_num in [p['number'] for p in partitions]:
                 if part_num == efi_partition:
                     continue
@@ -1814,9 +1852,9 @@ class QCow2CloneResizerGUI:
                 
                 with tempfile.TemporaryDirectory() as mount_point:
                     try:
-                        # Mount root partition
+                        # Mount la partition root
                         mounted = False
-                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2']:
+                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2', 'xfs', 'btrfs']:
                             if subprocess.run(['mount', '-t', fs_type, part_device, mount_point],
                                             capture_output=True, timeout=30, check=False).returncode == 0:
                                 mounted = True
@@ -1825,16 +1863,17 @@ class QCow2CloneResizerGUI:
                         if not mounted:
                             continue
                         
-                        # Check if Linux
+                        # Vérifier que c'est Linux
                         is_linux = os.path.exists(os.path.join(mount_point, 'etc'))
                         
                         if not is_linux:
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
-                        print(f"Found Linux on partition {part_num}")
+                        print(f"Found Linux root on partition {part_num}")
+                        log_info(f"GRUB Reinstall: Found Linux root filesystem on partition {part_num}")
                         
-                        # Mount EFI partition
+                        # Mount la partition EFI
                         efi_mount = os.path.join(mount_point, 'boot', 'efi')
                         os.makedirs(efi_mount, exist_ok=True)
                         
@@ -1853,97 +1892,88 @@ class QCow2CloneResizerGUI:
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
-                        print("EFI partition mounted")
+                        print("EFI partition mounted successfully")
+                        log_info("GRUB Reinstall: EFI partition mounted successfully")
                         
-                        # CRITICAL: Clean up old EFI directories
+                        # ÉTAPE CRITIQUE: Nettoyer les anciens répertoires EFI
                         efi_base = os.path.join(mount_point, 'boot', 'efi', 'EFI')
                         print(f"Cleaning EFI directory: {efi_base}")
+                        log_info(f"GRUB Reinstall: Cleaning old EFI directories in {efi_base}")
                         
                         if os.path.exists(efi_base):
-                            # Remove old directories except BOOT
                             for item in os.listdir(efi_base):
                                 item_path = os.path.join(efi_base, item)
                                 if item.upper() != 'BOOT' and os.path.isdir(item_path):
                                     print(f"Removing old EFI directory: {item}")
+                                    log_info(f"GRUB Reinstall: Removing old EFI directory: {item}")
                                     try:
                                         shutil.rmtree(item_path)
-                                    except PermissionError as perm_e:
-                                        print(f"Permission denied removing {item}: {perm_e}")
-                                    except OSError as os_e:
-                                        print(f"OS error removing {item}: {os_e}")
-                                    except shutil.Error as sh_e:
-                                        print(f"Shutil error removing {item}: {sh_e}")
+                                    except Exception as e:
+                                        print(f"Warning removing {item}: {e}")
+                                        log_warning(f"GRUB Reinstall: Warning removing {item}: {e}")
                         
-                        # Mount system dirs
+                        # Mount les répertoires système
                         for d in ['dev', 'proc', 'sys']:
                             subprocess.run(['mount', '--bind', f'/{d}', os.path.join(mount_point, d)], 
-                                        check=False)
+                                        check=False, timeout=30)
                         
-                        # Install GRUB with --removable flag (creates BOOTX64.EFI directly)
-                        print("Installing GRUB to removable media path...")
+                        # Installer GRUB avec --removable flag
+                        print("Installing GRUB to EFI...")
+                        log_info("GRUB Reinstall: Installing GRUB to EFI partition...")
+                        
+                        if progress_callback:
+                            progress_callback(63, "Installing GRUB to EFI...")
                         
                         result = subprocess.run(
                             ['chroot', mount_point, 'grub-install',
                             '--target=x86_64-efi',
                             '--efi-directory=/boot/efi',
-                            '--removable',  # This creates /EFI/BOOT/BOOTX64.EFI
+                            '--removable',
                             '--recheck'],
                             capture_output=True, text=True, timeout=120, check=False
                         )
                         
                         print(f"GRUB install return code: {result.returncode}")
-                        if result.stdout:
-                            print(f"STDOUT: {result.stdout}")
-                        if result.stderr:
-                            print(f"STDERR: {result.stderr}")
-                        
                         if result.returncode != 0:
-                            print("GRUB install failed")
-                            # Cleanup
-                            subprocess.run(['umount', efi_mount], check=False, timeout=30)
-                            for d in ['dev', 'proc', 'sys']:
-                                subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
-                            subprocess.run(['umount', mount_point], check=False, timeout=30)
-                            continue
-                        
-                        # Verify BOOTX64.EFI was created
-                        bootx64_path = os.path.join(efi_base, 'BOOT', 'BOOTX64.EFI')
-                        if os.path.exists(bootx64_path):
-                            size = os.path.getsize(bootx64_path)
-                            print(f"BOOTX64.EFI created successfully: {size} bytes")
+                            print("⚠ GRUB install had issues, attempting to continue...")
+                            log_error(f"GRUB Reinstall: grub-install command failed with code {result.returncode}")
+                            if result.stderr:
+                                log_error(f"GRUB Reinstall Error Details: {result.stderr}")
                         else:
-                            print("ERROR: BOOTX64.EFI not found!")
+                            print("✓ GRUB installed successfully")
+                            log_info("GRUB Reinstall: ✓ GRUB successfully installed to EFI")
                         
-                        # Generate GRUB config
+                        # Générer la configuration GRUB
+                        if progress_callback:
+                            progress_callback(64, "Generating GRUB configuration...")
+                        
                         print("Generating GRUB configuration...")
+                        log_info("GRUB Reinstall: Generating GRUB configuration...")
                         
-                        for cmd in [['update-grub'], ['grub-mkconfig', '-o', '/boot/grub/grub.cfg']]:
-                            result = subprocess.run(['chroot', mount_point] + cmd,
-                                                capture_output=True, text=True, timeout=120, check=False)
-                            if result.returncode == 0:
-                                print("GRUB config generated")
-                                break
+                        update_cmd = subprocess.run(
+                            ['chroot', mount_point, 'update-grub'],
+                            capture_output=True, text=True, timeout=120, check=False
+                        )
                         
-                        # Verify grub.cfg
+                        if update_cmd.returncode != 0:
+                            print(f"⚠ update-grub failed: {update_cmd.stderr}")
+                            log_error(f"GRUB Reinstall: update-grub failed with code {update_cmd.returncode}")
+                            log_error(f"GRUB Reinstall Error Details: {update_cmd.stderr}")
+                        else:
+                            print("✓ GRUB configuration generated")
+                            log_info("GRUB Reinstall: ✓ GRUB configuration generated successfully")
+                        
+                        # Vérifier que grub.cfg existe
                         grub_cfg = os.path.join(mount_point, 'boot', 'grub', 'grub.cfg')
                         if os.path.exists(grub_cfg):
                             with open(grub_cfg, 'r') as f:
                                 content = f.read()
                                 if 'menuentry' in content:
-                                    print("grub.cfg contains boot entries")
+                                    print("✓ grub.cfg contains boot entries")
+                                    log_info("GRUB Reinstall: ✓ grub.cfg contains valid boot entries")
                                 else:
-                                    print("WARNING: grub.cfg has no menuentry")
-                        
-                        # List final EFI structure
-                        print("\nFinal EFI structure:")
-                        if os.path.exists(efi_base):
-                            for root, dirs, files in os.walk(efi_base):
-                                level = root.replace(efi_base, '').count(os.sep)
-                                indent = ' ' * 2 * level
-                                print(f"{indent}{os.path.basename(root)}/")
-                                subindent = ' ' * 2 * (level + 1)
-                                for file in files:
-                                    print(f"{subindent}{file}")
+                                    print("⚠ grub.cfg has no menuentry")
+                                    log_warning("GRUB Reinstall: ⚠ grub.cfg exists but has no boot entries")
                         
                         # Cleanup
                         subprocess.run(['umount', efi_mount], check=False, timeout=30)
@@ -1951,49 +1981,45 @@ class QCow2CloneResizerGUI:
                             subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
                         subprocess.run(['umount', mount_point], check=False, timeout=30)
                         
-                        print("Bootloader installation complete")
+                        print("✓ Bootloader installation complete")
+                        log_info("GRUB Reinstall: ✓ Bootloader installation completed successfully")
+                        
+                        if progress_callback:
+                            progress_callback(65, "Bootloader reinstalled")
+                        
                         return True
                         
-                    except subprocess.CalledProcessError as mount_e:
-                        print(f"Mount command error: {mount_e}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except subprocess.TimeoutExpired as timeout_e:
                         print(f"Mount operation timed out: {timeout_e}")
+                        log_error(f"GRUB Reinstall: Mount operation timed out: {timeout_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except FileNotFoundError as file_e:
-                        print(f"Required file/command not found: {file_e}")
+                        print(f"Required command not found: {file_e}")
+                        log_error(f"GRUB Reinstall: Required command not found: {file_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except PermissionError as perm_e:
-                        print(f"Permission error during bootloader install: {perm_e}")
+                        print(f"Permission error: {perm_e}")
+                        log_error(f"GRUB Reinstall: Permission error: {perm_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except OSError as os_e:
-                        print(f"OS error during bootloader install: {os_e}")
+                        print(f"OS error: {os_e}")
+                        log_error(f"GRUB Reinstall: OS error: {os_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
             
+            log_error("GRUB Reinstall: No valid Linux root partition found for GRUB installation")
             return False
             
         except subprocess.CalledProcessError as e:
-            print(f"ERROR - command failed: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Command failed: {e}")
+            log_error(f"GRUB Reinstall: Command failed: {e}")
             return False
         except subprocess.TimeoutExpired as e:
-            print(f"ERROR - operation timed out: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Operation timed out: {e}")
+            log_error(f"GRUB Reinstall: Operation timed out: {e}")
             return False
-        except FileNotFoundError as e:
-            print(f"ERROR - required command not found: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-        except PermissionError as e:
-            print(f"ERROR - permission denied: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-        except OSError as e:
-            print(f"ERROR - OS error: {e}")
+        except Exception as e:
+            print(f"Unexpected error in bootloader reinstall: {e}")
+            log_error(f"GRUB Reinstall: Unexpected error: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
             return False
