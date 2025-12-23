@@ -940,10 +940,11 @@ class QCow2CloneResizerGUI:
             
             print(f"✓ Image resized successfully")
             
-            # 3. Setup NBD again for GRUB reinstall if UEFI + Linux
+            # 3. Setup NBD again for GRUB reinstall if UEFI + Linux ONLY
+            # Skip for Windows (UEFI or BIOS) and BIOS Linux
             if boot_mode == 'uefi' and 'linux' in os_type.lower():
                 self.update_progress(60, "Setting up NBD for bootloader repair...")
-                log_info("Setting up NBD device for GRUB bootloader repair (UEFI system detected)")
+                log_info("Setting up NBD device for GRUB bootloader repair (UEFI Linux system detected)")
                 source_nbd = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
                 
                 self.update_progress(62, "Reinstalling GRUB bootloader...")
@@ -952,10 +953,10 @@ class QCow2CloneResizerGUI:
                 
                 if grub_success:
                     print(f"✓ GRUB bootloader reinstalled successfully")
-                    log_info("✓ GRUB bootloader reinstalled successfully on UEFI system")
+                    log_info("✓ GRUB bootloader reinstalled successfully on UEFI Linux system")
                 else:
                     print(f"⚠ GRUB bootloader reinstallation had issues, continuing anyway...")
-                    log_warning("⚠ GRUB bootloader reinstallation encountered issues but operation continues")
+                    log_warning("⚠ GRUB bootloader reinstallation encountered issues on UEFI Linux system but operation continues")
                 
                 self.update_progress(65, "Cleaning up after bootloader repair...")
                 log_info("Performing filesystem sync after bootloader repair...")
@@ -963,8 +964,11 @@ class QCow2CloneResizerGUI:
                 QCow2CloneResizer.cleanup_nbd_device(source_nbd)
                 source_nbd = None
                 time.sleep(10)
-            elif boot_mode == 'uefi':
-                log_info(f"Skipping GRUB reinstall: UEFI system detected but OS is {os_type} (not Linux)")
+            else:
+                if 'windows' in os_type.lower():
+                    log_info(f"Skipping GRUB reinstall: Windows system detected ({boot_mode.upper()} boot) - no bootloader modification needed")
+                elif boot_mode == 'bios' and 'linux' in os_type.lower():
+                    log_info(f"Skipping GRUB reinstall: BIOS Linux system detected - no GRUB modification in first version")
             
             # 4. Compress with simple qemu-img convert
             self.update_progress(70, "Compressing optimized image...")
