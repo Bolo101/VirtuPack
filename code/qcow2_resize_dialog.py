@@ -828,28 +828,32 @@ class QCow2CloneResizerGUI:
 
 
     def _gparted_clone_worker(self, image_path):
-        """Simplified worker: GParted -> Resize -> Clone + GRUB reinstall for UEFI"""
+        """Worker thread for GParted + clone resize operation with proper signal handling"""
         from log_handler import log_info, log_error, log_warning
         
         source_nbd = None
         
         try:
-            print(f"Starting GParted + Resize + Clone for: {image_path}")
-            log_info(f"Starting GParted + Resize + Clone operation for: {image_path}")
+            print(f"Starting GParted + Clone operation for: {image_path}")
+            log_info(f"Starting GParted + Clone operation for: {image_path}")
             
-            # Store original info
+            # Store original image info BEFORE any modifications
             original_info = self.image_info.copy()
             original_source_size = os.path.getsize(image_path)
             
-            # Setup NBD for GParted
-            self.update_progress(10, "Setting up NBD device...")
+            # Setup NBD device for GParted
+            self.update_progress(10, "Setting up NBD device for GParted...")
             source_nbd = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
-            print(f"NBD device: {source_nbd}")
+            print(f"NBD device setup complete: {source_nbd}")
+            log_info(f"NBD device setup complete: {source_nbd}")
             
-            # Detect OS and boot mode
+            # Detect OS type
             self.update_progress(15, "Detecting VM operating system...")
             os_type = QCow2CloneResizer.detect_vm_os(source_nbd)
+            print(f"Detected OS type: {os_type}")
+            log_info(f"Detected OS type: {os_type}")
             
+            # Detect boot mode by checking partition table
             parted_result = subprocess.run(
                 ['parted', '-s', source_nbd, 'print'],
                 capture_output=True, text=True, check=True, timeout=30
@@ -857,177 +861,395 @@ class QCow2CloneResizerGUI:
             is_gpt = 'gpt' in parted_result.stdout.lower()
             has_esp = 'esp' in parted_result.stdout.lower()
             boot_mode = 'uefi' if (is_gpt and has_esp) else 'bios'
-            
-            print(f"OS: {os_type}, Boot: {boot_mode}")
+            print(f"Boot mode: {boot_mode}")
+            log_info(f"Boot mode: {boot_mode}")
             
             # Get initial partition layout
-            self.update_progress(20, "Analyzing partition layout...")
+            self.update_progress(20, "Analyzing initial partition layout...")
             initial_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
             
             # Launch GParted
-            self.update_progress(30, "Launching GParted...")
-            self._show_message_and_wait(
-                "GParted Session",
+            self.update_progress(30, "Launching GParted for manual partition editing...")
+            
+            initial_info = f"Initial partition layout:\n"
+            for part in initial_layout['partitions']:
+                initial_info += f"  Partition {part['number']}: {part['start']} - {part['end']} ({part['size']})\n"
+            
+            instructions = (
+                f"GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
                 f"Device: {source_nbd}\n"
-                f"OS: {os_type.upper()}\n"
-                f"Boot: {boot_mode.upper()}\n\n"
-                f"Instructions:\n"
-                f"1. Resize partitions as needed\n"
-                f"2. Click 'Apply' to save changes\n"
-                f"3. Close GParted when done"
+                f"OS Type: {os_type.upper()}\n"
+                f"Boot Mode: {boot_mode.upper()}\n\n"
+                f"CURRENT PARTITIONS:\n{initial_info}\n"
+                f"INSTRUCTIONS FOR GPARTED:\n"
+                f"1. Resize partitions (shrink to save space or expand)\n"
+                f"2. Move partitions if needed\n"
+                f"3. CRITICAL: Click 'Apply' to execute all changes\n"
+                f"4. Wait for all operations to complete\n"
+                f"5. Close GParted when finished\n\n"
             )
+            
+            if os_type == 'linux' and boot_mode == 'uefi':
+                instructions += (
+                    f"After GParted closes, the UEFI bootloader will be automatically\n"
+                    f"reinstalled and the image will be optimized."
+                )
+            elif os_type == 'linux' and boot_mode == 'bios':
+                instructions += (
+                    f"After GParted closes, the image will be compressed\n"
+                    f"to save disk space. No cloning will be performed."
+                )
+            elif os_type == 'windows':
+                instructions += (
+                    f"After GParted closes, the image will be compressed\n"
+                    f"to save disk space. No cloning will be performed."
+                )
+            else:
+                instructions += (
+                    f"After GParted closes, the operation will proceed based on\n"
+                    f"detected OS type."
+                )
+            
+            # Show instructions and wait for OK
+            self._show_message_and_wait("GParted Session Starting", instructions)
             
             print("Launching GParted...")
+            log_info("Launching GParted...")
             QCow2CloneResizer.launch_gparted(source_nbd)
             print("GParted session completed")
+            log_info("GParted session completed")
             
-            # Analyze final partition layout
-            self.update_progress(40, "Analyzing final partition layout...")
-            final_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
-            
-            # Show size selection dialog
-            self.update_progress(45, "Select new image size...")
-            partition_changes = "Partitions modified using GParted"
-            if initial_layout['last_partition_end_bytes'] != final_layout['last_partition_end_bytes']:
-                old_size = QCow2CloneResizer.format_size(initial_layout['last_partition_end_bytes'])
-                new_size_calc = QCow2CloneResizer.format_size(final_layout['last_partition_end_bytes'])
-                partition_changes = f"Partition space: {old_size} → {new_size_calc}"
-            
-            self.dialog_result_event.clear()
-            self.dialog_result_value = None
-            self.root.after(0, self._show_final_size_dialog, final_layout, partition_changes)
-            
-            if not self.dialog_result_event.wait(timeout=300):
-                raise RuntimeError("Size selection dialog timed out")
-            
-            new_size = self.dialog_result_value
-            print(f"New size selected: {QCow2CloneResizer.format_size(new_size)}")
-            
-            if new_size is None:
-                raise RuntimeError("Operation cancelled by user")
-            
-            # 1. Disconnect NBD before resizing
-            self.update_progress(50, "Disconnecting NBD device...")
-            self._perform_safe_sync("Pre-disconnect sync")
-            QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-            source_nbd = None
-            time.sleep(30)
-            
-            # 2. Resize original image
-            self.update_progress(55, "Resizing original image...")
-            print(f"Resizing {image_path} to {QCow2CloneResizer.format_size(new_size)}")
-            
-            resize_cmd = [
-                'qemu-img', 'resize',
-                '--shrink',
-                '-f', 'qcow2',
-                image_path,
-                str(new_size)
-            ]
-            
-            result = subprocess.run(
-                resize_cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=False
-            )
-            
-            if result.returncode != 0:
-                print(f"ERROR: Resize failed!")
-                print(f"stderr: {result.stderr}")
-                raise subprocess.CalledProcessError(result.returncode, resize_cmd, result.stderr)
-            
-            print(f"✓ Image resized successfully")
-            
-            # 3. Setup NBD again for GRUB reinstall if UEFI + Linux ONLY
-            # Skip for Windows (UEFI or BIOS) and BIOS Linux
-            if boot_mode == 'uefi' and 'linux' in os_type.lower():
-                self.update_progress(60, "Setting up NBD for bootloader repair...")
-                log_info("Setting up NBD device for GRUB bootloader repair (UEFI Linux system detected)")
-                source_nbd = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
+            # OS-SPECIFIC AND BOOT-MODE HANDLING
+            if os_type == 'linux' and boot_mode == 'uefi':
+                print("=== LINUX UEFI VM DETECTED ===")
+                log_info("=== LINUX UEFI VM DETECTED - PERFORMING GRUB REINSTALL AND OPTIMIZATION ===")
                 
-                self.update_progress(62, "Reinstalling GRUB bootloader...")
-                log_info(f"Starting GRUB bootloader reinstallation on NBD device: {source_nbd}")
-                grub_success = self.reinstall_bootloader(source_nbd, self.update_progress)
+                # AUTOMATIC BOOTLOADER REINSTALLATION - BEFORE NBD DISCONNECT
+                self.update_progress(35, "Reinstalling UEFI bootloader after partition changes...")
+                print("Attempting to reinstall UEFI bootloader to prevent boot issues...")
+                log_info("Reinstalling UEFI bootloader before resizing...")
                 
-                if grub_success:
-                    print(f"✓ GRUB bootloader reinstalled successfully")
-                    log_info("✓ GRUB bootloader reinstalled successfully on UEFI Linux system")
+                bootloader_fixed = QCow2CloneResizerGUI.reinstall_bootloader(
+                    source_nbd, 
+                    self.update_progress
+                )
+                
+                if bootloader_fixed:
+                    print("✓ UEFI bootloader successfully reinstalled")
+                    log_info("✓ UEFI bootloader successfully reinstalled")
+                    self._show_message_and_wait(
+                        "Bootloader Fixed",
+                        "✓ UEFI bootloader has been automatically reinstalled.\n\n"
+                        "Your VM will boot correctly with the resized partitions."
+                    )
                 else:
-                    print(f"⚠ GRUB bootloader reinstallation had issues, continuing anyway...")
-                    log_warning("⚠ GRUB bootloader reinstallation encountered issues on UEFI Linux system but operation continues")
+                    print("⚠ WARNING: UEFI bootloader reinstall unsuccessful")
+                    log_warning("⚠ UEFI bootloader reinstall unsuccessful")
+                    warning_msg = (
+                        "⚠ Could not automatically reinstall UEFI bootloader.\n\n"
+                        "POSSIBLE REASONS:\n"
+                        "- No Linux root filesystem detected\n"
+                        "- Unsupported bootloader configuration\n\n"
+                        "FOR LINUX UEFI VMs:\n"
+                        "If VM doesn't boot after resizing, boot from live USB and run:\n"
+                        "  sudo mount /dev/vda2 /mnt\n"
+                        "  sudo mount /dev/vda1 /mnt/boot/efi\n"
+                        "  sudo grub-install --target=x86_64-efi --efi-directory=/mnt/boot/efi /dev/vda\n"
+                        "  sudo umount /mnt/boot/efi\n"
+                        "  sudo umount /mnt\n\n"
+                        "Continue with resizing?"
+                    )
+                    
+                    if not self._show_yesno_and_wait("Bootloader Warning", warning_msg):
+                        print("User cancelled operation after bootloader warning")
+                        log_error("User cancelled operation after bootloader warning")
+                        raise RuntimeError("Operation cancelled by user after bootloader warning")
                 
-                self.update_progress(65, "Cleaning up after bootloader repair...")
-                log_info("Performing filesystem sync after bootloader repair...")
-                self._perform_safe_sync("Post-GRUB sync")
+                # Analyze final partition layout
+                self.update_progress(40, "GParted completed - analyzing partition changes...")
+                print("Analyzing final partition layout...")
+                log_info("Analyzing final partition layout...")
+                final_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
+                
+                # Compare layouts
+                partition_changes = "Partitions modified using GParted"
+                if len(initial_layout['partitions']) != len(final_layout['partitions']):
+                    partition_changes = f"Partition count changed: {len(initial_layout['partitions'])} → {len(final_layout['partitions'])}"
+                elif initial_layout['last_partition_end_bytes'] != final_layout['last_partition_end_bytes']:
+                    old_size = QCow2CloneResizer.format_size(initial_layout['last_partition_end_bytes'])
+                    new_size = QCow2CloneResizer.format_size(final_layout['last_partition_end_bytes'])
+                    partition_changes = f"Partition space changed: {old_size} → {new_size}"
+                
+                # Show size selection dialog
+                self.update_progress(45, "Select size for optimized image...")
+                print("Showing size selection dialog...")
+                log_info("Showing size selection dialog...")
+                
+                self.dialog_result_event.clear()
+                self.dialog_result_value = None
+                
+                self.root.after(0, self._show_final_size_dialog, final_layout, partition_changes)
+                
+                dialog_completed = self.dialog_result_event.wait(timeout=300)
+                
+                if not dialog_completed:
+                    log_error("Size selection dialog timed out")
+                    raise RuntimeError("Size selection dialog timed out")
+                
+                new_size = self.dialog_result_value
+                print(f"Dialog completed. New size selected: {new_size}")
+                log_info(f"New size selected: {QCow2CloneResizer.format_size(new_size) if new_size else 'None'}")
+                
+                if new_size is not None:
+                    print(f"User selected to resize image to: {QCow2CloneResizer.format_size(new_size)}")
+                    log_info(f"User selected to resize image to: {QCow2CloneResizer.format_size(new_size)}")
+                    
+                    # DISCONNECT NBD BEFORE RESIZE
+                    self.update_progress(50, "Preparing for image resize...")
+                    print("Performing final sync before NBD disconnect...")
+                    log_info("Performing final sync before NBD disconnect...")
+                    self._perform_safe_sync("Pre-resize sync")
+                    
+                    print(f"Disconnecting NBD device: {source_nbd}")
+                    log_info(f"Disconnecting NBD device: {source_nbd}")
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                    source_nbd = None
+                    
+                    print("Waiting for device release...")
+                    time.sleep(10)
+                    
+                    # RESIZE IMAGE WITH QEMU-IMG
+                    self.update_progress(55, "Resizing image...")
+                    print(f"Resizing image to {QCow2CloneResizer.format_size(new_size)}")
+                    log_info(f"Resizing image to {QCow2CloneResizer.format_size(new_size)}")
+                    
+                    resize_cmd = [
+                        'qemu-img', 'resize',
+                        '--shrink',
+                        '-f', 'qcow2',
+                        image_path,
+                        str(new_size)
+                    ]
+                    
+                    result = subprocess.run(
+                        resize_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                        check=False
+                    )
+                    
+                    if result.returncode != 0:
+                        print(f"ERROR: Resize failed!")
+                        print(f"stderr: {result.stderr}")
+                        log_error(f"Image resize failed: {result.stderr}")
+                        raise subprocess.CalledProcessError(result.returncode, resize_cmd, result.stderr)
+                    
+                    print(f"✓ Image resized successfully to {QCow2CloneResizer.format_size(new_size)}")
+                    log_info(f"✓ Image resized successfully")
+                    
+                    # COMPRESS IMAGE
+                    self.update_progress(70, "Compressing optimized image...")
+                    print(f"Starting compression...")
+                    log_info(f"Starting image compression...")
+                    
+                    compression_stats = QCow2CloneResizer.compress_qcow2_image(
+                        image_path,
+                        self.update_progress,
+                        delete_original_source=None,
+                        process_tracker=self
+                    )
+                    
+                    print(f"✓ Compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                    log_info(f"✓ Compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                    
+                    # Get final image info
+                    self.update_progress(95, "Finalizing...")
+                    print("Analyzing final image...")
+                    log_info("Analyzing final image...")
+                    
+                    final_image_info = QCow2CloneResizer.get_image_info(image_path)
+                    final_image_size = os.path.getsize(image_path)
+                    
+                    # Show completion dialog
+                    print("Showing completion dialog...")
+                    log_info("Operation completed successfully - showing completion dialog")
+                    self._show_completion_dialog(
+                        image_path,
+                        original_info,
+                        original_source_size,
+                        final_image_info,
+                        final_image_size,
+                        new_size,
+                        compression_stats
+                    )
+                    
+                else:
+                    print("User chose to skip resizing - operation will exit")
+                    log_warning("User cancelled resizing operation")
+                    raise RuntimeError("Operation cancelled by user - resizing skipped")
+            
+            elif os_type == 'linux' and boot_mode == 'bios':
+                print("=== LINUX BIOS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
+                log_info("=== LINUX BIOS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
+                
+                self.update_progress(40, "Finalizing BIOS partition changes...")
+                print("Performing final sync before NBD disconnect...")
+                log_info("Performing final sync before NBD disconnect...")
+                self._perform_safe_sync("BIOS pre-disconnect sync")
+                
+                print(f"Disconnecting NBD device: {source_nbd}")
+                log_info(f"Disconnecting NBD device: {source_nbd}")
                 QCow2CloneResizer.cleanup_nbd_device(source_nbd)
                 source_nbd = None
-                time.sleep(10)
+                
+                print("Waiting for device release...")
+                time.sleep(5)
+                
+                self.update_progress(50, "Compressing BIOS Linux image for space optimization...")
+                print("Starting compression...")
+                log_info("Starting image compression...")
+                
+                compression_stats = QCow2CloneResizer.compress_qcow2_image(
+                    image_path,
+                    self.update_progress,
+                    delete_original_source=None,
+                    process_tracker=self
+                )
+                
+                print(f"✓ BIOS Linux image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                log_info(f"✓ BIOS Linux image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                
+                final_image_info = QCow2CloneResizer.get_image_info(image_path)
+                final_image_size = os.path.getsize(image_path)
+                
+                self._show_bios_completion_dialog(
+                    image_path,
+                    original_info,
+                    original_source_size,
+                    final_image_info,
+                    final_image_size,
+                    compression_stats
+                )
+            
+            elif os_type == 'windows':
+                print("=== WINDOWS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
+                log_info("=== WINDOWS VM DETECTED - COMPRESSING ORIGINAL IMAGE ONLY ===")
+                
+                self.update_progress(40, "Finalizing Windows partition changes...")
+                print("Performing final sync before NBD disconnect...")
+                log_info("Performing final sync before NBD disconnect...")
+                self._perform_safe_sync("Windows pre-disconnect sync")
+                
+                print(f"Disconnecting NBD device: {source_nbd}")
+                log_info(f"Disconnecting NBD device: {source_nbd}")
+                QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                source_nbd = None
+                
+                print("Waiting for device release...")
+                time.sleep(5)
+                
+                self.update_progress(50, "Compressing Windows image for space optimization...")
+                print("Starting compression...")
+                log_info("Starting image compression...")
+                
+                compression_stats = QCow2CloneResizer.compress_qcow2_image(
+                    image_path,
+                    self.update_progress,
+                    delete_original_source=None,
+                    process_tracker=self
+                )
+                
+                print(f"✓ Windows image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                log_info(f"✓ Windows image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
+                
+                final_image_info = QCow2CloneResizer.get_image_info(image_path)
+                final_image_size = os.path.getsize(image_path)
+                
+                self._show_windows_completion_dialog(
+                    image_path,
+                    original_info,
+                    original_source_size,
+                    final_image_info,
+                    final_image_size,
+                    compression_stats
+                )
+            
             else:
-                if 'windows' in os_type.lower():
-                    log_info(f"Skipping GRUB reinstall: Windows system detected ({boot_mode.upper()} boot) - no bootloader modification needed")
-                elif boot_mode == 'bios' and 'linux' in os_type.lower():
-                    log_info(f"Skipping GRUB reinstall: BIOS Linux system detected - no GRUB modification in first version")
+                print("=== UNKNOWN OS TYPE ===")
+                log_warning("Unknown OS type detected")
+                
+                if source_nbd:
+                    print(f"Disconnecting NBD device: {source_nbd}")
+                    log_info(f"Disconnecting NBD device: {source_nbd}")
+                    self._perform_safe_sync("Unknown OS pre-disconnect sync")
+                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                    source_nbd = None
+                
+                self._show_message_and_wait("Unknown OS Type",
+                    f"Could not determine if this is a Linux or Windows VM.\n\n"
+                    f"GParted changes have been applied but no compression was performed.\n\n"
+                    f"Your original image has been modified in place:\n"
+                    f"{image_path}\n\n"
+                    f"If you want to compress the image, please run the operation again.")
+                
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            print(f"\n{'='*60}")
+            print(f"SUBPROCESS ERROR: {type(e).__name__}")
+            print(f"{'='*60}")
+            self.log(f"Subprocess error: {e}")
+            log_error(f"Subprocess error: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             
-            # 4. Compress with simple qemu-img convert
-            self.update_progress(70, "Compressing optimized image...")
-            print(f"Starting compression...")
-            
-            compression_stats = QCow2CloneResizer.compress_qcow2_image(
-                image_path,
-                self.update_progress,
-                delete_original_source=None,
-                process_tracker=self
-            )
-            
-            print(f"✓ Compression completed: {compression_stats['compression_ratio']:.1f}% saved")
-            
-            # 5. Get final image info
-            self.update_progress(95, "Finalizing...")
-            final_image_info = QCow2CloneResizer.get_image_info(image_path)
-            final_image_size = os.path.getsize(image_path)
-            
-            # Show completion dialog
-            self._show_completion_dialog(
-                image_path,
-                original_info,
-                original_source_size,
-                final_image_info,
-                final_image_size,
-                new_size,
-                compression_stats
-            )
-            
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, 
-                FileNotFoundError, PermissionError, OSError, ValueError, RuntimeError) as e:
+            # Auto-cleanup .compressed.tmp
+            self._auto_cleanup_compressed_tmp()
+        
+        except (FileNotFoundError, PermissionError, OSError, ValueError, json.JSONDecodeError, RuntimeError) as e:
             print(f"\n{'='*60}")
             print(f"ERROR: {type(e).__name__}: {e}")
             print(f"{'='*60}")
-            log_error(f"Operation error: {type(e).__name__}: {e}")
             self.log(f"Operation error: {e}")
-            self._auto_cleanup_compressed_tmp()
+            log_error(f"Operation error: {type(e).__name__}: {e}")
             
+            # Auto-cleanup .compressed.tmp
+            self._auto_cleanup_compressed_tmp()
+        
+        except KeyboardInterrupt:
+            print(f"\n{'='*60}")
+            print("OPERATION INTERRUPTED BY USER (Ctrl+C)")
+            print(f"{'='*60}")
+            self.log(f"Operation interrupted by user")
+            log_warning("Operation interrupted by user (Ctrl+C)")
+            
+            # Auto-cleanup .compressed.tmp
+            self._auto_cleanup_compressed_tmp()
+        
         except Exception as e:
             print(f"\n{'='*60}")
             print(f"UNEXPECTED ERROR: {type(e).__name__}: {e}")
             print(f"{'='*60}")
+            self.log(f"Unexpected error: {e}")
+            log_error(f"Unexpected error: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
-            log_error(f"Unexpected error: {type(e).__name__}: {e}")
+            
+            # Auto-cleanup .compressed.tmp
             self._auto_cleanup_compressed_tmp()
             
         finally:
             # Clean up NBD device
             if source_nbd:
                 try:
-                    print(f"Final NBD cleanup: {source_nbd}")
+                    print(f"Final cleanup of NBD device: {source_nbd}")
+                    log_info(f"Final cleanup of NBD device: {source_nbd}")
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                except:
-                    pass
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, 
+                    FileNotFoundError, PermissionError, OSError) as cleanup_e:
+                    print(f"Error cleaning up NBD device: {cleanup_e}")
+                    log_error(f"Error cleaning up NBD device: {cleanup_e}")
             
             self.root.after(0, self.reset_ui)
-
 
     def _show_completion_dialog(self, image_path, original_info, original_source_size,
                             final_image_info, final_image_size, new_size, compression_stats):
@@ -1788,33 +2010,35 @@ class QCow2CloneResizerGUI:
 
     @staticmethod
     def reinstall_bootloader(nbd_device, progress_callback=None):
-        """Reinstall GRUB bootloader pour systèmes UEFI Linux"""
+        """Reinstall bootloader with proper EFI cleanup and fallback setup"""
         from log_handler import log_info, log_error, log_warning
         
         try:
             if progress_callback:
-                progress_callback(62, "Reinstalling bootloader...")
+                progress_callback(45, "Reinstalling bootloader...")
             
-            print(f"Reinstalling GRUB bootloader on {nbd_device}")
-            log_info(f"Starting GRUB bootloader reinstallation on {nbd_device}")
+            print(f"Reinstalling bootloader on {nbd_device}")
+            log_info(f"Starting bootloader reinstallation on {nbd_device}")
             
-            # Détecter le type de table de partition
+            # Detect partition table
             parted_result = subprocess.run(
                 ['parted', '-s', nbd_device, 'print'],
                 capture_output=True, text=True, check=True, timeout=30
             )
             
             is_gpt = 'gpt' in parted_result.stdout.lower()
+            is_uefi = is_gpt
             
-            if not is_gpt:
-                print("BIOS mode detected - skipping GRUB reinstall (MBR mode)")
-                log_info("Bootloader check: BIOS mode detected - GRUB reinstall skipped")
-                return True
+            if not is_uefi:
+                # Handle BIOS case
+                print("BIOS mode - installing to MBR")
+                log_info("Bootloader: BIOS mode detected - skipping GRUB (will be handled in future version)")
+                return False
             
-            print("UEFI mode detected - proceeding with GRUB reinstall")
-            log_info("Bootloader check: UEFI mode detected - proceeding with GRUB reinstall")
+            print("UEFI mode detected")
+            log_info("Bootloader: UEFI mode detected - proceeding with GRUB installation")
             
-            # Parser les partitions
+            # Find partitions
             partitions = []
             for line in parted_result.stdout.split('\n'):
                 if re.match(r'^\s*\d+\s+', line.strip()):
@@ -1825,7 +2049,7 @@ class QCow2CloneResizerGUI:
                             'flags': line.lower()
                         })
             
-            # Trouver la partition EFI
+            # Find EFI partition
             efi_partition = None
             for part in partitions:
                 if 'esp' in part['flags']:
@@ -1833,14 +2057,13 @@ class QCow2CloneResizerGUI:
                     break
             
             if not efi_partition:
-                log_error("GRUB Reinstall: No EFI partition found - cannot reinstall GRUB")
-                print("No EFI partition found - cannot reinstall GRUB")
+                print("No EFI partition found")
+                log_error("Bootloader: No EFI partition found")
                 return False
             
-            print(f"EFI partition found: {efi_partition}")
-            log_info(f"GRUB Reinstall: EFI partition detected on partition {efi_partition}")
+            log_info(f"Bootloader: EFI partition found: {efi_partition}")
             
-            # Trouver la partition Linux root
+            # Find Linux root
             for part_num in [p['number'] for p in partitions]:
                 if part_num == efi_partition:
                     continue
@@ -1856,9 +2079,9 @@ class QCow2CloneResizerGUI:
                 
                 with tempfile.TemporaryDirectory() as mount_point:
                     try:
-                        # Mount la partition root
+                        # Mount root partition
                         mounted = False
-                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2', 'xfs', 'btrfs']:
+                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2']:
                             if subprocess.run(['mount', '-t', fs_type, part_device, mount_point],
                                             capture_output=True, timeout=30, check=False).returncode == 0:
                                 mounted = True
@@ -1867,17 +2090,17 @@ class QCow2CloneResizerGUI:
                         if not mounted:
                             continue
                         
-                        # Vérifier que c'est Linux
+                        # Check if Linux
                         is_linux = os.path.exists(os.path.join(mount_point, 'etc'))
                         
                         if not is_linux:
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
-                        print(f"Found Linux root on partition {part_num}")
-                        log_info(f"GRUB Reinstall: Found Linux root filesystem on partition {part_num}")
+                        print(f"Found Linux on partition {part_num}")
+                        log_info(f"Bootloader: Found Linux root on partition {part_num}")
                         
-                        # Mount la partition EFI
+                        # Mount EFI partition
                         efi_mount = os.path.join(mount_point, 'boot', 'efi')
                         os.makedirs(efi_mount, exist_ok=True)
                         
@@ -1896,88 +2119,124 @@ class QCow2CloneResizerGUI:
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
-                        print("EFI partition mounted successfully")
-                        log_info("GRUB Reinstall: EFI partition mounted successfully")
+                        print("EFI partition mounted")
+                        log_info("Bootloader: EFI partition mounted successfully")
                         
-                        # ÉTAPE CRITIQUE: Nettoyer les anciens répertoires EFI
+                        # CRITICAL: Clean up old EFI directories
                         efi_base = os.path.join(mount_point, 'boot', 'efi', 'EFI')
                         print(f"Cleaning EFI directory: {efi_base}")
-                        log_info(f"GRUB Reinstall: Cleaning old EFI directories in {efi_base}")
+                        log_info(f"Bootloader: Cleaning EFI directory: {efi_base}")
                         
                         if os.path.exists(efi_base):
+                            # Remove old directories except BOOT
                             for item in os.listdir(efi_base):
                                 item_path = os.path.join(efi_base, item)
                                 if item.upper() != 'BOOT' and os.path.isdir(item_path):
                                     print(f"Removing old EFI directory: {item}")
-                                    log_info(f"GRUB Reinstall: Removing old EFI directory: {item}")
+                                    log_info(f"Bootloader: Removing old EFI directory: {item}")
                                     try:
                                         shutil.rmtree(item_path)
-                                    except Exception as e:
-                                        print(f"Warning removing {item}: {e}")
-                                        log_warning(f"GRUB Reinstall: Warning removing {item}: {e}")
+                                    except PermissionError as perm_e:
+                                        print(f"Permission denied removing {item}: {perm_e}")
+                                        log_warning(f"Bootloader: Permission denied removing {item}: {perm_e}")
+                                    except OSError as os_e:
+                                        print(f"OS error removing {item}: {os_e}")
+                                        log_warning(f"Bootloader: OS error removing {item}: {os_e}")
+                                    except shutil.Error as sh_e:
+                                        print(f"Shutil error removing {item}: {sh_e}")
+                                        log_warning(f"Bootloader: Shutil error removing {item}: {sh_e}")
                         
-                        # Mount les répertoires système
+                        # Mount system dirs
                         for d in ['dev', 'proc', 'sys']:
                             subprocess.run(['mount', '--bind', f'/{d}', os.path.join(mount_point, d)], 
-                                        check=False, timeout=30)
+                                        check=False)
                         
-                        # Installer GRUB avec --removable flag
-                        print("Installing GRUB to EFI...")
-                        log_info("GRUB Reinstall: Installing GRUB to EFI partition...")
-                        
-                        if progress_callback:
-                            progress_callback(63, "Installing GRUB to EFI...")
+                        # Install GRUB with --removable flag (creates BOOTX64.EFI directly)
+                        print("Installing GRUB to removable media path...")
+                        log_info("Bootloader: Installing GRUB with --removable flag...")
                         
                         result = subprocess.run(
                             ['chroot', mount_point, 'grub-install',
                             '--target=x86_64-efi',
                             '--efi-directory=/boot/efi',
-                            '--removable',
+                            '--removable',  # This creates /EFI/BOOT/BOOTX64.EFI
                             '--recheck'],
                             capture_output=True, text=True, timeout=120, check=False
                         )
                         
                         print(f"GRUB install return code: {result.returncode}")
+                        if result.stdout:
+                            print(f"STDOUT: {result.stdout}")
+                        if result.stderr:
+                            print(f"STDERR: {result.stderr}")
+                        
                         if result.returncode != 0:
-                            print("⚠ GRUB install had issues, attempting to continue...")
-                            log_error(f"GRUB Reinstall: grub-install command failed with code {result.returncode}")
+                            print("GRUB install failed")
+                            log_error(f"Bootloader: GRUB install failed with return code {result.returncode}")
                             if result.stderr:
-                                log_error(f"GRUB Reinstall Error Details: {result.stderr}")
+                                log_error(f"Bootloader Error: {result.stderr}")
+                            # Cleanup
+                            subprocess.run(['umount', efi_mount], check=False, timeout=30)
+                            for d in ['dev', 'proc', 'sys']:
+                                subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
+                            subprocess.run(['umount', mount_point], check=False, timeout=30)
+                            continue
+                        
+                        log_info("Bootloader: GRUB installed successfully")
+                        
+                        # Verify BOOTX64.EFI was created
+                        bootx64_path = os.path.join(efi_base, 'BOOT', 'BOOTX64.EFI')
+                        if os.path.exists(bootx64_path):
+                            size = os.path.getsize(bootx64_path)
+                            print(f"BOOTX64.EFI created successfully: {size} bytes")
+                            log_info(f"Bootloader: BOOTX64.EFI created successfully: {size} bytes")
                         else:
-                            print("✓ GRUB installed successfully")
-                            log_info("GRUB Reinstall: ✓ GRUB successfully installed to EFI")
+                            print("ERROR: BOOTX64.EFI not found!")
+                            log_error("Bootloader: ERROR - BOOTX64.EFI not found!")
                         
-                        # Générer la configuration GRUB
-                        if progress_callback:
-                            progress_callback(64, "Generating GRUB configuration...")
-                        
+                        # Generate GRUB config
                         print("Generating GRUB configuration...")
-                        log_info("GRUB Reinstall: Generating GRUB configuration...")
+                        log_info("Bootloader: Generating GRUB configuration...")
                         
-                        update_cmd = subprocess.run(
-                            ['chroot', mount_point, 'update-grub'],
-                            capture_output=True, text=True, timeout=120, check=False
-                        )
+                        for cmd in [['update-grub'], ['grub-mkconfig', '-o', '/boot/grub/grub.cfg']]:
+                            result = subprocess.run(['chroot', mount_point] + cmd,
+                                                capture_output=True, text=True, timeout=120, check=False)
+                            if result.returncode == 0:
+                                print("GRUB config generated")
+                                log_info("Bootloader: GRUB configuration generated successfully")
+                                break
+                            else:
+                                log_warning(f"Bootloader: {' '.join(cmd)} failed, trying next method...")
                         
-                        if update_cmd.returncode != 0:
-                            print(f"⚠ update-grub failed: {update_cmd.stderr}")
-                            log_error(f"GRUB Reinstall: update-grub failed with code {update_cmd.returncode}")
-                            log_error(f"GRUB Reinstall Error Details: {update_cmd.stderr}")
-                        else:
-                            print("✓ GRUB configuration generated")
-                            log_info("GRUB Reinstall: ✓ GRUB configuration generated successfully")
-                        
-                        # Vérifier que grub.cfg existe
+                        # Verify grub.cfg
                         grub_cfg = os.path.join(mount_point, 'boot', 'grub', 'grub.cfg')
                         if os.path.exists(grub_cfg):
                             with open(grub_cfg, 'r') as f:
                                 content = f.read()
                                 if 'menuentry' in content:
-                                    print("✓ grub.cfg contains boot entries")
-                                    log_info("GRUB Reinstall: ✓ grub.cfg contains valid boot entries")
+                                    print("grub.cfg contains boot entries")
+                                    log_info("Bootloader: grub.cfg contains valid boot entries")
                                 else:
-                                    print("⚠ grub.cfg has no menuentry")
-                                    log_warning("GRUB Reinstall: ⚠ grub.cfg exists but has no boot entries")
+                                    print("WARNING: grub.cfg has no menuentry")
+                                    log_warning("Bootloader: WARNING - grub.cfg has no boot entries")
+                        
+                        # List final EFI structure
+                        print("\nFinal EFI structure:")
+                        efi_structure = []
+                        if os.path.exists(efi_base):
+                            for root, dirs, files in os.walk(efi_base):
+                                level = root.replace(efi_base, '').count(os.sep)
+                                indent = ' ' * 2 * level
+                                dir_line = f"{indent}{os.path.basename(root)}/"
+                                print(dir_line)
+                                efi_structure.append(dir_line)
+                                subindent = ' ' * 2 * (level + 1)
+                                for file in files:
+                                    file_line = f"{subindent}{file}"
+                                    print(file_line)
+                                    efi_structure.append(file_line)
+                        
+                        log_info(f"Bootloader: Final EFI structure:\n{chr(10).join(efi_structure)}")
                         
                         # Cleanup
                         subprocess.run(['umount', efi_mount], check=False, timeout=30)
@@ -1985,45 +2244,60 @@ class QCow2CloneResizerGUI:
                             subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
                         subprocess.run(['umount', mount_point], check=False, timeout=30)
                         
-                        print("✓ Bootloader installation complete")
-                        log_info("GRUB Reinstall: ✓ Bootloader installation completed successfully")
-                        
-                        if progress_callback:
-                            progress_callback(65, "Bootloader reinstalled")
-                        
+                        print("Bootloader installation complete")
+                        log_info("Bootloader: Installation complete")
                         return True
                         
+                    except subprocess.CalledProcessError as mount_e:
+                        print(f"Mount command error: {mount_e}")
+                        log_error(f"Bootloader: Mount command error: {mount_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except subprocess.TimeoutExpired as timeout_e:
                         print(f"Mount operation timed out: {timeout_e}")
-                        log_error(f"GRUB Reinstall: Mount operation timed out: {timeout_e}")
+                        log_error(f"Bootloader: Mount operation timed out: {timeout_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except FileNotFoundError as file_e:
-                        print(f"Required command not found: {file_e}")
-                        log_error(f"GRUB Reinstall: Required command not found: {file_e}")
+                        print(f"Required file/command not found: {file_e}")
+                        log_error(f"Bootloader: Required file/command not found: {file_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except PermissionError as perm_e:
-                        print(f"Permission error: {perm_e}")
-                        log_error(f"GRUB Reinstall: Permission error: {perm_e}")
+                        print(f"Permission error during bootloader install: {perm_e}")
+                        log_error(f"Bootloader: Permission error during install: {perm_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
                     except OSError as os_e:
-                        print(f"OS error: {os_e}")
-                        log_error(f"GRUB Reinstall: OS error: {os_e}")
+                        print(f"OS error during bootloader install: {os_e}")
+                        log_error(f"Bootloader: OS error during install: {os_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
             
-            log_error("GRUB Reinstall: No valid Linux root partition found for GRUB installation")
             return False
             
         except subprocess.CalledProcessError as e:
-            print(f"Command failed: {e}")
-            log_error(f"GRUB Reinstall: Command failed: {e}")
+            print(f"ERROR - command failed: {e}")
+            log_error(f"Bootloader: Command failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
         except subprocess.TimeoutExpired as e:
-            print(f"Operation timed out: {e}")
-            log_error(f"GRUB Reinstall: Operation timed out: {e}")
+            print(f"ERROR - operation timed out: {e}")
+            log_error(f"Bootloader: Operation timed out: {e}")
+            import traceback
+            traceback.print_exc()
             return False
-        except Exception as e:
-            print(f"Unexpected error in bootloader reinstall: {e}")
-            log_error(f"GRUB Reinstall: Unexpected error: {type(e).__name__}: {e}")
+        except FileNotFoundError as e:
+            print(f"ERROR - required command not found: {e}")
+            log_error(f"Bootloader: Required command not found: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except PermissionError as e:
+            print(f"ERROR - permission denied: {e}")
+            log_error(f"Bootloader: Permission denied: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except OSError as e:
+            print(f"ERROR - OS error: {e}")
+            log_error(f"Bootloader: OS error: {e}")
             import traceback
             traceback.print_exc()
             return False
