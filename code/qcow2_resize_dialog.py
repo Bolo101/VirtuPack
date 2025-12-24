@@ -919,6 +919,17 @@ class QCow2CloneResizerGUI:
             print("GParted session completed")
             log_info("GParted session completed")
             
+            # WAIT FOR PARTITIONS TO STABILIZE AFTER GPARTED
+            print("Waiting for partitions to stabilize after GParted...")
+            log_info("Waiting for partitions to stabilize after GParted...")
+            time.sleep(30)
+            
+            # Re-scan partitions
+            print("Re-scanning partitions...")
+            log_info("Re-scanning partitions with partprobe...")
+            subprocess.run(['partprobe', source_nbd], check=False, timeout=30)
+            time.sleep(3)
+            
             # OS-SPECIFIC AND BOOT-MODE HANDLING
             if os_type == 'linux' and boot_mode == 'uefi':
                 print("=== LINUX UEFI VM DETECTED ===")
@@ -2473,27 +2484,301 @@ class QCow2CloneResizerGUI:
                     os.remove(target_path)
                 except (FileNotFoundError, PermissionError, OSError):
                     pass
+
+    @staticmethod
+    def reinstall_bootloader(nbd_device, progress_callback=None):
+        """Reinstall bootloader with proper EFI cleanup and fallback setup"""
+        from log_handler import log_info, log_error, log_warning
+        
+        try:
+            if progress_callback:
+                progress_callback(45, "Reinstalling bootloader...")
             
-            raise
-        except OSError as e:
-            print(f"ERROR in _clone_to_new_image_with_existing_nbd - OS error: {e}")
+            print(f"Reinstalling bootloader on {nbd_device}")
+            log_info(f"Starting bootloader reinstallation on {nbd_device}")
+            
+            # Detect partition table
+            parted_result = subprocess.run(
+                ['parted', '-s', nbd_device, 'print'],
+                capture_output=True, text=True, check=True, timeout=30
+            )
+            
+            is_gpt = 'gpt' in parted_result.stdout.lower()
+            is_uefi = is_gpt
+            
+            if not is_uefi:
+                # Handle BIOS case
+                print("BIOS mode - installing to MBR")
+                log_info("Bootloader: BIOS mode detected - skipping GRUB (will be handled in future version)")
+                return False
+            
+            print("UEFI mode detected")
+            log_info("Bootloader: UEFI mode detected - proceeding with GRUB installation")
+            
+            # Find partitions
+            partitions = []
+            for line in parted_result.stdout.split('\n'):
+                if re.match(r'^\s*\d+\s+', line.strip()):
+                    parts = line.split()
+                    if len(parts) >= 1:
+                        partitions.append({
+                            'number': int(parts[0]),
+                            'flags': line.lower()
+                        })
+            
+            # Find EFI partition
+            efi_partition = None
+            for part in partitions:
+                if 'esp' in part['flags']:
+                    efi_partition = part['number']
+                    break
+            
+            if not efi_partition:
+                print("No EFI partition found")
+                log_error("Bootloader: No EFI partition found")
+                return False
+            
+            log_info(f"Bootloader: EFI partition found: {efi_partition}")
+            
+            # Find Linux root
+            for part_num in [p['number'] for p in partitions]:
+                if part_num == efi_partition:
+                    continue
+                
+                part_device = None
+                for path in [f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"]:
+                    if os.path.exists(path):
+                        part_device = path
+                        break
+                
+                if not part_device:
+                    continue
+                
+                with tempfile.TemporaryDirectory() as mount_point:
+                    try:
+                        # Mount root partition
+                        mounted = False
+                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2']:
+                            if subprocess.run(['mount', '-t', fs_type, part_device, mount_point],
+                                            capture_output=True, timeout=30, check=False).returncode == 0:
+                                mounted = True
+                                break
+                        
+                        if not mounted:
+                            continue
+                        
+                        # Check if Linux
+                        is_linux = os.path.exists(os.path.join(mount_point, 'etc'))
+                        
+                        if not is_linux:
+                            subprocess.run(['umount', mount_point], check=False, timeout=30)
+                            continue
+                        
+                        print(f"Found Linux on partition {part_num}")
+                        log_info(f"Bootloader: Found Linux root on partition {part_num}")
+                        
+                        # Mount EFI partition
+                        efi_mount = os.path.join(mount_point, 'boot', 'efi')
+                        os.makedirs(efi_mount, exist_ok=True)
+                        
+                        efi_dev = None
+                        for path in [f"{nbd_device}p{efi_partition}", f"{nbd_device}{efi_partition}"]:
+                            if os.path.exists(path):
+                                efi_dev = path
+                                break
+                        
+                        if not efi_dev:
+                            subprocess.run(['umount', mount_point], check=False, timeout=30)
+                            continue
+                        
+                        if subprocess.run(['mount', '-t', 'vfat', efi_dev, efi_mount],
+                                        capture_output=True, check=False, timeout=30).returncode != 0:
+                            subprocess.run(['umount', mount_point], check=False, timeout=30)
+                            continue
+                        
+                        print("EFI partition mounted")
+                        log_info("Bootloader: EFI partition mounted successfully")
+                        
+                        # CRITICAL: Clean up old EFI directories
+                        efi_base = os.path.join(mount_point, 'boot', 'efi', 'EFI')
+                        print(f"Cleaning EFI directory: {efi_base}")
+                        log_info(f"Bootloader: Cleaning EFI directory: {efi_base}")
+                        
+                        if os.path.exists(efi_base):
+                            # Remove old directories except BOOT
+                            for item in os.listdir(efi_base):
+                                item_path = os.path.join(efi_base, item)
+                                if item.upper() != 'BOOT' and os.path.isdir(item_path):
+                                    print(f"Removing old EFI directory: {item}")
+                                    log_info(f"Bootloader: Removing old EFI directory: {item}")
+                                    try:
+                                        shutil.rmtree(item_path)
+                                    except PermissionError as perm_e:
+                                        print(f"Permission denied removing {item}: {perm_e}")
+                                        log_warning(f"Bootloader: Permission denied removing {item}: {perm_e}")
+                                    except OSError as os_e:
+                                        print(f"OS error removing {item}: {os_e}")
+                                        log_warning(f"Bootloader: OS error removing {item}: {os_e}")
+                                    except shutil.Error as sh_e:
+                                        print(f"Shutil error removing {item}: {sh_e}")
+                                        log_warning(f"Bootloader: Shutil error removing {item}: {sh_e}")
+                        
+                        # Mount system dirs
+                        for d in ['dev', 'proc', 'sys']:
+                            subprocess.run(['mount', '--bind', f'/{d}', os.path.join(mount_point, d)], 
+                                        check=False)
+                        
+                        # Install GRUB with --removable flag (creates BOOTX64.EFI directly)
+                        print("Installing GRUB to removable media path...")
+                        log_info("Bootloader: Installing GRUB with --removable flag...")
+                        
+                        result = subprocess.run(
+                            ['chroot', mount_point, 'grub-install',
+                            '--target=x86_64-efi',
+                            '--efi-directory=/boot/efi',
+                            '--removable',  # This creates /EFI/BOOT/BOOTX64.EFI
+                            '--recheck'],
+                            capture_output=True, text=True, timeout=120, check=False
+                        )
+                        
+                        print(f"GRUB install return code: {result.returncode}")
+                        if result.stdout:
+                            print(f"STDOUT: {result.stdout}")
+                        if result.stderr:
+                            print(f"STDERR: {result.stderr}")
+                        
+                        if result.returncode != 0:
+                            print("GRUB install failed")
+                            log_error(f"Bootloader: GRUB install failed with return code {result.returncode}")
+                            if result.stderr:
+                                log_error(f"Bootloader Error: {result.stderr}")
+                            # Cleanup
+                            subprocess.run(['umount', efi_mount], check=False, timeout=30)
+                            for d in ['dev', 'proc', 'sys']:
+                                subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
+                            subprocess.run(['umount', mount_point], check=False, timeout=30)
+                            continue
+                        
+                        log_info("Bootloader: GRUB installed successfully")
+                        
+                        # Verify BOOTX64.EFI was created
+                        bootx64_path = os.path.join(efi_base, 'BOOT', 'BOOTX64.EFI')
+                        if os.path.exists(bootx64_path):
+                            size = os.path.getsize(bootx64_path)
+                            print(f"BOOTX64.EFI created successfully: {size} bytes")
+                            log_info(f"Bootloader: BOOTX64.EFI created successfully: {size} bytes")
+                        else:
+                            print("ERROR: BOOTX64.EFI not found!")
+                            log_error("Bootloader: ERROR - BOOTX64.EFI not found!")
+                        
+                        # Generate GRUB config
+                        print("Generating GRUB configuration...")
+                        log_info("Bootloader: Generating GRUB configuration...")
+                        
+                        for cmd in [['update-grub'], ['grub-mkconfig', '-o', '/boot/grub/grub.cfg']]:
+                            result = subprocess.run(['chroot', mount_point] + cmd,
+                                                capture_output=True, text=True, timeout=120, check=False)
+                            if result.returncode == 0:
+                                print("GRUB config generated")
+                                log_info("Bootloader: GRUB configuration generated successfully")
+                                break
+                            else:
+                                log_warning(f"Bootloader: {' '.join(cmd)} failed, trying next method...")
+                        
+                        # Verify grub.cfg
+                        grub_cfg = os.path.join(mount_point, 'boot', 'grub', 'grub.cfg')
+                        if os.path.exists(grub_cfg):
+                            with open(grub_cfg, 'r') as f:
+                                content = f.read()
+                                if 'menuentry' in content:
+                                    print("grub.cfg contains boot entries")
+                                    log_info("Bootloader: grub.cfg contains valid boot entries")
+                                else:
+                                    print("WARNING: grub.cfg has no menuentry")
+                                    log_warning("Bootloader: WARNING - grub.cfg has no boot entries")
+                        
+                        # List final EFI structure
+                        print("\nFinal EFI structure:")
+                        efi_structure = []
+                        if os.path.exists(efi_base):
+                            for root, dirs, files in os.walk(efi_base):
+                                level = root.replace(efi_base, '').count(os.sep)
+                                indent = ' ' * 2 * level
+                                dir_line = f"{indent}{os.path.basename(root)}/"
+                                print(dir_line)
+                                efi_structure.append(dir_line)
+                                subindent = ' ' * 2 * (level + 1)
+                                for file in files:
+                                    file_line = f"{subindent}{file}"
+                                    print(file_line)
+                                    efi_structure.append(file_line)
+                        
+                        log_info(f"Bootloader: Final EFI structure:\n{chr(10).join(efi_structure)}")
+                        
+                        # Cleanup
+                        subprocess.run(['umount', efi_mount], check=False, timeout=30)
+                        for d in ['dev', 'proc', 'sys']:
+                            subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
+                        subprocess.run(['umount', mount_point], check=False, timeout=30)
+                        
+                        print("Bootloader installation complete")
+                        log_info("Bootloader: Installation complete")
+                        return True
+                        
+                    except subprocess.CalledProcessError as mount_e:
+                        print(f"Mount command error: {mount_e}")
+                        log_error(f"Bootloader: Mount command error: {mount_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except subprocess.TimeoutExpired as timeout_e:
+                        print(f"Mount operation timed out: {timeout_e}")
+                        log_error(f"Bootloader: Mount operation timed out: {timeout_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except FileNotFoundError as file_e:
+                        print(f"Required file/command not found: {file_e}")
+                        log_error(f"Bootloader: Required file/command not found: {file_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except PermissionError as perm_e:
+                        print(f"Permission error during bootloader install: {perm_e}")
+                        log_error(f"Bootloader: Permission error during install: {perm_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                    except OSError as os_e:
+                        print(f"OS error during bootloader install: {os_e}")
+                        log_error(f"Bootloader: OS error during install: {os_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+            
+            return False
+            
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR - command failed: {e}")
+            log_error(f"Bootloader: Command failed: {e}")
             import traceback
             traceback.print_exc()
-            
-            if target_nbd:
-                try:
-                    QCow2CloneResizer.cleanup_nbd_device(target_nbd)
-                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, PermissionError, OSError):
-                    pass
-            
-            if target_path and os.path.exists(target_path):
-                try:
-                    os.remove(target_path)
-                except (FileNotFoundError, PermissionError, OSError):
-                    pass
-            
-            raise
-    
+            return False
+        except subprocess.TimeoutExpired as e:
+            print(f"ERROR - operation timed out: {e}")
+            log_error(f"Bootloader: Operation timed out: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except FileNotFoundError as e:
+            print(f"ERROR - required command not found: {e}")
+            log_error(f"Bootloader: Required command not found: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except PermissionError as e:
+            print(f"ERROR - permission denied: {e}")
+            log_error(f"Bootloader: Permission denied: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        except OSError as e:
+            print(f"ERROR - OS error: {e}")
+            log_error(f"Bootloader: OS error: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+ 
 
     def _clone_disk_structure_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
         """Clone disk structure with device verification and flag preservation"""
@@ -2592,9 +2877,9 @@ class QCow2CloneResizerGUI:
             
             # Wait for partitions to be available
             print("Waiting for target partitions to be available...")
-            time.sleep(3)
+            time.sleep(10)
             subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
-            time.sleep(2)
+            time.sleep(15)
             
             # Apply flags to target partitions
             if progress_callback:
@@ -2670,7 +2955,7 @@ class QCow2CloneResizerGUI:
             for attempt in range(max_wait_attempts):
                 subprocess.run(['partprobe', source_nbd], check=False, timeout=30)
                 subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
-                time.sleep(2)
+                time.sleep(15)
 
                 all_found = True
                 for partition in layout_info['partitions']:
