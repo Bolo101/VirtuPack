@@ -826,10 +826,8 @@ class QCow2CloneResizerGUI:
         except (TypeError, ValueError):
             return "unknown"
 
-
     def _gparted_clone_worker(self, image_path):
         """Worker thread for GParted + clone resize operation with proper signal handling"""
-        from log_handler import log_info, log_error, log_warning
         
         source_nbd = None
         
@@ -922,7 +920,7 @@ class QCow2CloneResizerGUI:
             # WAIT FOR PARTITIONS TO STABILIZE AFTER GPARTED
             print("Waiting for partitions to stabilize after GParted...")
             log_info("Waiting for partitions to stabilize after GParted...")
-            time.sleep(30)
+            time.sleep(5)
             
             # Re-scan partitions
             print("Re-scanning partitions...")
@@ -2312,7 +2310,6 @@ class QCow2CloneResizerGUI:
             import traceback
             traceback.print_exc()
             return False
-
         
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
                                 existing_source_nbd, layout_info, progress_callback=None,
