@@ -1945,7 +1945,7 @@ class QCow2CloneResizerGUI:
 
     @staticmethod
     def reinstall_bootloader(nbd_device, progress_callback=None):
-        """Reinstall bootloader with proper EFI cleanup and fallback setup"""
+        """Reinstall bootloader with proper EFI cleanup and fallback setup - BIOS and UEFI"""
         try:
             if progress_callback:
                 progress_callback(45, "Reinstalling bootloader...")
@@ -1962,11 +1962,127 @@ class QCow2CloneResizerGUI:
             is_uefi = is_gpt
             
             if not is_uefi:
-                # Handle BIOS case (your existing code)
+                # Handle BIOS case
                 print("BIOS mode - installing to MBR")
-                # ... existing BIOS code ...
-                return False  # For now, focusing on UEFI
+                
+                # Find partitions
+                partitions = []
+                for line in parted_result.stdout.split('\n'):
+                    if re.match(r'^\s*\d+\s+', line.strip()):
+                        parts = line.split()
+                        if len(parts) >= 1:
+                            partitions.append(int(parts[0]))
+                
+                # Find Linux root
+                for part_num in partitions:
+                    part_device = None
+                    for path in [f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"]:
+                        if os.path.exists(path):
+                            part_device = path
+                            break
+                    
+                    if not part_device:
+                        continue
+                    
+                    with tempfile.TemporaryDirectory() as mount_point:
+                        try:
+                            # Mount root partition
+                            mounted = False
+                            for fs_type in ['auto', 'ext4', 'ext3', 'ext2']:
+                                if subprocess.run(['mount', '-t', fs_type, part_device, mount_point],
+                                                capture_output=True, timeout=30, check=False).returncode == 0:
+                                    mounted = True
+                                    break
+                            
+                            if not mounted:
+                                continue
+                            
+                            # Check if Linux
+                            is_linux = os.path.exists(os.path.join(mount_point, 'etc'))
+                            
+                            if not is_linux:
+                                subprocess.run(['umount', mount_point], check=False, timeout=30)
+                                continue
+                            
+                            print(f"Found Linux on partition {part_num}")
+                            
+                            # Mount system dirs
+                            for d in ['dev', 'proc', 'sys']:
+                                subprocess.run(['mount', '--bind', f'/{d}', os.path.join(mount_point, d)], 
+                                            check=False)
+                            
+                            # Install GRUB to MBR
+                            print("Installing GRUB to MBR...")
+                            
+                            result = subprocess.run(
+                                ['chroot', mount_point, 'grub-install',
+                                '--target=i386-pc',
+                                '--recheck',
+                                nbd_device],
+                                capture_output=True, text=True, timeout=120, check=False
+                            )
+                            
+                            print(f"GRUB install return code: {result.returncode}")
+                            if result.stdout:
+                                print(f"STDOUT: {result.stdout}")
+                            if result.stderr:
+                                print(f"STDERR: {result.stderr}")
+                            
+                            if result.returncode != 0:
+                                print("GRUB install failed")
+                                # Cleanup
+                                for d in ['dev', 'proc', 'sys']:
+                                    subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
+                                subprocess.run(['umount', mount_point], check=False, timeout=30)
+                                continue
+                            
+                            # Generate GRUB config
+                            print("Generating GRUB configuration...")
+                            
+                            for cmd in [['update-grub'], ['grub-mkconfig', '-o', '/boot/grub/grub.cfg']]:
+                                result = subprocess.run(['chroot', mount_point] + cmd,
+                                                    capture_output=True, text=True, timeout=120, check=False)
+                                if result.returncode == 0:
+                                    print("GRUB config generated")
+                                    break
+                            
+                            # Verify grub.cfg
+                            grub_cfg = os.path.join(mount_point, 'boot', 'grub', 'grub.cfg')
+                            if os.path.exists(grub_cfg):
+                                with open(grub_cfg, 'r') as f:
+                                    content = f.read()
+                                    if 'menuentry' in content:
+                                        print("grub.cfg contains boot entries")
+                                    else:
+                                        print("WARNING: grub.cfg has no menuentry")
+                            
+                            # Cleanup
+                            for d in ['dev', 'proc', 'sys']:
+                                subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
+                            subprocess.run(['umount', mount_point], check=False, timeout=30)
+                            
+                            print("Bootloader installation complete (BIOS)")
+                            return True
+                            
+                        except subprocess.CalledProcessError as mount_e:
+                            print(f"Mount command error: {mount_e}")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                        except subprocess.TimeoutExpired as timeout_e:
+                            print(f"Mount operation timed out: {timeout_e}")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                        except FileNotFoundError as file_e:
+                            print(f"Required file/command not found: {file_e}")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                        except PermissionError as perm_e:
+                            print(f"Permission error during bootloader install: {perm_e}")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                        except OSError as os_e:
+                            print(f"OS error during bootloader install: {os_e}")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                
+                return False
             
+            # ==================== UEFI MODE ====================
             print("UEFI mode detected")
             
             # Find partitions
@@ -2144,7 +2260,7 @@ class QCow2CloneResizerGUI:
                             subprocess.run(['umount', os.path.join(mount_point, d)], check=False, timeout=30)
                         subprocess.run(['umount', mount_point], check=False, timeout=30)
                         
-                        print("Bootloader installation complete")
+                        print("Bootloader installation complete (UEFI)")
                         return True
                         
                     except subprocess.CalledProcessError as mount_e:
