@@ -2827,7 +2827,7 @@ class QCow2CloneResizerGUI:
             raise OSError(f"System error during disk structure cloning: {e}")
 
     def _clone_partition_data_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone partition data with detailed progress updates and SWAP partition handling"""
+        """Clone partition data with partclone instead of dd, with detailed progress updates and SWAP partition handling"""
         source_part = None
         target_part = None
         process = None
@@ -2878,7 +2878,6 @@ class QCow2CloneResizerGUI:
             if progress_callback:
                 progress_callback(5, "Partitions ready, starting clone...")
 
-            total_size = 0
             partition_sizes = []
 
             for partition in layout_info['partitions']:
@@ -2898,13 +2897,8 @@ class QCow2CloneResizerGUI:
                                                 capture_output=True, text=True, check=True, timeout=10)
                     size = int(size_result.stdout.strip())
                     partition_sizes.append((partition_num, size))
-                    total_size += size
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
                     partition_sizes.append((partition_num, 0))
-
-            print(f"Total size to clone: {QCow2CloneResizer.format_size(total_size)}")
-
-            cumulative_bytes_copied = 0
 
             for partition_index, partition in enumerate(layout_info['partitions']):
                 partition_num = partition['number']
@@ -2929,9 +2923,9 @@ class QCow2CloneResizerGUI:
                 print(f"Cloning partition {partition_num}: {source_part} -> {target_part} (SWAP: {is_swap_partition})")
 
                 if is_swap_partition:
-                    print(f"SWAP partition detected - skipping actual data clone (SWAP can be initialized fresh)")
-                    # Just create the partition header without cloning data
+                    print(f"SWAP partition detected - initializing fresh")
                     self._init_swap_partition(target_part, partition_label, progress_callback)
+                    time.sleep(2)
                     continue
 
                 # Compute sizes
@@ -2951,23 +2945,21 @@ class QCow2CloneResizerGUI:
 
                 partition_size_formatted = QCow2CloneResizer.format_size(partition_size)
 
-                # Try 3 times
+                # Try 3 times with partclone
                 success = False
                 last_error = None
                 
                 for attempt in range(3):
                     process = None
                     try:
-                        print(f"Copying partition {partition_num} (attempt {attempt+1}/3)...")
+                        print(f"Cloning partition {partition_num} with partclone (attempt {attempt+1}/3)...")
 
                         cmd = [
-                            'dd',
-                            f'if={source_part}',
-                            f'of={target_part}',
-                            'bs=4M',
-                            'conv=notrunc,noerror,sync',
-                            'oflag=sync',
-                            'status=progress'
+                            'partclone.extfs',
+                            '-s', source_part,
+                            '-o', target_part,
+                            '-N',
+                            '-F'
                         ]
 
                         process = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
@@ -2987,34 +2979,21 @@ class QCow2CloneResizerGUI:
                                 if not chunk:
                                     continue
 
-                                print(chunk.decode("utf-8", errors="ignore"), end="", flush=True)
-
                                 buffer += chunk
                                 text = buffer.decode("utf-8", errors="ignore")
 
-                                if "\r" in text:
-                                    line = text.split("\r")[-1].strip()
-                                    buffer = text.split("\r")[-1].encode()
-                                else:
-                                    line = text.strip()
-
-                                m = (
-                                    re.search(r"(\d+)\s+octets", line) or
-                                    re.search(r"(\d+)\s+bytes", line)
-                                )
-
-                                if not m:
-                                    continue
-
-                                bytes_copied_partition = int(m.group(1))
-                                partition_percent = int((bytes_copied_partition / partition_size) * 100)
+                                # Parse partclone progress format: "Completed: XX%"
+                                m = re.search(r"Completed:\s*(\d+)%", text)
                                 
-                                if partition_percent != last_progress_percent:
-                                    last_progress_percent = partition_percent
+                                if m:
+                                    partition_percent = int(m.group(1))
                                     
-                                    if progress_callback:
-                                        progress_callback(partition_percent,
-                                                        f"Cloning {partition_label}: {partition_percent}% ({QCow2CloneResizer.format_size(bytes_copied_partition)}/{partition_size_formatted})")
+                                    if partition_percent != last_progress_percent:
+                                        last_progress_percent = partition_percent
+                                        
+                                        if progress_callback:
+                                            progress_callback(partition_percent,
+                                                            f"Cloning {partition_label}: {partition_percent}%")
 
                             except (BlockingIOError, OSError):
                                 pass
@@ -3023,18 +3002,19 @@ class QCow2CloneResizerGUI:
 
                         return_code = process.returncode
                         if return_code == 0:
-                            print(f"Partition {partition_num} cloned successfully.")
+                            print(f"Partition {partition_num} cloned successfully with partclone.")
                             if progress_callback:
                                 progress_callback(100, f"Cloning {partition_label}: Completed ({partition_size_formatted})")
                             success = True
+                            time.sleep(2)
                             break
                         else:
-                            last_error = RuntimeError(f"dd failed with return code {return_code}")
-                            print(f"ERROR: dd failed for partition {partition_num} with return code {return_code}, attempt {attempt+1}/3")
+                            last_error = RuntimeError(f"partclone failed with return code {return_code}")
+                            print(f"ERROR: partclone failed for partition {partition_num} with return code {return_code}, attempt {attempt+1}/3")
 
                     except subprocess.TimeoutExpired as timeout_e:
                         last_error = subprocess.TimeoutExpired(cmd, timeout_e.timeout)
-                        print(f"ERROR: dd timeout for partition {partition_num}, attempt {attempt+1}/3: {timeout_e}")
+                        print(f"ERROR: partclone timeout for partition {partition_num}, attempt {attempt+1}/3: {timeout_e}")
                         if process and process.poll() is None:
                             process.terminate()
                             try:
@@ -3043,8 +3023,8 @@ class QCow2CloneResizerGUI:
                                 process.kill()
                     
                     except FileNotFoundError as file_e:
-                        last_error = FileNotFoundError(f"dd command not found: {file_e}")
-                        print(f"ERROR: dd command not found for partition {partition_num}: {file_e}")
+                        last_error = FileNotFoundError(f"partclone command not found: {file_e}")
+                        print(f"ERROR: partclone command not found for partition {partition_num}: {file_e}")
                         raise last_error
                     
                     except PermissionError as perm_e:
@@ -3080,7 +3060,6 @@ class QCow2CloneResizerGUI:
                     else:
                         raise RuntimeError(f"Failed to clone partition {partition_num} after 3 attempts")
 
-                cumulative_bytes_copied += partition_size
                 subprocess.run(['sync'], check=False, timeout=30)
 
             if progress_callback:
