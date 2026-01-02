@@ -932,10 +932,10 @@ class QCow2CloneResizerGUI:
                     print("=== LINUX UEFI VM DETECTED - PERFORMING FULL CLONING ===")
                     
                     # AUTOMATIC BOOTLOADER REINSTALLATION
-                    self.update_progress(35, "Reinstalling UEFI bootloader after partition changes...")
-                    print("Attempting to reinstall UEFI bootloader to prevent boot issues...")
+                    self.update_progress(35, "Configuring EFI boot entries for automatic boot...")
+                    print("Configuring EFI boot entries for automatic boot...")
                     
-                    bootloader_fixed = QCow2CloneResizerGUI.reinstall_bootloader(
+                    bootloader_fixed = QCow2CloneResizerGUI.setup_efi_boot_entries(
                         source_nbd, 
                         self.update_progress
                     )
@@ -2227,19 +2227,29 @@ class QCow2CloneResizerGUI:
         return self.dialog_result_value
 
     @staticmethod
-    def reinstall_bootloader(nbd_device, progress_callback=None):
-        """Setup EFI boot entries without reinstalling GRUB - works with existing EFI"""
+    def setup_efi_boot_entries(nbd_device, progress_callback=None):
+        """Setup EFI boot entries without reinstalling GRUB - works with existing EFI
+        
+        This function discovers the existing bootloader and creates NVRAM entries
+        to ensure virt-manager can boot the VM. No GRUB installation or reconfiguration.
+        """
         try:
             if progress_callback:
                 progress_callback(45, "Configuring EFI boot entries...")
             
-            print(f"Configuring EFI boot entries on {nbd_device}")
+            print(f"\n{'='*60}")
+            print(f"SETTING UP EFI BOOT ENTRIES")
+            print(f"{'='*60}")
+            print(f"NBD Device: {nbd_device}")
+            print(f"Device exists: {os.path.exists(nbd_device)}")
             
             # Detect partition table
             parted_result = subprocess.run(
                 ['parted', '-s', nbd_device, 'print'],
                 capture_output=True, text=True, check=True, timeout=30
             )
+            
+            print(f"\nPartition table output:\n{parted_result.stdout}")
             
             is_gpt = 'gpt' in parted_result.stdout.lower()
             is_uefi = is_gpt
@@ -2248,8 +2258,7 @@ class QCow2CloneResizerGUI:
                 print("BIOS mode detected - no EFI setup needed")
                 return True
             
-            # ==================== UEFI MODE ====================
-            print("UEFI mode detected")
+            print("UEFI mode detected - configuring boot entries")
             
             # Find partitions
             partitions = []
@@ -2262,6 +2271,8 @@ class QCow2CloneResizerGUI:
                             'flags': line.lower()
                         })
             
+            print(f"Found partitions: {[p['number'] for p in partitions]}")
+            
             # Find EFI partition
             efi_partition = None
             for part in partitions:
@@ -2269,49 +2280,90 @@ class QCow2CloneResizerGUI:
                     efi_partition = part['number']
                     break
             
+            print(f"EFI partition: {efi_partition}")
+            
             if not efi_partition:
                 print("No EFI partition found")
                 return False
             
             # Find Linux root and its EFI bootloader
+            found_linux = False
             for part_num in [p['number'] for p in partitions]:
                 if part_num == efi_partition:
                     continue
+                
+                print(f"\nChecking partition {part_num}...")
                 
                 part_device = None
                 for path in [f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"]:
                     if os.path.exists(path):
                         part_device = path
+                        print(f"  Found device: {part_device}")
                         break
                 
                 if not part_device:
+                    print(f"  Device not found for partition {part_num}")
                     continue
                 
                 with tempfile.TemporaryDirectory() as mount_point:
                     try:
-                        # Mount root partition
+                        # Mount root partition - try multiple filesystems
+                        print(f"  Mounting {part_device} at {mount_point}...")
                         mounted = False
-                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2']:
-                            if subprocess.run(['mount', '-t', fs_type, part_device, mount_point],
-                                            capture_output=True, timeout=30, check=False).returncode == 0:
+                        used_fs = None
+                        
+                        for fs_type in ['auto', 'ext4', 'ext3', 'ext2', 'btrfs', 'xfs']:
+                            print(f"    Trying {fs_type}...")
+                            result = subprocess.run(
+                                ['mount', '-t', fs_type, part_device, mount_point],
+                                capture_output=True, timeout=30, check=False
+                            )
+                            if result.returncode == 0:
                                 mounted = True
+                                used_fs = fs_type
+                                print(f"    ✓ Mounted with {fs_type}")
                                 break
+                            else:
+                                print(f"    ✗ Failed with {fs_type}: {result.stderr.decode('utf-8', errors='ignore')[:100]}")
                         
                         if not mounted:
+                            print(f"  Could not mount partition {part_num}")
                             continue
                         
-                        # Check if Linux
-                        is_linux = os.path.exists(os.path.join(mount_point, 'etc'))
+                        # Check what's in mount point
+                        print(f"  Mount contents: {os.listdir(mount_point)[:10]}")
+                        
+                        # Check if Linux - look for multiple indicators
+                        is_linux = False
+                        linux_indicators = []
+                        
+                        if os.path.exists(os.path.join(mount_point, 'etc')):
+                            is_linux = True
+                            linux_indicators.append('etc')
+                        
+                        if os.path.exists(os.path.join(mount_point, 'root')):
+                            linux_indicators.append('root')
+                        
+                        if os.path.exists(os.path.join(mount_point, 'boot')):
+                            linux_indicators.append('boot')
+                        
+                        if os.path.exists(os.path.join(mount_point, 'usr')):
+                            linux_indicators.append('usr')
+                        
+                        print(f"  Linux indicators: {linux_indicators}")
                         
                         if not is_linux:
+                            print(f"  Not a Linux filesystem - skipping")
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
-                        print(f"Found Linux on partition {part_num}")
+                        print(f"✓ Found Linux on partition {part_num} (fs: {used_fs})")
+                        found_linux = True
                         
                         # Mount EFI partition
                         efi_mount = os.path.join(mount_point, 'boot', 'efi')
                         os.makedirs(efi_mount, exist_ok=True)
+                        print(f"  EFI mount point: {efi_mount}")
                         
                         efi_dev = None
                         for path in [f"{nbd_device}p{efi_partition}", f"{nbd_device}{efi_partition}"]:
@@ -2319,46 +2371,61 @@ class QCow2CloneResizerGUI:
                                 efi_dev = path
                                 break
                         
+                        print(f"  EFI device: {efi_dev}")
+                        
                         if not efi_dev:
+                            print(f"  EFI device not found")
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
                         if subprocess.run(['mount', '-t', 'vfat', efi_dev, efi_mount],
                                         capture_output=True, check=False, timeout=30).returncode != 0:
+                            print(f"  Failed to mount EFI partition")
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
-                        print("EFI partition mounted")
+                        print("✓ EFI partition mounted")
                         
                         efi_base = os.path.join(mount_point, 'boot', 'efi', 'EFI')
+                        print(f"  EFI base: {efi_base}")
+                        print(f"  EFI base exists: {os.path.exists(efi_base)}")
                         
                         # ===== DISCOVER existing bootloader =====
-                        print(f"Searching for existing GRUB bootloader in {efi_base}")
+                        print(f"\n  Searching for existing GRUB bootloader...")
                         
                         existing_grub = None
                         grub_subdir = None
                         
                         if os.path.exists(efi_base):
-                            for item in os.listdir(efi_base):
+                            efi_contents = os.listdir(efi_base)
+                            print(f"  EFI directory contents: {efi_contents}")
+                            
+                            for item in efi_contents:
                                 item_path = os.path.join(efi_base, item)
+                                print(f"    Checking: {item} (is_dir: {os.path.isdir(item_path)})")
+                                
                                 if os.path.isdir(item_path) and item.upper() != 'BOOT':
-                                    # Look for grubx64.efi
+                                    # Look for grubx64.efi (Debian, Ubuntu, etc)
                                     grubx64 = os.path.join(item_path, 'grubx64.efi')
+                                    print(f"      Looking for: {grubx64} (exists: {os.path.exists(grubx64)})")
+                                    
                                     if os.path.exists(grubx64):
                                         existing_grub = grubx64
                                         grub_subdir = item
                                         size = os.path.getsize(grubx64)
-                                        print(f"Found GRUB bootloader: /EFI/{item}/grubx64.efi ({size} bytes)")
+                                        print(f"    ✓ Found GRUB bootloader: /EFI/{item}/grubx64.efi ({size} bytes)")
                                         break
+                        else:
+                            print(f"  EFI base directory does not exist!")
                         
                         if not existing_grub:
-                            print("ERROR: No existing GRUB bootloader found")
+                            print("✗ ERROR: No existing GRUB bootloader found")
                             subprocess.run(['umount', efi_mount], check=False, timeout=30)
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
                         # ===== Create fallback BOOTX64.EFI =====
-                        print("Creating fallback BOOTX64.EFI...")
+                        print("\n  Creating fallback BOOTX64.EFI...")
                         
                         boot_dir = os.path.join(efi_base, 'BOOT')
                         os.makedirs(boot_dir, exist_ok=True)
@@ -2368,15 +2435,15 @@ class QCow2CloneResizerGUI:
                         try:
                             shutil.copy2(existing_grub, bootx64_path)
                             size = os.path.getsize(bootx64_path)
-                            print(f"BOOTX64.EFI created: {size} bytes (copy of /EFI/{grub_subdir}/grubx64.efi)")
+                            print(f"  ✓ BOOTX64.EFI created: {size} bytes (copy of /EFI/{grub_subdir}/grubx64.efi)")
                         except (shutil.Error, OSError) as e:
-                            print(f"Error creating BOOTX64.EFI: {e}")
+                            print(f"  ✗ Error creating BOOTX64.EFI: {e}")
                             subprocess.run(['umount', efi_mount], check=False, timeout=30)
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
                         # ===== CRITICAL: Setup NVRAM boot entries =====
-                        print("\nConfiguring NVRAM boot entries...")
+                        print("\n  Configuring NVRAM boot entries...")
                         
                         # Detect EFI device number
                         efi_dev_number = None
@@ -2390,7 +2457,7 @@ class QCow2CloneResizerGUI:
                             else:
                                 efi_dev_number = '0'
                         
-                        print(f"EFI device: {efi_dev}, device number: {efi_dev_number}")
+                        print(f"  EFI device: {efi_dev}, device number: {efi_dev_number}")
                         
                         # List current boot entries
                         efibootmgr_list = subprocess.run(
@@ -2399,21 +2466,12 @@ class QCow2CloneResizerGUI:
                         )
                         
                         if efibootmgr_list.returncode == 0:
-                            print("Current EFI boot entries:")
-                            print(efibootmgr_list.stdout)
-                            
-                            # Remove existing boot entries (optional - keeps them if you prefer)
-                            # Uncomment if you want clean slate
-                            # for line in efibootmgr_list.stdout.split('\n'):
-                            #     match = re.match(r'Boot(\d+)\*?', line)
-                            #     if match:
-                            #         boot_num = match.group(1)
-                            #         print(f"Removing boot entry Boot{boot_num}...")
-                            #         subprocess.run(['efibootmgr', '-b', boot_num, '-B'],
-                            #                       capture_output=True, timeout=30, check=False)
+                            print(f"  Current UEFI boot entries:\n{efibootmgr_list.stdout}")
+                        else:
+                            print(f"  Warning: efibootmgr not available: {efibootmgr_list.stderr}")
                         
                         # Create boot entry for BOOTX64.EFI
-                        print("Creating NVRAM entry for /EFI/BOOT/BOOTX64.EFI...")
+                        print("  Creating NVRAM entry for /EFI/BOOT/BOOTX64.EFI...")
                         
                         result = subprocess.run(
                             ['efibootmgr', '-c',
@@ -2425,10 +2483,10 @@ class QCow2CloneResizerGUI:
                         )
                         
                         if result.returncode == 0:
-                            print("✓ NVRAM entry created successfully")
-                            print(result.stdout)
+                            print("  ✓ NVRAM entry created successfully")
+                            print(f"  {result.stdout}")
                         else:
-                            print(f"⚠ efibootmgr warning: {result.stderr}")
+                            print(f"  ⚠ efibootmgr warning/error: {result.stderr}")
                         
                         # Set as first boot option
                         efibootmgr_list = subprocess.run(
@@ -2442,7 +2500,7 @@ class QCow2CloneResizerGUI:
                                     match = re.match(r'Boot(\d+)', line)
                                     if match:
                                         boot_num = match.group(1)
-                                        print(f"Setting Boot{boot_num} as first boot option...")
+                                        print(f"  Setting Boot{boot_num} as first boot option...")
                                         subprocess.run(
                                             ['efibootmgr', '-n', boot_num],
                                             capture_output=True, timeout=30, check=False
@@ -2450,13 +2508,13 @@ class QCow2CloneResizerGUI:
                                         break
                         
                         # Display final EFI structure
-                        print("\nFinal EFI structure:")
+                        print("\n  Final EFI structure:")
                         if os.path.exists(efi_base):
                             for root, dirs, files in os.walk(efi_base):
                                 level = root.replace(efi_base, '').count(os.sep)
-                                indent = ' ' * 2 * level
+                                indent = '    ' + ' ' * 2 * level
                                 print(f"{indent}{os.path.basename(root)}/")
-                                subindent = ' ' * 2 * (level + 1)
+                                subindent = '    ' + ' ' * 2 * (level + 1)
                                 for file in files:
                                     print(f"{subindent}{file}")
                         
@@ -2464,23 +2522,28 @@ class QCow2CloneResizerGUI:
                         subprocess.run(['umount', efi_mount], check=False, timeout=30)
                         subprocess.run(['umount', mount_point], check=False, timeout=30)
                         
-                        print("✓ EFI boot configuration complete")
+                        print("\n✓ EFI boot configuration complete")
+                        print(f"{'='*60}\n")
                         return True
                         
                     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
                             FileNotFoundError, PermissionError, OSError) as e:
-                        print(f"Error: {e}")
+                        print(f"  Error: {e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=10)
+            
+            if not found_linux:
+                print(f"\n✗ ERROR: No Linux root filesystem found on any partition")
+                print(f"{'='*60}\n")
             
             return False
             
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
                 FileNotFoundError, PermissionError, OSError) as e:
-            print(f"ERROR - {type(e).__name__}: {e}")
+            print(f"\nERROR - {type(e).__name__}: {e}")
+            print(f"{'='*60}\n")
             import traceback
             traceback.print_exc()
             return False
-
         
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
                                 existing_source_nbd, layout_info, progress_callback=None,
