@@ -65,8 +65,19 @@ class P2VConverterGUI:
         self.update_log_from_session()
     
     def setup_window(self):
-        """Configure the main window properties"""
+        """Configure the main window properties with responsive design"""
         self.root.resizable(True, True)
+        
+        # Get screen dimensions
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        
+        # Use 90% of screen with minimum dimensions
+        window_width = int(screen_width * 0.90)
+        window_height = int(screen_height * 0.90)
+        
+        # Set geometry based on screen size
+        self.root.geometry(f"{window_width}x{window_height}+50+50")
         self.root.minsize(800, 600)
         
         # Configure grid weights for responsive design
@@ -78,6 +89,40 @@ class P2VConverterGUI:
             self.root.iconname("P2V Converter")
         except (tk.TclError, AttributeError):
             pass
+
+    def get_screen_layout_config(self):
+        """Determine layout configuration based on screen dimensions"""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        
+        # Determine number of tool columns based on width
+        if screen_width < 1024:
+            tools_columns = 2
+            font_size = 8
+        elif screen_width < 1400:
+            tools_columns = 3
+            font_size = 9
+        elif screen_width < 1600:
+            tools_columns = 4
+            font_size = 9
+        else:
+            tools_columns = 5
+            font_size = 10
+        
+        # Determine log frame height based on screen height
+        if screen_height < 768:
+            log_height = 4
+        elif screen_height < 1080:
+            log_height = 6
+        else:
+            log_height = 8
+        
+        return {
+            'tools_columns': tools_columns,
+            'font_size': font_size,
+            'log_height': log_height,
+            'space_height': 4
+        }
 
     def is_disk_unavailable_for_conversion(self, device_path):
         """
@@ -141,220 +186,239 @@ class P2VConverterGUI:
         """Create the header frame with title and PDF generation buttons"""
         header_frame = ttk.Frame(self.root, padding="10")
         header_frame.grid(row=0, column=0, sticky="ew")
-        header_frame.grid_columnconfigure(1, weight=1)  # Make middle column expand
+        header_frame.grid_columnconfigure(1, weight=1)
         
         # Title label with icon-like symbol
         title_frame = ttk.Frame(header_frame)
-        title_frame.grid(row=0, column=0, sticky="w")
+        title_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        title_frame.grid_columnconfigure(0, weight=1)
         
         title_label = ttk.Label(title_frame, text="P2V Converter", 
-                               font=("Arial", 18, "bold"))
+                            font=("Arial", 14, "bold"), wraplength=200)
         title_label.grid(row=0, column=0, sticky="w")
         
         subtitle_label = ttk.Label(title_frame, text="Physical to Virtual Machine Converter", 
-                                  font=("Arial", 9), foreground="gray")
+                                font=("Arial", 8), foreground="gray", wraplength=200)
         subtitle_label.grid(row=1, column=0, sticky="w")
         
-        # Button frame for PDF generation buttons
+        # Button frame for PDF generation buttons - responsive layout
         button_frame = ttk.Frame(header_frame)
-        button_frame.grid(row=0, column=2, sticky="e")
+        button_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        
+        # Determine button width based on screen size
+        screen_width = self.root.winfo_screenwidth()
+        if screen_width < 1024:
+            btn_width = 12
+        elif screen_width < 1400:
+            btn_width = 15
+        else:
+            btn_width = 18
         
         # Print session log button
         self.session_pdf_btn = ttk.Button(button_frame, 
-                                         text="Print Session Log",
-                                         command=self.generate_session_pdf,
-                                         width=20)
-        self.session_pdf_btn.grid(row=0, column=0, padx=(0, 5))
+                                        text="Session Log",
+                                        command=self.generate_session_pdf,
+                                        width=btn_width)
+        self.session_pdf_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
         
         # Print complete log file button
         self.file_pdf_btn = ttk.Button(button_frame, 
-                                      text="Print Complete Log",
-                                      command=self.generate_log_file_pdf,
-                                      width=20)
-        self.file_pdf_btn.grid(row=0, column=1, padx=(0, 5))
+                                    text="Complete Log",
+                                    command=self.generate_log_file_pdf,
+                                    width=btn_width)
+        self.file_pdf_btn.grid(row=0, column=1, padx=(0, 5), sticky="ew")
         
         # Exit button
         self.exit_btn = ttk.Button(button_frame, 
-                                  text="Exit",
-                                  command=self.exit_application,
-                                  width=12)
-        self.exit_btn.grid(row=0, column=2)
+                                text="Exit",
+                                command=self.exit_application,
+                                width=10)
+        self.exit_btn.grid(row=0, column=2, padx=(0, 5), sticky="ew")
 
         # Poweroff button
-        self.poweroff_btn = ttk.Button(button_frame,text="Power Off",
-                                       command=self.power_off_system,width=12)
-        self.poweroff_btn.grid(row=0, column=3, padx=(5, 0))
+        self.poweroff_btn = ttk.Button(button_frame, text="Power Off",
+                                    command=self.power_off_system, width=10)
+        self.poweroff_btn.grid(row=0, column=3, sticky="ew")
         
         # Add separator
         separator = ttk.Separator(self.root, orient='horizontal')
         separator.grid(row=0, column=0, sticky="ew", pady=(0, 5), columnspan=1)
     
     def create_main_frame(self):
-                """Create the main content frame - Updated with Export Image tool"""
-                main_frame = ttk.Frame(self.root, padding="10")
-                main_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
-                main_frame.grid_rowconfigure(8, weight=1)
-                main_frame.grid_columnconfigure(0, weight=1)
-                
-                # Source disk selection frame
-                source_frame = ttk.LabelFrame(main_frame, text="Source Disk Selection", padding="10")
-                source_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-                source_frame.grid_columnconfigure(1, weight=1)
-                
-                ttk.Label(source_frame, text="Physical Disk:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w")
-                self.source_var = tk.StringVar()
-                self.source_combo = ttk.Combobox(source_frame, textvariable=self.source_var, 
-                                                state="readonly", font=("Arial", 9))
-                self.source_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-                self.source_combo.bind("<<ComboboxSelected>>", self.on_source_selected)
-                
-                # Refresh button
-                self.refresh_btn = ttk.Button(source_frame, text="Refresh Disks", 
-                                            command=self.refresh_disks)
-                self.refresh_btn.grid(row=0, column=2, padx=(10, 0))
-                
-                # VM configuration frame
-                vm_config_frame = ttk.LabelFrame(main_frame, text="VM Configuration", padding="10")
-                vm_config_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-                vm_config_frame.grid_columnconfigure(1, weight=1)
-                
-                # VM Name
-                ttk.Label(vm_config_frame, text="VM Name:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w")
-                vm_name_entry = ttk.Entry(vm_config_frame, textvariable=self.vm_name, font=("Arial", 9))
-                vm_name_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-                vm_name_entry.bind("<KeyRelease>", self.validate_vm_name_input)
-                
-                # Output Directory
-                ttk.Label(vm_config_frame, text="Output Directory:", font=("Arial", 10, "bold")).grid(row=1, column=0, sticky="w", pady=(10, 0))
-                
-                output_frame = ttk.Frame(vm_config_frame)
-                output_frame.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=(10, 0))
-                output_frame.grid_columnconfigure(0, weight=1)
-                
-                output_entry = ttk.Entry(output_frame, textvariable=self.output_path, font=("Arial", 9))
-                output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-                
-                # Primary action buttons row (Browse, Mount, Delete Files)
-                primary_tools_frame = ttk.Frame(output_frame)
-                primary_tools_frame.grid(row=0, column=1)
-                
-                browse_btn = ttk.Button(primary_tools_frame, text="Browse", command=self.browse_output_dir)
-                browse_btn.grid(row=0, column=0, padx=(0, 2))
-                
-                mount_btn = ttk.Button(primary_tools_frame, text="Mount Disk", command=self.mount_disk_dialog)
-                mount_btn.grid(row=0, column=1, padx=(0, 2))
-                
-                delete_files_btn = ttk.Button(primary_tools_frame, text="Delete Files", 
-                                            command=self.open_delete_files_manager)
-                delete_files_btn.grid(row=0, column=2)
-                
-                # Secondary tools row (QCOW2 Resize, Format Converter, LUKS Cipher, Virt-Manager, Export Image)
-                secondary_tools_label = ttk.Label(vm_config_frame, text="Utility Tools:", font=("Arial", 9, "bold"))
-                secondary_tools_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 8))
-                
-                # Tools in two rows with equal weight distribution
-                tools_row1_frame = ttk.Frame(vm_config_frame)
-                tools_row1_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=(10, 0), pady=(0, 5))
-                tools_row1_frame.grid_columnconfigure(0, weight=1)
-                tools_row1_frame.grid_columnconfigure(1, weight=1)
-                tools_row1_frame.grid_columnconfigure(2, weight=1)
-                tools_row1_frame.grid_columnconfigure(3, weight=1)
-                tools_row1_frame.grid_columnconfigure(4, weight=1)
-                
-                resize_btn = ttk.Button(tools_row1_frame, text="QCOW2 Resize", 
-                                    command=self.open_qcow2_resizer)
-                resize_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
-                
-                convert_btn = ttk.Button(tools_row1_frame, text="Format Converter", 
-                                        command=self.open_format_converter)
-                convert_btn.grid(row=0, column=1, padx=(0, 5), sticky="ew")
-                
-                cipher_btn = ttk.Button(tools_row1_frame, text="LUKS Encryption", 
-                                    command=self.open_luks_ciphering)
-                cipher_btn.grid(row=0, column=2, padx=(0, 5), sticky="ew")
-                
-                virt_btn = ttk.Button(tools_row1_frame, text="Virt-Manager", 
-                                    command=self.open_virt_manager)
-                virt_btn.grid(row=0, column=3, padx=(0, 5), sticky="ew")
-                
-                # NOUVEAU: Bouton Export Image
-                export_btn = ttk.Button(tools_row1_frame, text="Export Image", 
-                                    command=self.open_image_exporter)
-                export_btn.grid(row=0, column=4, sticky="ew")
-                
-                # Tools description - MISE À JOUR
-                tools_info_label = ttk.Label(vm_config_frame, 
-                                            text="Resize QCOW2 images • Convert disk formats • Encrypt/decrypt with LUKS • Manage virtual machines • Export images",
-                                            font=("Arial", 8), foreground="gray")
-                tools_info_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(5, 0))
-                
-                # Space information frame
-                space_frame = ttk.LabelFrame(main_frame, text="Storage Space Information", padding="10")
-                space_frame.grid(row=6, column=0, sticky="ew", pady=(0, 10))
-                
-                self.space_info_text = tk.Text(space_frame, height=6, wrap=tk.WORD, state=tk.DISABLED, 
-                                            font=("Consolas", 9), bg="#f8f8f8")
-                space_scrollbar = ttk.Scrollbar(space_frame, orient="vertical", command=self.space_info_text.yview)
-                self.space_info_text.configure(yscrollcommand=space_scrollbar.set)
-                
-                self.space_info_text.grid(row=0, column=0, sticky="nsew")
-                space_scrollbar.grid(row=0, column=1, sticky="ns")
-                
-                space_frame.grid_rowconfigure(0, weight=1)
-                space_frame.grid_columnconfigure(0, weight=1)
-                
-                # Control buttons frame
-                control_frame = ttk.Frame(main_frame)
-                control_frame.grid(row=7, column=0, sticky="ew", pady=(0, 10))
-                control_frame.grid_columnconfigure(1, weight=1)
-                
-                self.check_space_btn = ttk.Button(control_frame, text="Check Space Requirements", 
-                                                command=self.check_space_requirements)
-                self.check_space_btn.grid(row=0, column=0, padx=(0, 10))
-                
-                self.convert_btn = ttk.Button(control_frame, text="Start P2V Conversion", 
-                                            command=self.start_conversion)
-                self.convert_btn.grid(row=0, column=1, padx=(0, 10), sticky="w")
-                
-                self.stop_btn = ttk.Button(control_frame, text="Stop Operation", 
-                                        command=self.stop_operation, state=tk.DISABLED)
-                self.stop_btn.grid(row=0, column=1, padx=(0, 10), sticky="e")
-                
-                self.clear_log_btn = ttk.Button(control_frame, text="Clear Display", 
-                                            command=self.clear_log_display)
-                self.clear_log_btn.grid(row=0, column=2)
-                
-                # Progress and log area
-                log_frame = ttk.LabelFrame(main_frame, text="Operation Log", padding="5")
-                log_frame.grid(row=5, column=0, sticky="nsew")
-                log_frame.grid_rowconfigure(0, weight=1)
-                log_frame.grid_columnconfigure(0, weight=1)
-                
-                # Create text widget with scrollbar
-                text_frame = ttk.Frame(log_frame)
-                text_frame.grid(row=0, column=0, sticky="nsew")
-                text_frame.grid_rowconfigure(0, weight=1)
-                text_frame.grid_columnconfigure(0, weight=1)
-                
-                self.log_text = tk.Text(text_frame, wrap=tk.WORD, state=tk.DISABLED, 
-                                    font=("Consolas", 9), bg="#f8f8f8", fg="#333333")
-                scrollbar_v = ttk.Scrollbar(text_frame, orient="vertical", command=self.log_text.yview)
-                scrollbar_h = ttk.Scrollbar(text_frame, orient="horizontal", command=self.log_text.xview)
-                
-                self.log_text.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
-                
-                self.log_text.grid(row=0, column=0, sticky="nsew")
-                scrollbar_v.grid(row=0, column=1, sticky="ns")
-                scrollbar_h.grid(row=1, column=0, sticky="ew")
-                
-                # Configure text tags for different log levels
-                self.log_text.tag_configure("INFO", foreground="#0066cc")
-                self.log_text.tag_configure("WARNING", foreground="#ff6600")
-                self.log_text.tag_configure("ERROR", foreground="#cc0000")
-                self.log_text.tag_configure("SUCCESS", foreground="#009900")
-                
-                # Track last displayed log count
-                self.last_log_count = 0
+        """Create the main content frame with responsive layout"""
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        main_frame.grid_rowconfigure(5, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
+        
+        # Get layout configuration
+        layout_config = self.get_screen_layout_config()
+        
+        # Source disk selection frame
+        source_frame = ttk.LabelFrame(main_frame, text="Source Disk Selection", padding="10")
+        source_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        source_frame.grid_columnconfigure(1, weight=1)
+        
+        ttk.Label(source_frame, text="Physical Disk:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w")
+        self.source_var = tk.StringVar()
+        self.source_combo = ttk.Combobox(source_frame, textvariable=self.source_var, 
+                                        state="readonly", font=("Arial", 9))
+        self.source_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        self.source_combo.bind("<<ComboboxSelected>>", self.on_source_selected)
+        
+        # Refresh button
+        self.refresh_btn = ttk.Button(source_frame, text="Refresh Disks", 
+                                    command=self.refresh_disks)
+        self.refresh_btn.grid(row=0, column=2, padx=(10, 0))
+        
+        # VM configuration frame
+        vm_config_frame = ttk.LabelFrame(main_frame, text="VM Configuration", padding="10")
+        vm_config_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        vm_config_frame.grid_columnconfigure(1, weight=1)
+        
+        # VM Name
+        ttk.Label(vm_config_frame, text="VM Name:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w")
+        vm_name_entry = ttk.Entry(vm_config_frame, textvariable=self.vm_name, font=("Arial", 9))
+        vm_name_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        vm_name_entry.bind("<KeyRelease>", self.validate_vm_name_input)
+        
+        # Output Directory
+        ttk.Label(vm_config_frame, text="Output Directory:", font=("Arial", 10, "bold")).grid(row=1, column=0, sticky="w", pady=(10, 0))
+        
+        output_frame = ttk.Frame(vm_config_frame)
+        output_frame.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=(10, 0))
+        output_frame.grid_columnconfigure(0, weight=1)
+        
+        output_entry = ttk.Entry(output_frame, textvariable=self.output_path, font=("Arial", 9))
+        output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        
+        # Primary action buttons row (Browse, Mount, Delete Files)
+        primary_tools_frame = ttk.Frame(output_frame)
+        primary_tools_frame.grid(row=0, column=1, sticky="ew")
+        
+        browse_btn = ttk.Button(primary_tools_frame, text="Browse", command=self.browse_output_dir)
+        browse_btn.grid(row=0, column=0, padx=(0, 2), sticky="ew")
+        
+        mount_btn = ttk.Button(primary_tools_frame, text="Mount Disk", command=self.mount_disk_dialog)
+        mount_btn.grid(row=0, column=1, padx=(0, 2), sticky="ew")
+        
+        delete_files_btn = ttk.Button(primary_tools_frame, text="Delete Files", 
+                                    command=self.open_delete_files_manager)
+        delete_files_btn.grid(row=0, column=2, sticky="ew")
+        
+        # Secondary tools label
+        secondary_tools_label = ttk.Label(vm_config_frame, text="Utility Tools:", font=("Arial", 9, "bold"))
+        secondary_tools_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 8))
+        
+        # Dynamic tools layout based on screen width
+        tools_columns = layout_config['tools_columns']
+        tools = [
+            ("QCOW2 Resize", self.open_qcow2_resizer),
+            ("Format Converter", self.open_format_converter),
+            ("LUKS Encryption", self.open_luks_ciphering),
+            ("Virt-Manager", self.open_virt_manager),
+            ("Export Image", self.open_image_exporter),
+        ]
+        
+        current_row = 3
+        current_col = 0
+        
+        for tool_name, tool_command in tools:
+            if current_col == 0 and current_col > 0:  # New row needed
+                current_row += 1
+                current_col = 0
+            
+            if current_col >= tools_columns:
+                current_row += 1
+                current_col = 0
+            
+            tools_frame = ttk.Frame(vm_config_frame)
+            tools_frame.grid(row=current_row, column=current_col, sticky="ew", padx=(10, 5), pady=(0, 5))
+            tools_frame.grid_columnconfigure(0, weight=1)
+            
+            btn = ttk.Button(tools_frame, text=tool_name, command=tool_command)
+            btn.pack(fill="x", expand=True)
+            
+            current_col += 1
+        
+        # Adjust final row spanning
+        if current_col > 0:
+            for col in range(tools_columns):
+                vm_config_frame.grid_columnconfigure(col, weight=1)
+        
+        # Tools description - updated
+        tools_info_label = ttk.Label(vm_config_frame, 
+                                    text="Resize QCOW2 • Convert formats • Encrypt/decrypt • Manage VMs • Export images",
+                                    font=("Arial", 7), foreground="gray", wraplength=400)
+        tools_info_label.grid(row=current_row+1, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        
+        # Space information frame
+        space_frame = ttk.LabelFrame(main_frame, text="Storage Space Information", padding="10")
+        space_frame.grid(row=6, column=0, sticky="ew", pady=(0, 10))
+        
+        self.space_info_text = tk.Text(space_frame, height=layout_config['space_height'], wrap=tk.WORD, state=tk.DISABLED, 
+                                    font=("Consolas", 9), bg="#f8f8f8")
+        space_scrollbar = ttk.Scrollbar(space_frame, orient="vertical", command=self.space_info_text.yview)
+        self.space_info_text.configure(yscrollcommand=space_scrollbar.set)
+        
+        self.space_info_text.grid(row=0, column=0, sticky="nsew")
+        space_scrollbar.grid(row=0, column=1, sticky="ns")
+        
+        space_frame.grid_rowconfigure(0, weight=1)
+        space_frame.grid_columnconfigure(0, weight=1)
+        
+        # Control buttons frame - responsive
+        control_frame = ttk.Frame(main_frame)
+        control_frame.grid(row=7, column=0, sticky="ew", pady=(0, 10))
+        control_frame.grid_columnconfigure(1, weight=1)
+        
+        self.check_space_btn = ttk.Button(control_frame, text="Check Space", 
+                                        command=self.check_space_requirements)
+        self.check_space_btn.grid(row=0, column=0, padx=(0, 10), sticky="w")
+        
+        self.convert_btn = ttk.Button(control_frame, text="Start P2V Conversion", 
+                                    command=self.start_conversion)
+        self.convert_btn.grid(row=0, column=1, padx=(0, 10), sticky="w")
+        
+        self.stop_btn = ttk.Button(control_frame, text="Stop Operation", 
+                                command=self.stop_operation, state=tk.DISABLED)
+        self.stop_btn.grid(row=0, column=1, padx=(0, 10), sticky="e")
+        
+        self.clear_log_btn = ttk.Button(control_frame, text="Clear Display", 
+                                    command=self.clear_log_display)
+        self.clear_log_btn.grid(row=0, column=2)
+        
+        # Progress and log area
+        log_frame = ttk.LabelFrame(main_frame, text="Operation Log", padding="5")
+        log_frame.grid(row=5, column=0, sticky="nsew")
+        log_frame.grid_rowconfigure(0, weight=1)
+        log_frame.grid_columnconfigure(0, weight=1)
+        
+        # Create text widget with scrollbar
+        text_frame = ttk.Frame(log_frame)
+        text_frame.grid(row=0, column=0, sticky="nsew")
+        text_frame.grid_rowconfigure(0, weight=1)
+        text_frame.grid_columnconfigure(0, weight=1)
+        
+        self.log_text = tk.Text(text_frame, wrap=tk.WORD, state=tk.DISABLED, 
+                            font=("Consolas", layout_config['font_size']), bg="#f8f8f8", fg="#333333")
+        scrollbar_v = ttk.Scrollbar(text_frame, orient="vertical", command=self.log_text.yview)
+        scrollbar_h = ttk.Scrollbar(text_frame, orient="horizontal", command=self.log_text.xview)
+        
+        self.log_text.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
+        
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        scrollbar_v.grid(row=0, column=1, sticky="ns")
+        scrollbar_h.grid(row=1, column=0, sticky="ew")
+        
+        # Configure text tags for different log levels
+        self.log_text.tag_configure("INFO", foreground="#0066cc")
+        self.log_text.tag_configure("WARNING", foreground="#ff6600")
+        self.log_text.tag_configure("ERROR", foreground="#cc0000")
+        self.log_text.tag_configure("SUCCESS", foreground="#009900")
+        
+        # Track last displayed log count
+        self.last_log_count = 0
 
     def open_image_exporter(self):
         """Open the Virtual Image Exporter dialog"""
@@ -865,40 +929,66 @@ class P2VConverterGUI:
             self.status_var.set("Ready")
 
     def create_status_frame(self):
-        """Create the status frame at the bottom"""
+        """Create the status frame at the bottom with responsive layout"""
         status_frame = ttk.Frame(self.root, padding="10")
         status_frame.grid(row=2, column=0, sticky="ew")
         status_frame.grid_columnconfigure(1, weight=1)
         
-        # Progress bar with label
-        progress_label = ttk.Label(status_frame, text="Progress:")
-        progress_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        # Get screen width to determine layout
+        screen_width = self.root.winfo_screenwidth()
         
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(status_frame, variable=self.progress_var, 
-                                           maximum=100, length=300)
-        self.progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        
-        # Progress percentage label
-        self.progress_label = ttk.Label(status_frame, text="0%")
-        self.progress_label.grid(row=0, column=2, sticky="w", padx=(0, 20))
-        
-        # Status label
-        status_info_label = ttk.Label(status_frame, text="Status:")
-        status_info_label.grid(row=0, column=3, sticky="w", padx=(0, 10))
-        
-        self.status_var = tk.StringVar(value="Ready")
-        self.status_label = ttk.Label(status_frame, textvariable=self.status_var, 
-                                     font=("Arial", 9, "bold"))
-        self.status_label.grid(row=0, column=4, sticky="w")
-        
-        # Current operation details
-        self.operation_details = ttk.Label(status_frame, text="", 
-                                          font=("Arial", 8), foreground="gray")
-        self.operation_details.grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
+        if screen_width < 1024:
+            # Compact layout for small screens
+            progress_label = ttk.Label(status_frame, text="Progress:")
+            progress_label.grid(row=0, column=0, sticky="w", padx=(0, 5))
+            
+            self.progress_var = tk.DoubleVar()
+            self.progress_bar = ttk.Progressbar(status_frame, variable=self.progress_var, 
+                                            maximum=100, length=150)
+            self.progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 5))
+            
+            self.progress_label = ttk.Label(status_frame, text="0%", width=4)
+            self.progress_label.grid(row=0, column=2, sticky="w", padx=(0, 10))
+            
+            status_info_label = ttk.Label(status_frame, text="Status:")
+            status_info_label.grid(row=0, column=3, sticky="w", padx=(0, 5))
+            
+            self.status_var = tk.StringVar(value="Ready")
+            self.status_label = ttk.Label(status_frame, textvariable=self.status_var, 
+                                        font=("Arial", 8, "bold"))
+            self.status_label.grid(row=0, column=4, sticky="w")
+            
+            # Details on next row
+            self.operation_details = ttk.Label(status_frame, text="", 
+                                            font=("Arial", 7), foreground="gray", wraplength=300)
+            self.operation_details.grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
+        else:
+            # Full layout for larger screens
+            progress_label = ttk.Label(status_frame, text="Progress:")
+            progress_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+            
+            self.progress_var = tk.DoubleVar()
+            self.progress_bar = ttk.Progressbar(status_frame, variable=self.progress_var, 
+                                            maximum=100, length=300)
+            self.progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+            
+            self.progress_label = ttk.Label(status_frame, text="0%")
+            self.progress_label.grid(row=0, column=2, sticky="w", padx=(0, 20))
+            
+            status_info_label = ttk.Label(status_frame, text="Status:")
+            status_info_label.grid(row=0, column=3, sticky="w", padx=(0, 10))
+            
+            self.status_var = tk.StringVar(value="Ready")
+            self.status_label = ttk.Label(status_frame, textvariable=self.status_var, 
+                                        font=("Arial", 9, "bold"))
+            self.status_label.grid(row=0, column=4, sticky="w")
+            
+            self.operation_details = ttk.Label(status_frame, text="", 
+                                            font=("Arial", 8), foreground="gray")
+            self.operation_details.grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
         
         # Initialize with disk refresh
-        self.root.after(100, self.refresh_disks)  # Delayed initialization
+        self.root.after(100, self.refresh_disks)
     
     def check_prerequisites(self):
         """Check if required tools are available"""
