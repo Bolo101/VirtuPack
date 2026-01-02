@@ -1162,163 +1162,226 @@ class QCow2CloneResizer:
             'linux', 'windows', or 'unknown'
         """
         try:
-            print(f"Detecting OS on {nbd_device}")
+            print(f"\n{'='*60}")
+            print(f"DETECTING VM OPERATING SYSTEM")
+            print(f"{'='*60}")
+            print(f"NBD Device: {nbd_device}")
             
+            # Find all partitions
             partitions = []
-            for i in range(1, 10):
+            print(f"\nScanning for partitions...")
+            for i in range(1, 16):
                 for path_fmt in [f"{nbd_device}p{i}", f"{nbd_device}{i}"]:
                     if os.path.exists(path_fmt):
                         partitions.append((i, path_fmt))
+                        print(f"  Found partition {i}: {path_fmt}")
                         break
             
             if not partitions:
-                print("No partitions found")
+                print("✗ No partitions found")
                 return 'unknown'
             
-            # First check partition table and flags (faster method)
+            print(f"\nTotal partitions found: {len(partitions)}")
+            
+            # Get partition table type
+            print(f"\nChecking partition table type with parted...")
             try:
                 parted_result = subprocess.run(
                     ['parted', '-s', nbd_device, 'print'],
                     capture_output=True, text=True, check=True, timeout=10
                 )
                 
-                parted_output = parted_result.stdout.lower()
+                print(f"Parted output:\n{parted_result.stdout}\n")
                 
-                # Check for Windows indicators in partition flags/names
-                windows_indicators = [
-                    'microsoft reserved partition',
-                    'basic data partition',
-                    'msftres',
-                    'msftdata',
-                    'efi system partition'  # Often present in Windows
-                ]
+                parted_output = parted_result.stdout
                 
-                linux_indicators = [
-                    'linux filesystem',
-                    'linux swap',
-                    'ext2',
-                    'ext3', 
-                    'ext4'
-                ]
-                
-                windows_score = sum(1 for indicator in windows_indicators if indicator in parted_output)
-                linux_score = sum(1 for indicator in linux_indicators if indicator in parted_output)
-                
-                # If we see Microsoft Reserved Partition, it's definitely Windows
-                if 'microsoft reserved partition' in parted_output or 'msftres' in parted_output:
-                    print("Detected Windows (found Microsoft Reserved Partition)")
-                    return 'windows'
-                
-                # Check filesystem types
-                if 'ntfs' in parted_output or 'fat32' in parted_output:
-                    if linux_score == 0:  # No Linux filesystems detected
-                        print("Detected Windows (NTFS/FAT32 without Linux filesystems)")
-                        return 'windows'
+                # Check for partition table type
+                if 'gpt' in parted_output.lower():
+                    print("Partition table: GPT (likely UEFI)")
+                elif 'msdos' in parted_output.lower():
+                    print("Partition table: MBR/MSDOS (likely BIOS)")
                 
             except subprocess.CalledProcessError as parted_e:
-                print(f"Error running parted: {parted_e}")
-            except subprocess.TimeoutExpired as parted_timeout:
-                print(f"Parted command timed out: {parted_timeout}")
-            except FileNotFoundError as parted_file:
-                print(f"Parted command not found: {parted_file}")
-            except OSError as parted_os:
-                print(f"OS error running parted: {parted_os}")
+                print(f"⚠ Parted error: {parted_e}")
+            except subprocess.TimeoutExpired:
+                print(f"⚠ Parted timeout")
+            except FileNotFoundError:
+                print(f"⚠ Parted not found")
+            except OSError as e:
+                print(f"⚠ OS error: {e}")
             
-            # Fallback: Try to mount and detect
+            # Try to mount each partition and detect OS
+            print(f"\nAttempting to mount and scan partitions...\n")
+            
             for part_num, part_device in partitions:
+                print(f"Checking partition {part_num}: {part_device}")
+                
                 with tempfile.TemporaryDirectory() as mount_point:
                     try:
-                        # Try different filesystems
-                        for fs_type in ['auto', 'ntfs', 'vfat', 'ext4', 'ext3', 'ext2']:
+                        # Try different filesystems (order matters)
+                        mount_success = False
+                        used_fs = None
+                        
+                        for fs_type in ['auto', 'ntfs', 'vfat', 'btrfs', 'xfs', 'ext4', 'ext3', 'ext2']:
+                            print(f"  Trying mount with {fs_type}...", end=' ')
+                            
                             result = subprocess.run(
                                 ['mount', '-t', fs_type, '-o', 'ro', part_device, mount_point],
                                 capture_output=True, timeout=10, check=False
                             )
                             
                             if result.returncode == 0:
-                                print(f"Mounted {part_device} as {fs_type}")
+                                mount_success = True
+                                used_fs = fs_type
+                                print(f"✓ Mounted")
+                                break
+                            else:
+                                print(f"✗")
+                        
+                        if not mount_success:
+                            print(f"  Could not mount partition {part_num}")
+                            continue
+                        
+                        print(f"  Filesystem type: {used_fs}")
+                        print(f"  Mount point contents (first 15 items):")
+                        try:
+                            contents = os.listdir(mount_point)[:15]
+                            for item in contents:
+                                print(f"    - {item}")
+                        except OSError as list_e:
+                            print(f"    Error listing: {list_e}")
+                        
+                        # ===== CHECK FOR WINDOWS FIRST (more specific) =====
+                        print(f"\n  Checking for Windows indicators...")
+                        windows_indicators = [
+                            'Windows',
+                            'WINDOWS',
+                            'windows',
+                            'Program Files',
+                            'Program Files (x86)',
+                            'ProgramData',
+                            'Users',
+                            'System Volume Information',
+                            'Boot',
+                            'bootmgr',
+                            'BOOTMGR',
+                            'pagefile.sys',
+                            'hiberfil.sys',
+                        ]
+                        
+                        windows_found = []
+                        for win_indicator in windows_indicators:
+                            full_path = os.path.join(mount_point, win_indicator)
+                            if os.path.exists(full_path):
+                                windows_found.append(win_indicator)
+                                print(f"    ✓ Found Windows indicator: {win_indicator}")
+                        
+                        if windows_found:
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Windows (found {len(windows_found)} indicators)")
+                            print(f"{'='*60}\n")
+                            return 'windows'
+                        
+                        # ===== CHECK FOR EFI/BOOT DIRECTORY =====
+                        print(f"\n  Checking for EFI/Boot indicators...")
+                        efi_path = os.path.join(mount_point, 'EFI')
+                        if os.path.exists(efi_path):
+                            try:
+                                efi_contents = os.listdir(efi_path)
+                                print(f"    EFI directory found with: {efi_contents}")
                                 
-                                try:
-                                    # Check for Windows indicators FIRST (more specific)
-                                    windows_paths = [
-                                        'Windows',
-                                        'WINDOWS', 
-                                        'windows',
-                                        'Program Files',
-                                        'Program Files (x86)',
-                                        'ProgramData',
-                                        'Users',
-                                        'System Volume Information',
-                                        'Boot',
-                                        'bootmgr',
-                                        'BOOTMGR'
-                                    ]
-                                    
-                                    for win_path in windows_paths:
-                                        full_path = os.path.join(mount_point, win_path)
-                                        if os.path.exists(full_path):
-                                            subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                            print(f"Detected Windows (found {win_path})")
-                                            return 'windows'
-                                    
-                                    # Check for EFI partition content (common in Windows)
-                                    efi_path = os.path.join(mount_point, 'EFI')
-                                    if os.path.exists(efi_path):
-                                        efi_contents = os.listdir(efi_path)
-                                        if 'Microsoft' in efi_contents or 'Boot' in efi_contents:
-                                            subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                            print("Detected Windows (found EFI/Microsoft)")
-                                            return 'windows'
-                                    
-                                    # Only check for Linux if Windows wasn't detected
-                                    linux_paths = [
-                                        'etc/fstab',
-                                        'etc/passwd',
-                                        'bin/bash',
-                                        'usr/bin',
-                                        'var/log'
-                                    ]
-                                    
-                                    for linux_path in linux_paths:
-                                        full_path = os.path.join(mount_point, linux_path)
-                                        if os.path.exists(full_path):
-                                            subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                            print(f"Detected Linux (found {linux_path})")
-                                            return 'linux'
-                                    
-                                finally:
+                                if 'Microsoft' in efi_contents or 'Boot' in efi_contents:
                                     subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                
-                                break  # Successfully mounted, no need to try other fs types
-                            
+                                    print(f"\n✓ DETECTED: Windows (found EFI/Microsoft or EFI/Boot)")
+                                    print(f"{'='*60}\n")
+                                    return 'windows'
+                            except OSError as efi_e:
+                                print(f"    Error reading EFI: {efi_e}")
+                        
+                        # ===== CHECK FOR LINUX INDICATORS =====
+                        print(f"\n  Checking for Linux indicators...")
+                        linux_indicators = [
+                            ('etc/fstab', 'Linux fstab'),
+                            ('etc/passwd', 'Linux passwd'),
+                            ('etc/hostname', 'Linux hostname'),
+                            ('etc/os-release', 'Linux os-release'),
+                            ('bin/bash', 'Linux bash'),
+                            ('usr/bin', 'Linux usr/bin'),
+                            ('var/log', 'Linux var/log'),
+                            ('root/.bashrc', 'Linux root bashrc'),
+                            ('etc/debian_version', 'Debian version'),
+                            ('etc/redhat-release', 'RedHat release'),
+                        ]
+                        
+                        linux_found = []
+                        for linux_path, description in linux_indicators:
+                            full_path = os.path.join(mount_point, linux_path)
+                            if os.path.exists(full_path):
+                                linux_found.append(description)
+                                print(f"    ✓ Found Linux indicator: {description} ({linux_path})")
+                        
+                        if linux_found:
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Linux (found {len(linux_found)} indicators)")
+                            print(f"  Indicators: {', '.join(linux_found)}")
+                            print(f"{'='*60}\n")
+                            return 'linux'
+                        
+                        # ===== CHECK BOOT/GRUB DIRECTORY =====
+                        print(f"\n  Checking for GRUB/Boot directory...")
+                        boot_path = os.path.join(mount_point, 'boot')
+                        grub_path = os.path.join(mount_point, 'grub')
+                        
+                        if os.path.exists(boot_path):
+                            print(f"    ✓ Found /boot directory")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Linux (found /boot)")
+                            print(f"{'='*60}\n")
+                            return 'linux'
+                        
+                        if os.path.exists(grub_path):
+                            print(f"    ✓ Found /grub directory")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Linux (found /grub)")
+                            print(f"{'='*60}\n")
+                            return 'linux'
+                        
+                        # Cleanup
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                        
                     except subprocess.TimeoutExpired as mount_timeout:
-                        print(f"Mount operation timed out for {part_device}: {mount_timeout}")
+                        print(f"  ✗ Timeout: {mount_timeout}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
                     except subprocess.CalledProcessError as mount_e:
-                        print(f"Mount command failed for {part_device}: {mount_e}")
+                        print(f"  ✗ Mount failed: {mount_e}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
                     except FileNotFoundError as mount_file:
-                        print(f"Mount command not found: {mount_file}")
+                        print(f"  ✗ Command not found: {mount_file}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
                     except PermissionError as mount_perm:
-                        print(f"Permission error mounting {part_device}: {mount_perm}")
+                        print(f"  ✗ Permission denied: {mount_perm}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
                     except OSError as mount_os:
-                        print(f"OS error checking partition {part_device}: {mount_os}")
+                        print(f"  ✗ OS error: {mount_os}")
                         subprocess.run(['umount', mount_point], check=False, timeout=5)
             
-            print("Could not determine OS type")
+            print(f"\n✗ DETECTED: Unknown (could not determine OS)")
+            print(f"{'='*60}\n")
             return 'unknown'
             
         except FileNotFoundError as e:
-            print(f"File not found in detect_vm_os: {e}")
+            print(f"\n✗ ERROR: File not found: {e}")
+            print(f"{'='*60}\n")
             return 'unknown'
         except PermissionError as e:
-            print(f"Permission error in detect_vm_os: {e}")
+            print(f"\n✗ ERROR: Permission denied: {e}")
+            print(f"{'='*60}\n")
             return 'unknown'
         except OSError as e:
-            print(f"OS error in detect_vm_os: {e}")
+            print(f"\n✗ ERROR: OS error: {e}")
+            print(f"{'='*60}\n")
             return 'unknown'
         except ValueError as e:
-            print(f"Value error in detect_vm_os: {e}")
+            print(f"\n✗ ERROR: Value error: {e}")
+            print(f"{'='*60}\n")
             return 'unknown'
