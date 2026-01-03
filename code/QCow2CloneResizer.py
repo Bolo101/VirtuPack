@@ -22,7 +22,7 @@ class QCow2CloneResizer:
             'parted': 'parted',
             'gparted': 'gparted',
             'dd': 'coreutils',
-            'partclone.ext4': 'partclone',  # optional for smart cloning
+            'partclone.ext4': 'partclone',
         }
         
         missing = []
