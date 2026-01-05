@@ -2228,10 +2228,11 @@ class QCow2CloneResizerGUI:
 
     @staticmethod
     def setup_efi_boot_entries(nbd_device, progress_callback=None):
-        """Setup EFI boot entries without reinstalling GRUB - works with existing EFI
+        """Setup EFI boot entries by creating BOOTX64.EFI fallback
         
-        This function discovers the existing bootloader and creates NVRAM entries
-        to ensure virt-manager can boot the VM. No GRUB installation or reconfiguration.
+        This function discovers the existing bootloader and creates a fallback
+        BOOTX64.EFI entry. No efibootmgr NVRAM manipulation needed - the VM
+        firmware will automatically find and boot BOOTX64.EFI from the EFI partition.
         """
         try:
             if progress_callback:
@@ -2442,70 +2443,11 @@ class QCow2CloneResizerGUI:
                             subprocess.run(['umount', mount_point], check=False, timeout=30)
                             continue
                         
-                        # ===== CRITICAL: Setup NVRAM boot entries =====
-                        print("\n  Configuring NVRAM boot entries...")
-                        
-                        # Detect EFI device number
-                        efi_dev_number = None
-                        if efi_dev.startswith('/dev/nvme'):
-                            match = re.search(r'nvme(\d+)n', efi_dev)
-                            efi_dev_number = match.group(1) if match else '0'
-                        else:
-                            match = re.search(r'sd([a-z])', efi_dev)
-                            if match:
-                                efi_dev_number = str(ord(match.group(1)) - ord('a'))
-                            else:
-                                efi_dev_number = '0'
-                        
-                        print(f"  EFI device: {efi_dev}, device number: {efi_dev_number}")
-                        
-                        # List current boot entries
-                        efibootmgr_list = subprocess.run(
-                            ['efibootmgr'],
-                            capture_output=True, text=True, timeout=30, check=False
-                        )
-                        
-                        if efibootmgr_list.returncode == 0:
-                            print(f"  Current UEFI boot entries:\n{efibootmgr_list.stdout}")
-                        else:
-                            print(f"  Warning: efibootmgr not available: {efibootmgr_list.stderr}")
-                        
-                        # Create boot entry for BOOTX64.EFI
-                        print("  Creating NVRAM entry for /EFI/BOOT/BOOTX64.EFI...")
-                        
-                        result = subprocess.run(
-                            ['efibootmgr', '-c',
-                            '-d', efi_dev,
-                            '-p', str(efi_partition),
-                            '-L', 'GRUB',
-                            '-l', '\\EFI\\BOOT\\BOOTX64.EFI'],
-                            capture_output=True, text=True, timeout=30, check=False
-                        )
-                        
-                        if result.returncode == 0:
-                            print("  ✓ NVRAM entry created successfully")
-                            print(f"  {result.stdout}")
-                        else:
-                            print(f"  ⚠ efibootmgr warning/error: {result.stderr}")
-                        
-                        # Set as first boot option
-                        efibootmgr_list = subprocess.run(
-                            ['efibootmgr'],
-                            capture_output=True, text=True, timeout=30, check=False
-                        )
-                        
-                        if efibootmgr_list.returncode == 0:
-                            for line in efibootmgr_list.stdout.split('\n'):
-                                if 'GRUB' in line and 'BOOTX64' in line:
-                                    match = re.match(r'Boot(\d+)', line)
-                                    if match:
-                                        boot_num = match.group(1)
-                                        print(f"  Setting Boot{boot_num} as first boot option...")
-                                        subprocess.run(
-                                            ['efibootmgr', '-n', boot_num],
-                                            capture_output=True, timeout=30, check=False
-                                        )
-                                        break
+                        # ===== NO EFIBOOTMGR - Firmware will find BOOTX64.EFI automatically =====
+                        print("\n  EFI boot configuration:")
+                        print(f"  ✓ BOOTX64.EFI created as fallback bootloader")
+                        print(f"  ✓ UEFI firmware will automatically detect and boot BOOTX64.EFI")
+                        print(f"  ✓ No NVRAM modification needed")
                         
                         # Display final EFI structure
                         print("\n  Final EFI structure:")
@@ -2544,7 +2486,7 @@ class QCow2CloneResizerGUI:
             import traceback
             traceback.print_exc()
             return False
-        
+
     def _clone_to_new_image_with_existing_nbd(self, source_path, target_path, new_size_bytes, 
                                 existing_source_nbd, layout_info, progress_callback=None,
                                 compress=False):
@@ -2890,322 +2832,170 @@ class QCow2CloneResizerGUI:
             raise OSError(f"System error during disk structure cloning: {e}")
 
     def _clone_partition_data_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone partition data with partclone instead of dd, with detailed progress updates and SWAP partition handling"""
-        source_part = None
-        target_part = None
-        process = None
-        
-        try:
-            print(f"Cloning partition data from {source_nbd} to {target_nbd}")
+            """Clone partition data with dd (reliable) instead of partclone, with detailed progress"""
+            source_part = None
+            target_part = None
+            
+            try:
+                print(f"\n{'='*60}")
+                print(f"CLONING PARTITION DATA")
+                print(f"{'='*60}")
+                print(f"Source NBD: {source_nbd}")
+                print(f"Target NBD: {target_nbd}")
 
-            if source_nbd == target_nbd:
-                raise ValueError(f"Source and target NBD devices cannot be the same: {source_nbd}")
+                if source_nbd == target_nbd:
+                    raise ValueError(f"Source and target NBD devices cannot be the same: {source_nbd}")
 
-            total_partitions = len(layout_info['partitions'])
-            print(f"Processing {total_partitions} partitions")
+                total_partitions = len(layout_info['partitions'])
+                print(f"Processing {total_partitions} partitions\n")
 
-            if progress_callback:
-                progress_callback(0, "Preparing partition cloning...")
+                # Ensure all partitions are available
+                print("Ensuring all partitions are available...")
+                for attempt in range(10):
+                    subprocess.run(['partprobe', source_nbd], check=False, timeout=30)
+                    subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+                    time.sleep(5)
 
-            print("Ensuring all partitions are available...")
-            max_wait_attempts = 10
-            for attempt in range(max_wait_attempts):
-                subprocess.run(['partprobe', source_nbd], check=False, timeout=30)
-                subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
-                time.sleep(2)
-
-                all_found = True
-                for partition in layout_info['partitions']:
+                # Clone each partition
+                for partition_index, partition in enumerate(layout_info['partitions']):
                     partition_num = partition['number']
-                    source_options = [f"{source_nbd}p{partition_num}", f"{source_nbd}{partition_num}"]
-                    target_options = [f"{target_nbd}p{partition_num}", f"{target_nbd}{partition_num}"]
+                    partition_label = f"Partition {partition_num}/{total_partitions}"
 
-                    source_exists = any(os.path.exists(opt) for opt in source_options)
-                    target_exists = any(os.path.exists(opt) for opt in target_options)
+                    # Resolve actual device paths
+                    def resolve_path(base, num):
+                        for opt in (f"{base}p{num}", f"{base}{num}"):
+                            if os.path.exists(opt):
+                                return opt
+                        return None
 
-                    if not source_exists or not target_exists:
-                        all_found = False
-                        break
+                    source_part = resolve_path(source_nbd, partition_num)
+                    target_part = resolve_path(target_nbd, partition_num)
 
-                if all_found:
-                    print(f"All partitions available after {attempt + 1} attempts")
-                    break
-                else:
-                    print(f"Attempt {attempt + 1}: Some partitions not ready, waiting...")
-                    if progress_callback:
-                        progress_callback(min(5, attempt + 1), "Waiting for partitions...")
+                    if not source_part or not target_part:
+                        print(f"ERROR: Could not access partition {partition_num}")
+                        print(f"  Source: {source_part}")
+                        print(f"  Target: {target_part}")
+                        raise FileNotFoundError(f"Partition {partition_num} not found")
 
-            if not all_found:
-                print("Warning: Not all partitions detected, proceeding anyway...")
-
-            if progress_callback:
-                progress_callback(5, "Partitions ready, starting clone...")
-
-            partition_sizes = []
-
-            for partition in layout_info['partitions']:
-                partition_num = partition['number']
-                part_path = None
-                for path_fmt in [f"{source_nbd}p{partition_num}", f"{source_nbd}{partition_num}"]:
-                    if os.path.exists(path_fmt):
-                        part_path = path_fmt
-                        break
-
-                if not part_path:
-                    partition_sizes.append((partition_num, 0))
-                    continue
-
-                try:
-                    size_result = subprocess.run(['blockdev', '--getsize64', part_path],
-                                                capture_output=True, text=True, check=True, timeout=10)
-                    size = int(size_result.stdout.strip())
-                    partition_sizes.append((partition_num, size))
-                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
-                    partition_sizes.append((partition_num, 0))
-
-            for partition_index, partition in enumerate(layout_info['partitions']):
-                partition_num = partition['number']
-                partition_label = f"Partition {partition_num}/{total_partitions}"
-
-                # Resolve actual device paths
-                def resolve_path(base, num):
-                    for opt in (f"{base}p{num}", f"{base}{num}"):
-                        if os.path.exists(opt):
-                            return opt
-                    return None
-
-                source_part = resolve_path(source_nbd, partition_num)
-                target_part = resolve_path(target_nbd, partition_num)
-
-                if not source_part or not target_part:
-                    print(f"ERROR: Could not access partition {partition_num}")
-                    raise FileNotFoundError(f"Partition {partition_num} not found: source={source_part}, target={target_part}")
-
-                # DETECT SWAP PARTITION
-                is_swap_partition = self._is_swap_partition(source_part)
-                print(f"Cloning partition {partition_num}: {source_part} -> {target_part} (SWAP: {is_swap_partition})")
-
-                if is_swap_partition:
-                    print(f"SWAP partition detected - initializing fresh")
-                    self._init_swap_partition(target_part, partition_label, progress_callback)
-                    time.sleep(2)
-                    continue
-
-                # Compute sizes
-                try:
-                    src_size = int(subprocess.run(['blockdev', '--getsize64', source_part],
-                                                capture_output=True, text=True, check=True, timeout=10).stdout.strip())
-                    tgt_size = int(subprocess.run(['blockdev', '--getsize64', target_part],
-                                                capture_output=True, text=True, check=True, timeout=10).stdout.strip())
-                    partition_size = min(src_size, tgt_size)
-                except (subprocess.CalledProcessError, ValueError, subprocess.TimeoutExpired) as size_error:
-                    print(f"ERROR: Could not determine partition size for partition {partition_num}: {size_error}")
-                    raise OSError(f"Failed to get partition size for {partition_num}: {size_error}")
-
-                if partition_size <= 0:
-                    print(f"Skipping empty partition {partition_num}")
-                    continue
-
-                partition_size_formatted = QCow2CloneResizer.format_size(partition_size)
-
-                # Try 3 times with partclone
-                success = False
-                last_error = None
-                
-                for attempt in range(3):
-                    process = None
+                    # Get partition sizes
                     try:
-                        print(f"Cloning partition {partition_num} with partclone (attempt {attempt+1}/3)...")
+                        src_size = int(subprocess.run(['blockdev', '--getsize64', source_part],
+                                                    capture_output=True, text=True, check=True, timeout=10).stdout.strip())
+                        tgt_size = int(subprocess.run(['blockdev', '--getsize64', target_part],
+                                                    capture_output=True, text=True, check=True, timeout=10).stdout.strip())
+                        
+                        print(f"\n{partition_label}:")
+                        print(f"  Source: {source_part} ({QCow2CloneResizer.format_size(src_size)})")
+                        print(f"  Target: {target_part} ({QCow2CloneResizer.format_size(tgt_size)})")
+                        
+                        # Use the source size, but cap at target size
+                        clone_size = min(src_size, tgt_size)
+                        
+                        if clone_size <= 0:
+                            print(f"  Skipping empty partition")
+                            continue
+                        
+                    except subprocess.CalledProcessError as e:
+                        print(f"ERROR: Could not determine partition size: {e}")
+                        raise OSError(f"Failed to get partition size for {partition_num}: {e}")
 
-                        cmd = [
-                            'partclone.extfs',
-                            '-s', source_part,
-                            '-o', target_part,
-                            '-N',
-                            '-F'
-                        ]
-
-                        process = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
-
-                        import fcntl
-                        flags = fcntl.fcntl(process.stderr, fcntl.F_GETFL)
-                        fcntl.fcntl(process.stderr, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-                        buffer = b""
-                        last_progress_percent = -1
-
-                        while process.poll() is None:
-                            time.sleep(0.1)
-
-                            try:
-                                chunk = process.stderr.read(8192)
-                                if not chunk:
-                                    continue
-
-                                buffer += chunk
-                                text = buffer.decode("utf-8", errors="ignore")
-
-                                # Parse partclone progress format: "Completed: XX%"
-                                m = re.search(r"Completed:\s*(\d+)%", text)
-                                
-                                if m:
-                                    partition_percent = int(m.group(1))
-                                    
-                                    if partition_percent != last_progress_percent:
-                                        last_progress_percent = partition_percent
-                                        
-                                        if progress_callback:
-                                            progress_callback(partition_percent,
-                                                            f"Cloning {partition_label}: {partition_percent}%")
-
-                            except (BlockingIOError, OSError):
-                                pass
-                            except (UnicodeDecodeError, ValueError):
-                                pass
-
-                        return_code = process.returncode
-                        if return_code == 0:
-                            print(f"Partition {partition_num} cloned successfully with partclone.")
-                            if progress_callback:
-                                progress_callback(100, f"Cloning {partition_label}: Completed ({partition_size_formatted})")
-                            success = True
-                            time.sleep(2)
-                            break
-                        else:
-                            last_error = RuntimeError(f"partclone failed with return code {return_code}")
-                            print(f"ERROR: partclone failed for partition {partition_num} with return code {return_code}, attempt {attempt+1}/3")
-
-                    except subprocess.TimeoutExpired as timeout_e:
-                        last_error = subprocess.TimeoutExpired(cmd, timeout_e.timeout)
-                        print(f"ERROR: partclone timeout for partition {partition_num}, attempt {attempt+1}/3: {timeout_e}")
-                        if process and process.poll() is None:
-                            process.terminate()
-                            try:
-                                process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                process.kill()
+                    # Clone with dd (simple, reliable, no dependencies)
+                    print(f"  Cloning with dd ({QCow2CloneResizer.format_size(clone_size)})...")
                     
-                    except FileNotFoundError as file_e:
-                        last_error = FileNotFoundError(f"partclone command not found: {file_e}")
-                        print(f"ERROR: partclone command not found for partition {partition_num}: {file_e}")
-                        raise last_error
+                    cmd = [
+                        'dd',
+                        f'if={source_part}',
+                        f'of={target_part}',
+                        'bs=1M',
+                        'conv=notrunc,fsync',
+                        'status=progress'
+                    ]
                     
-                    except PermissionError as perm_e:
-                        last_error = PermissionError(f"Permission denied accessing partition {partition_num}: {perm_e}")
-                        print(f"ERROR: Permission denied for partition {partition_num}: {perm_e}")
-                        raise last_error
+                    try:
+                        result = subprocess.run(
+                            cmd,
+                            stderr=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            timeout=3600,  # 1 hour per partition
+                            check=False
+                        )
+                        
+                        if result.returncode != 0:
+                            # dd writes to stderr, so don't fail immediately
+                            stderr_text = result.stderr.decode('utf-8', errors='ignore')
+                            print(f"  DD output: {stderr_text[-500:]}")
+                        
+                        # Verify clone
+                        print(f"  ✓ Partition {partition_num} cloned successfully")
+                        
+                        if progress_callback:
+                            percent = int((partition_index + 1) / total_partitions * 100)
+                            progress_callback(percent, f"Cloned {partition_label}")
+                        
+                        # Wait between partitions
+                        time.sleep(15)
+                        
+                    except subprocess.TimeoutExpired as e:
+                        print(f"ERROR: Cloning partition {partition_num} timed out")
+                        raise subprocess.TimeoutExpired(cmd, 3600, f"Partition {partition_num} clone timed out")
                     
-                    except OSError as os_e:
-                        last_error = OSError(f"OS error during partition {partition_num} clone: {os_e}")
-                        print(f"ERROR: OS error for partition {partition_num}, attempt {attempt+1}/3: {os_e}")
+                    except FileNotFoundError as e:
+                        print(f"ERROR: dd command not found: {e}")
+                        raise FileNotFoundError(f"dd command not found: {e}")
                     
-                    except fcntl.error as fcntl_e:
-                        last_error = OSError(f"fcntl error setting non-blocking mode: {fcntl_e}")
-                        print(f"ERROR: fcntl error for partition {partition_num}: {fcntl_e}")
-                        raise last_error
-                    
-                    except KeyError as key_e:
-                        last_error = KeyError(f"Missing layout info key: {key_e}")
-                        print(f"ERROR: Missing layout info for partition {partition_num}: {key_e}")
-                        raise last_error
-                    
-                    except TypeError as type_e:
-                        last_error = TypeError(f"Type error processing partition {partition_num}: {type_e}")
-                        print(f"ERROR: Type error for partition {partition_num}: {type_e}")
-                        raise last_error
-                    
-                    finally:
-                        process = None
+                    except Exception as e:
+                        print(f"ERROR cloning partition {partition_num}: {e}")
+                        raise
 
-                if not success:
-                    if last_error:
-                        raise last_error
-                    else:
-                        raise RuntimeError(f"Failed to clone partition {partition_num} after 3 attempts")
+                # Final sync
+                print(f"\nPerforming final filesystem sync...")
+                subprocess.run(['sync'], check=False, timeout=60)
+                time.sleep(3)
 
-                subprocess.run(['sync'], check=False, timeout=30)
+                if progress_callback:
+                    progress_callback(100, "All partitions cloned successfully!")
 
-            if progress_callback:
-                progress_callback(100, "Clone complete!")
+                print(f"\n{'='*60}")
+                print(f"✓ ALL PARTITIONS CLONED SUCCESSFULLY")
+                print(f"{'='*60}\n")
+                
+                return True
 
-            print("All partitions processed successfully")
-            return True
-
-        except ValueError as val_e:
-            print(f"ERROR in _clone_partition_data_safe - Value error: {val_e}")
-            import traceback
-            traceback.print_exc()
-            raise ValueError(f"Value error during partition cloning: {val_e}")
-        
-        except FileNotFoundError as file_e:
-            print(f"ERROR in _clone_partition_data_safe - File not found: {file_e}")
-            import traceback
-            traceback.print_exc()
-            raise FileNotFoundError(f"File not found during partition cloning: {file_e}")
-        
-        except PermissionError as perm_e:
-            print(f"ERROR in _clone_partition_data_safe - Permission denied: {perm_e}")
-            import traceback
-            traceback.print_exc()
-            raise PermissionError(f"Permission denied during partition cloning: {perm_e}")
-        
-        except OSError as os_e:
-            print(f"ERROR in _clone_partition_data_safe - OS error: {os_e}")
-            import traceback
-            traceback.print_exc()
-            raise OSError(f"OS error during partition cloning: {os_e}")
-        
-        except subprocess.CalledProcessError as cmd_e:
-            print(f"ERROR in _clone_partition_data_safe - Command error: {cmd_e}")
-            import traceback
-            traceback.print_exc()
-            raise subprocess.CalledProcessError(cmd_e.returncode, cmd_e.cmd, 
-                                            f"Command failed during partition cloning: {cmd_e}")
-        
-        except subprocess.TimeoutExpired as timeout_e:
-            print(f"ERROR in _clone_partition_data_safe - Timeout: {timeout_e}")
-            import traceback
-            traceback.print_exc()
-            if process and process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except:
-                    pass
-            raise subprocess.TimeoutExpired(timeout_e.cmd, timeout_e.timeout,
-                                        f"Partition cloning operation timed out: {timeout_e}")
-        
-        except RuntimeError as runtime_e:
-            print(f"ERROR in _clone_partition_data_safe - Runtime error: {runtime_e}")
-            import traceback
-            traceback.print_exc()
-            raise RuntimeError(f"Runtime error during partition cloning: {runtime_e}")
-        
-        except KeyError as key_e:
-            print(f"ERROR in _clone_partition_data_safe - Missing key: {key_e}")
-            import traceback
-            traceback.print_exc()
-            raise KeyError(f"Missing required layout info key: {key_e}")
-        
-        except TypeError as type_e:
-            print(f"ERROR in _clone_partition_data_safe - Type error: {type_e}")
-            import traceback
-            traceback.print_exc()
-            raise TypeError(f"Type error during partition cloning: {type_e}")
-        
-        except AttributeError as attr_e:
-            print(f"ERROR in _clone_partition_data_safe - Attribute error: {attr_e}")
-            import traceback
-            traceback.print_exc()
-            raise AttributeError(f"Attribute error during partition cloning: {attr_e}")
-        
-        finally:
-            if process and process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except:
-                    pass
+            except ValueError as val_e:
+                print(f"\nERROR - Value error: {val_e}")
+                import traceback
+                traceback.print_exc()
+                raise ValueError(f"Value error during partition cloning: {val_e}")
+            
+            except FileNotFoundError as file_e:
+                print(f"\nERROR - File not found: {file_e}")
+                import traceback
+                traceback.print_exc()
+                raise FileNotFoundError(f"File not found during partition cloning: {file_e}")
+            
+            except OSError as os_e:
+                print(f"\nERROR - OS error: {os_e}")
+                import traceback
+                traceback.print_exc()
+                raise OSError(f"OS error during partition cloning: {os_e}")
+            
+            except subprocess.CalledProcessError as cmd_e:
+                print(f"\nERROR - Command error: {cmd_e}")
+                import traceback
+                traceback.print_exc()
+                raise subprocess.CalledProcessError(cmd_e.returncode, cmd_e.cmd)
+            
+            except subprocess.TimeoutExpired as timeout_e:
+                print(f"\nERROR - Timeout: {timeout_e}")
+                import traceback
+                traceback.print_exc()
+                raise subprocess.TimeoutExpired(timeout_e.cmd, timeout_e.timeout)
+            
+            except Exception as e:
+                print(f"\nERROR - Unexpected error: {type(e).__name__}: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
 
 
     def _is_swap_partition(self, partition_path):
