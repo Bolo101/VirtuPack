@@ -2871,21 +2871,9 @@ class QCow2CloneResizerGUI:
                     print(f"  Target: {target_part}")
                     raise FileNotFoundError(f"Partition {partition_num} not found")
 
-                # DETECT SWAP PARTITION
-                is_swap_partition = self._is_swap_partition(source_part)
                 print(f"\n{partition_label}:")
                 print(f"  Source: {source_part}")
                 print(f"  Target: {target_part}")
-                print(f"  SWAP: {is_swap_partition}")
-
-                if is_swap_partition:
-                    print(f"  Status: SWAP partition - initializing fresh instead of cloning")
-                    self._init_swap_partition(target_part, partition_label, progress_callback)
-                    overall_percent = int((partition_index + 1) / total_partitions * 100)
-                    if progress_callback:
-                        progress_callback(overall_percent, f"Completed: {partition_label} (SWAP initialized)")
-                    time.sleep(2)
-                    continue
 
                 # Get partition sizes
                 try:
@@ -2935,38 +2923,42 @@ class QCow2CloneResizerGUI:
                             cmd,
                             stderr=subprocess.PIPE,
                             stdout=subprocess.PIPE,
-                            bufsize=0
+                            bufsize=0,
+                            universal_newlines=True
                         )
                         
-                        import fcntl
-                        flags = fcntl.fcntl(process.stderr, fcntl.F_GETFL)
-                        fcntl.fcntl(process.stderr, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-                        
-                        buffer = b""
                         last_progress_percent = -1
                         
                         while process.poll() is None:
-                            time.sleep(0.1)
+                            time.sleep(0.2)
                             
                             try:
-                                chunk = process.stderr.read(8192)
-                                if not chunk:
+                                # Lire stderr ligne par ligne
+                                line = process.stderr.readline()
+                                if not line:
                                     continue
                                 
-                                buffer += chunk
-                                text = buffer.decode("utf-8", errors="ignore")
+                                line = line.strip()
+                                if not line:
+                                    continue
                                 
-                                # Parse dd progress output
-                                m = re.search(r"(\d+)\s+(?:octets|bytes)", text)
+                                # dd progress output format: "12345 bytes (12 MB) copied, 1.5 s, 8.2 MB/s"
+                                # ou "12345 octets (12 MB) copiés, 1.5 s, 8.2 MB/s" (français)
+                                
+                                # Chercher le pattern "XXXXXX bytes" ou "XXXXXX octets"
+                                m = re.search(r'(\d+)\s+(?:bytes|octets)', line)
                                 
                                 if m:
                                     bytes_copied = int(m.group(1))
-                                    partition_percent = int((bytes_copied / clone_size) * 100)
+                                    partition_percent = min(100, int((bytes_copied / clone_size) * 100))
                                     
                                     if partition_percent != last_progress_percent:
                                         last_progress_percent = partition_percent
                                         
                                         bytes_formatted = QCow2CloneResizer.format_size(bytes_copied)
+                                        
+                                        # Afficher aussi dans la console
+                                        print(f"    {partition_percent}% ({bytes_formatted}/{partition_size_formatted})", end='\r', flush=True)
                                         
                                         if progress_callback:
                                             progress_callback(
@@ -2974,12 +2966,12 @@ class QCow2CloneResizerGUI:
                                                 f"Cloning {partition_label}: {partition_percent}% ({bytes_formatted}/{partition_size_formatted})"
                                             )
                                 
-                            except (BlockingIOError, OSError, UnicodeDecodeError, ValueError):
+                            except (UnicodeDecodeError, ValueError, AttributeError):
                                 pass
                         
                         return_code = process.returncode
                         if return_code == 0:
-                            print(f"  ✓ Partition {partition_num} cloned successfully")
+                            print(f"\n  ✓ Partition {partition_num} cloned successfully")
                             overall_percent = int((partition_index + 1) / total_partitions * 100)
                             if progress_callback:
                                 progress_callback(overall_percent, f"Completed: {partition_label} ({partition_size_formatted})")
@@ -2987,11 +2979,11 @@ class QCow2CloneResizerGUI:
                             break
                         else:
                             last_error = RuntimeError(f"dd failed with return code {return_code}")
-                            print(f"  ✗ dd failed with code {return_code}, attempt {attempt + 1}/3")
+                            print(f"\n  ✗ dd failed with code {return_code}, attempt {attempt + 1}/3")
                         
                     except subprocess.TimeoutExpired as timeout_e:
                         last_error = subprocess.TimeoutExpired(cmd, timeout_e.timeout)
-                        print(f"  ✗ dd timeout, attempt {attempt + 1}/3")
+                        print(f"\n  ✗ dd timeout, attempt {attempt + 1}/3")
                         if process and process.poll() is None:
                             process.terminate()
                             try:
@@ -3001,17 +2993,17 @@ class QCow2CloneResizerGUI:
                     
                     except FileNotFoundError as file_e:
                         last_error = FileNotFoundError(f"dd command not found: {file_e}")
-                        print(f"  ✗ dd command not found")
+                        print(f"\n  ✗ dd command not found")
                         raise last_error
                     
                     except PermissionError as perm_e:
                         last_error = PermissionError(f"Permission denied: {perm_e}")
-                        print(f"  ✗ Permission denied")
+                        print(f"\n  ✗ Permission denied")
                         raise last_error
                     
                     except OSError as os_e:
                         last_error = OSError(f"OS error: {os_e}")
-                        print(f"  ✗ OS error, attempt {attempt + 1}/3")
+                        print(f"\n  ✗ OS error, attempt {attempt + 1}/3")
                     
                     finally:
                         process = None
@@ -3024,7 +3016,7 @@ class QCow2CloneResizerGUI:
                 
                 # Sync after each partition
                 subprocess.run(['sync'], check=False, timeout=30)
-                time.sleep(10)
+                time.sleep(2)
 
             if progress_callback:
                 progress_callback(100, "All partitions cloned successfully!")
@@ -3091,76 +3083,6 @@ class QCow2CloneResizerGUI:
                 except:
                     pass
 
-
-    def _is_swap_partition(self, partition_path):
-        """Detect if partition is SWAP by checking filesystem type"""
-        try:
-            # Use blkid to detect partition type
-            result = subprocess.run(
-                ['blkid', '-o', 'value', '-s', 'TYPE', partition_path],
-                capture_output=True, text=True, timeout=10, check=False
-            )
-            
-            fs_type = result.stdout.strip().lower()
-            
-            if fs_type == 'swap':
-                return True
-            
-            # Alternative: try file command
-            result = subprocess.run(
-                ['file', '-s', partition_path],
-                capture_output=True, text=True, timeout=10, check=False
-            )
-            
-            file_output = result.stdout.lower()
-            if 'swap' in file_output:
-                return True
-            
-            return False
-            
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return False
-
-
-    def _init_swap_partition(self, partition_path, partition_label, progress_callback=None):
-        """Initialize SWAP partition (mkswap) instead of cloning data"""
-        try:
-            print(f"    Initializing SWAP partition...")
-            
-            if progress_callback:
-                progress_callback(50, f"Initializing {partition_label} (SWAP)...")
-            
-            # Disable swap first if it was active
-            subprocess.run(['swapoff', partition_path], check=False, timeout=10)
-            time.sleep(1)
-            
-            # Initialize as new swap
-            result = subprocess.run(
-                ['mkswap', partition_path],
-                capture_output=True, text=True, timeout=30, check=False
-            )
-            
-            if result.returncode != 0:
-                print(f"    WARNING: mkswap returned {result.returncode}")
-                if result.stderr:
-                    print(f"    STDERR: {result.stderr}")
-            else:
-                print(f"    ✓ SWAP partition initialized successfully")
-            
-            if progress_callback:
-                progress_callback(100, f"{partition_label}: SWAP initialized")
-            
-            return True
-            
-        except subprocess.TimeoutExpired:
-            print(f"    WARNING: mkswap timed out")
-            return False
-        except FileNotFoundError:
-            print(f"    WARNING: mkswap command not found")
-            return False
-        except Exception as e:
-            print(f"    WARNING: Error initializing SWAP: {e}")
-            return False
 
     def update_progress(self, percent, status):
         """Thread-safe GUI update"""
