@@ -4,7 +4,7 @@
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/p2vConverter-v0.1-XFCE-i386.iso"
+ISO_NAME="$(pwd)/p2vConverter-v1.0-XFCE-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../code"
 
