@@ -3,7 +3,7 @@ SCRIPT_XFCE := ./forgeIsoXfce.sh
 SCRIPT_KDE := ./forgeIsoKde.sh
 SCRIPT_XFCE_32 := ./forgeIsoXfce32.sh
 SCRIPT_KDE_32 := ./forgeIsoKde32.sh
-BUILD_DIR := $(pwd)/debian-live-build
+BUILD_DIR := $(shell pwd)/debian-live-build
 
 .PHONY: all kde xfce32 kde32 clean help
 
