@@ -1238,6 +1238,22 @@ class QCow2CloneResizerGUI:
                     print(f"New size selected for Windows: {new_size}")
                     
                     if new_size is not None:
+                        # ALIGN SIZE TO 512-BYTE BOUNDARY FOR WINDOWS
+                        aligned_new_size = self._align_windows_size_to_512(new_size)
+                        
+                        if aligned_new_size != new_size:
+                            alignment_msg = (
+                                f"SIZE ALIGNMENT REQUIRED FOR WINDOWS\n\n"
+                                f"Windows images must use 512-byte sector alignment.\n\n"
+                                f"Original selected size: {QCow2CloneResizer.format_size(new_size)}\n"
+                                f"Aligned size:           {QCow2CloneResizer.format_size(aligned_new_size)}\n"
+                                f"Difference:             {aligned_new_size - new_size} bytes\n\n"
+                                f"The image will be resized to the aligned size for compatibility."
+                            )
+                            self._show_message_and_wait("Windows Size Alignment", alignment_msg)
+                            new_size = aligned_new_size
+                            print(f"Using aligned size: {QCow2CloneResizer.format_size(new_size)}")
+                        
                         print(f"Resizing Windows image to: {QCow2CloneResizer.format_size(new_size)}")
                         
                         # Perform safe sync while NBD is still mounted
@@ -1515,6 +1531,39 @@ class QCow2CloneResizerGUI:
                 
                 self.root.after(0, self.reset_ui)
 
+    def _align_windows_size_to_512(self, size_bytes):
+        """Align Windows image size to 512-byte boundary (sector size)
+        
+        Windows requires images to be aligned to 512-byte sectors.
+        If size is not a multiple of 512, round up to next multiple.
+        
+        Args:
+            size_bytes: Size in bytes
+            
+        Returns:
+            Size aligned to 512-byte boundary (always >= input size)
+        """
+        try:
+            # Check if already aligned
+            if size_bytes % 512 == 0:
+                print(f"Size {self._format_size_compact(size_bytes)} is already 512-byte aligned")
+                return size_bytes
+            
+            # Calculate aligned size (round up)
+            aligned_size = ((size_bytes + 511) // 512) * 512
+            
+            overhead = aligned_size - size_bytes
+            print(f"Size alignment for Windows:")
+            print(f"  Requested: {self._format_size_compact(size_bytes)} ({size_bytes} bytes)")
+            print(f"  Aligned:   {self._format_size_compact(aligned_size)} ({aligned_size} bytes)")
+            print(f"  Overhead:  {overhead} bytes")
+            
+            return aligned_size
+            
+        except (TypeError, ValueError) as e:
+            print(f"ERROR in _align_windows_size_to_512: {e}")
+            # Return original size if error (fail gracefully)
+            return size_bytes
 
     def _cleanup_on_error(self, original_image_path, temp_files_to_show):
         """Show dialog to let user select which files to delete - SYNCHRONE approach"""
