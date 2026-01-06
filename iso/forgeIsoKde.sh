@@ -4,7 +4,7 @@
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/p2vConverter-v0.1.iso"
+ISO_NAME="$(pwd)/p2vConverter-v0.1-KDE-64bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../code"
 
@@ -156,7 +156,7 @@ ConditionPathExists=/dev/null
 EOF
 
 # Configure KDE Power Management to never suspend
-mkdir -p config/includes.chroot/etc/xdg/powerdevilrc
+mkdir -p config/includes.chroot/etc/xdg
 cat << 'EOF' > config/includes.chroot/etc/xdg/powerdevilrc
 [General]
 chargeStartThreshold=0
@@ -240,8 +240,8 @@ mkdir -p config/includes.chroot/usr/local/bin/
 cp -r "$CODE_DIR"/* config/includes.chroot/usr/local/bin/
 chmod +x config/includes.chroot/usr/local/bin/*
 
-# Create symbolic link 'de' -> main.py
-ln -sf /usr/local/bin/main.py config/includes.chroot/usr/local/bin/de
+# Create symbolic link 'd2q' -> main.py
+ln -sf /usr/local/bin/main.py config/includes.chroot/usr/local/bin/d2q
 
 # Allow sudo without password
 echo "Configuring sudo to be passwordless..."
@@ -272,30 +272,29 @@ EOF
 # Create application launcher for the installed version
 echo "Creating application launcher..."
 mkdir -p config/includes.chroot/usr/share/applications/
-cat << EOF > config/includes.chroot/usr/share/applications/secure_disk_eraser.desktop
+cat << EOF > config/includes.chroot/usr/share/applications/p2v_converter.desktop
 [Desktop Entry]
 Version=1.0
-Name=Secure Disk Eraser
-Comment=Securely erase disks and partitions
-Exec=sudo /usr/local/bin/de
+Name=P2V Converter
+Comment=Transform physical disks into qcow2 virtual machine images ready for any hypervisor
+Exec=sudo /usr/local/bin/d2q
 Icon=drive-harddisk
 Terminal=true
 Type=Application
 Categories=System;Security;
-Keywords=disk;erase;secure;wipe;
+Keywords=p2v;virtualization;qcow2;migration;backup;image;disk;vm;qemu;kvm;convert;
 EOF
 
 # Make the launcher executable
-chmod +x config/includes.chroot/usr/share/applications/secure_disk_eraser.desktop
-
+chmod +x config/includes.chroot/usr/share/applications/p2v_converter.desktop
 # Auto-start in live mode - Create KDE Plasma autostart
 mkdir -p config/includes.chroot/etc/xdg/autostart/
-cat << EOF > config/includes.chroot/etc/xdg/autostart/disk-eraser.desktop
+cat << EOF > config/includes.chroot/etc/xdg/autostart/p2v_converter.desktop
 [Desktop Entry]
 Type=Application
-Name=Disk Eraser
-Comment=Start Disk Eraser automatically in live mode
-Exec=sudo /usr/local/bin/de
+Name=P2V Converter
+Comment=Start P2V Converter automatically in live mode
+Exec=sudo /usr/local/bin/d2q
 Terminal=true
 Icon=drive-harddisk
 Categories=System;Security;
@@ -312,15 +311,15 @@ if [ -f /etc/bashrc ]; then
 fi
 
 # Display information about the disk eraser
-echo "Secure Disk Eraser"
-echo "Type 'sudo de' to use the Secure Disk Eraser program"
+echo "P2V Converter"
+echo "Type 'sudo d2q' to use the P2V Converter program"
 
 # Check if we're in live mode
 if grep -q "boot=live" /proc/cmdline; then
     # Only auto-start in terminals when in live mode
     if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-        echo "Live mode detected. Starting disk eraser..."
-        sudo /usr/local/bin/de
+        echo "Live mode detected. Starting P2V Converter..."
+        sudo /usr/local/bin/d2q
     fi
 fi
 EOF
@@ -368,7 +367,7 @@ UI vesamenu.c32
 DEFAULT live
 TIMEOUT 50
 
-MENU TITLE Secure Disk Eraser - Boot Menu
+MENU TITLE P2V Converter - Boot Menu
 
 LABEL live
     MENU LABEL Start Live Environment
@@ -376,7 +375,7 @@ LABEL live
     APPEND initrd=/live/initrd.img boot=live components
 
 LABEL install
-    MENU LABEL Install Secure Eraser (Copy Live System)
+    MENU LABEL Install P2V Converter (Copy Live System)
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd.img boot=live components automatic calamares
 EOF
