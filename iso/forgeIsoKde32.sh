@@ -4,7 +4,7 @@
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/p2vConverter-v0.1-KDE-64bits.iso"
+ISO_NAME="$(pwd)/p2vConverter-v0.1-KDE-i386.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../code"
 
@@ -27,7 +27,7 @@ sudo lb clean
 
 # Configure live-build
 echo "Configuring live-build for Debian Bookworm..."
-lb config --distribution=bookworm --architectures=amd64 \
+lb config --distribution=bookworm --architectures=i386 \
     --linux-packages=linux-image \
     --debian-installer=live \
     --bootappend-live="boot=live components hostname=secure-eraser username=user locales=fr_FR.UTF-8 keyboard-layouts=fr"
@@ -276,13 +276,13 @@ cat << EOF > config/includes.chroot/usr/share/applications/p2v_converter.desktop
 [Desktop Entry]
 Version=1.0
 Name=P2V Converter
-Comment=Transform physical disks into qcow2 virtual machine images ready for any hypervisor
+Comment=Start P2V Converter automatically in live mode
 Exec=sudo /usr/local/bin/d2q
 Icon=drive-harddisk
 Terminal=true
 Type=Application
 Categories=System;Security;
-Keywords=p2v;virtualization;qcow2;migration;backup;image;disk;vm;qemu;kvm;convert;
+Keywords=p2v;v2v;virtualization;qcow2;migration;backup;image;disk;vm;qemu;kvm;convert;
 EOF
 
 # Make the launcher executable
@@ -310,7 +310,7 @@ if [ -f /etc/bashrc ]; then
     . /etc/bashrc
 fi
 
-# Display information about the disk eraser
+# Display information about the P2V Converter
 echo "P2V Converter"
 echo "Type 'sudo d2q' to use the P2V Converter program"
 
@@ -391,7 +391,7 @@ menuentry "Start Live Environment" {
     initrd /live/initrd.img
 }
 
-menuentry "Install Secure Eraser (Copy Live System)" {
+menuentry "Install P2V Converter (Copy Live System)" {
     linux /live/vmlinuz boot=live components automatic calamares
     initrd /live/initrd.img
 }
@@ -413,7 +413,7 @@ echo "Building the ISO..."
 sudo lb build
 
 # Move the ISO
-mv live-image-amd64.hybrid.iso "$ISO_NAME"
+mv live-image-i386.hybrid.iso "$ISO_NAME"
 
 # Cleanup
 sudo lb clean
