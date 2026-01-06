@@ -1202,18 +1202,16 @@ class QCow2CloneResizerGUI:
                     print("=== WINDOWS VM DETECTED - RESIZING AND COMPRESSING ===")
                     
                     self.update_progress(40, "Finalizing Windows partition changes...")
-                    print("Performing final sync before NBD disconnect...")
-                    self._perform_safe_sync("Windows pre-disconnect sync")
+                    print("Waiting for partitions to stabilize after GParted...")
                     
-                    print(f"Disconnecting NBD device: {source_nbd}")
-                    QCow2CloneResizer.cleanup_nbd_device(source_nbd)
-                    source_nbd = None
-                    
-                    print("Waiting for device release...")
-                    time.sleep(10)
+                    # Don't disconnect yet - analyze with NBD still mounted
+                    print("Re-scanning partitions...")
+                    subprocess.run(['partprobe', source_nbd], check=False, timeout=30)
+                    time.sleep(3)
                     
                     self.update_progress(45, "Analyzing final partition layout...")
-                    final_layout = QCow2CloneResizer.get_partition_layout(image_path)
+                    # Use source_nbd (still mounted), NOT image_path
+                    final_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
                     
                     partition_changes = "Partitions modified using GParted"
                     if len(initial_layout['partitions']) != len(final_layout['partitions']):
@@ -1242,7 +1240,21 @@ class QCow2CloneResizerGUI:
                     if new_size is not None:
                         print(f"Resizing Windows image to: {QCow2CloneResizer.format_size(new_size)}")
                         
-                        self.update_progress(55, "Resizing image...")
+                        # Perform safe sync while NBD is still mounted
+                        self.update_progress(55, "Finalizing Windows partition changes...")
+                        print("Performing final sync before NBD disconnect...")
+                        self._perform_safe_sync("Windows pre-resize sync")
+                        
+                        # NOW disconnect NBD device after all analysis complete
+                        print(f"Disconnecting NBD device: {source_nbd}")
+                        QCow2CloneResizer.cleanup_nbd_device(source_nbd)
+                        source_nbd = None
+                        
+                        print("Waiting for device release...")
+                        time.sleep(10)
+                        
+                        # RESIZE the image
+                        self.update_progress(60, "Resizing image...")
                         print(f"Resizing image to {QCow2CloneResizer.format_size(new_size)}")
                         
                         resize_cmd = [
@@ -1268,7 +1280,8 @@ class QCow2CloneResizerGUI:
                         
                         print(f"✓ Windows Image resized successfully")
                         
-                        self.update_progress(70, "Compressing optimized image...")
+                        # COMPRESS the resized image
+                        self.update_progress(75, "Compressing optimized image...")
                         print(f"Starting compression for Windows image...")
                         
                         compression_stats = QCow2CloneResizer.compress_qcow2_image(
@@ -1302,7 +1315,7 @@ class QCow2CloneResizerGUI:
                     else:
                         print("User cancelled Windows resizing")
                         raise RuntimeError("Operation cancelled by user")
-                
+                    
                 else:
                     print("=== UNKNOWN OS TYPE ===")
                     
