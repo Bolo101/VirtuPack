@@ -4,7 +4,7 @@
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/p2vConverter-v1.0-KDE-32.iso"
+ISO_NAME="$(pwd)/p2vConverter-v1.0-KDE-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../code"
 
