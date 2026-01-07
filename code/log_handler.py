@@ -61,15 +61,6 @@ def log_warning(message: str) -> None:
     """Log warning message to both the console and log file."""
     logger.warning(message)
 
-def log_erase_operation(disk_id: str, filesystem: str, method: str) -> None:
-    """Log detailed erasure operation with stable disk identifier."""
-    message = f"Erasure operation for disk ID: {disk_id}. Filesystem: {filesystem}. Erase method: {method}"
-    logger.info(message)
-
-def log_disk_completed(disk_id: str) -> None:
-    """Log completion of operations on a single disk without ending session."""
-    message = f"Completed operations on disk ID: {disk_id}"
-    logger.info(message)
 
 def session_start() -> None:
     """Log session start with clear separator and begin session log capture"""
@@ -129,14 +120,6 @@ def log_application_exit(exit_method: str = "Exit button") -> None:
     """Log application exit and end session properly."""
     log_info(f"Application closed by user via {exit_method}")
     session_end()
-
-def log_erasure_process_completed() -> None:
-    """Log that the erasure process is completed but don't end session."""
-    log_info("Erasure process completed")
-
-def log_erasure_process_stopped() -> None:
-    """Log that the erasure process was stopped by user but don't end session."""
-    log_info("Erasure process stopped by user")
 
 def get_current_session_logs() -> List[str]:
     """Get all logs from the current session"""
