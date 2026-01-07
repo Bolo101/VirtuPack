@@ -23,8 +23,8 @@ Transform physical disks into **qcow2 virtual machine images** ready for any hyp
 - **External Storage Support**: Mount and use external drives
 
 ### Supported Operating Systems
-- ✅ **Windows** (all versions - XP through 11, Server editions)
-- ✅ **Linux** (all distributions - Ubuntu, Debian, Fedora, CentOS, Arch, etc.)
+- **Windows** (all versions - XP through 11, Server editions)
+- **Linux** (all distributions - Ubuntu, Debian, Fedora, CentOS, Arch, etc.)
 
 ***
 
@@ -89,25 +89,23 @@ sudo usermod -a -G libvirt $USER
 ## Usage Workflow
 
 ### 1. Boot from ISO
-- Write ISO to USB: `sudo dd if=p2v-converter.iso of=/dev/sdX bs=4M status=progress` (or use Ventoy key)
+- Write ISO to USB: `sudo dd if=p2v-converter.iso of=/dev/sdX bs=4M status=progress` (or use [Ventoy key](https://www.ventoy.net/en/))
 - Boot target machine from USB
-- Launch "P2V Converter" from desktop
 
 ### 2. Connect External Storage
 - Plug in external USB drive (don't mount manually)
+
+**Mount External Storage:**
+- Click **"Mount Disk"** button
+- Select your external drive
+- Click "Mount Selected Disk"
+- Output directory updates automatically
 
 ### 3. Configure Conversion
 
 **Select Source:**
 - Click **"Refresh Disks"**
 - Select disk to convert (system disks blocked for safety)
-
-**Mount External Storage:**
-- Click **"Mount Disk"** button
-- Select your external drive
-- Choose mount point (e.g., `/mnt/external`)
-- Click "Mount Selected Disk"
-- Output directory updates automatically
 
 **Verify Space:**
 - Click **"Check Space Requirements"**
@@ -116,10 +114,10 @@ sudo usermod -a -G libvirt $USER
 ### 4. Convert
 - Click **"Start P2V Conversion"**
 - Monitor progress (cancel anytime if needed)
-- Typical time: 30-120 minutes depending on size
+- Typical time: 30-120 minutes depending on size and system
 
 ### 5. Optional Post-Processing
-- **"QCOW2 Resize"**: Optimize disk size
+- **"QCOW2 Resize"**: Optimize disk size (change filesystem size, reduce virtual size and compress virtual image)
 - **"LUKS Encryption"**: Secure with password
 - **"Format Converter"**: Convert to VMDK/VDI/VHD
 - **"Export Image"**: Transfer via RSYNC
@@ -235,22 +233,24 @@ Check `/var/log/disk2qcow2.log` for detailed diagnostics or use "Print Session L
 
 ```
 disk2qcow2/
-├── code/                      # Application (570 KB total)
-│   ├── main.py                # Entry point
-│   ├── p2v_dialog.py          # Main GUI (88 KB)
-│   ├── vm.py                  # Conversion engine
-│   ├── utils.py               # Disk utilities
-│   ├── log_handler.py         # Logging & PDF
-│   ├── disk_mount_dialog.py   # Mount manager
-│   ├── qcow2_resize_dialog.py # Resize tool (153 KB)
-│   ├── image_format_converter.py # Format converter
-│   ├── ciphering.py           # LUKS encryption (47 KB)
-│   ├── export.py              # RSYNC export
-│   └── virt_launcher.py       # VM management
-├── iso/                       # ISO builders
-│   ├── forgeIsoKde.sh         # KDE ISO (12 KB)
-│   ├── forgeIsoXfce.sh        # XFCE ISO (13 KB)
-│   └── makefile               # Build automation
+├── code/                          # Application
+│   ├── main.py                    # Entry point
+│   ├── p2v_dialog.py              # Main GUI
+│   ├── vm.py                      # Conversion engine
+│   ├── utils.py                   # Disk utilities
+│   ├── log_handler.py             # Logging & PDF
+│   ├── disk_mount_dialog.py       # Mount manager
+│   ├── qcow2_resize_dialog.py     # Resize tool
+│   ├── image_format_converter.py  # Format converter
+│   ├── ciphering.py               # LUKS encryption
+│   ├── export.py                  # RSYNC export
+│   └── virt_launcher.py           # VM management
+├── iso/                           # ISO builders
+│   ├── forgeIsoKde.sh             # KDE ISO 64 bits
+│   ├── forgeIsoXfce.sh            # XFCE ISO 64 bits
+│   ├── forgeIsoKde32.sh           # KDE ISO 32 bits
+│   ├── forgeIsoXfc32e.sh          # XFCE ISO 32 bits
+│   └── makefile                   # Build automation
 └── README.md
 ```
 
@@ -290,13 +290,13 @@ disk2qcow2/
 
 
 **Supported Systems:**
-- ✅ Windows (XP, Vista, 7, 8, 10, 11, Server 2003-2022)
-- ✅ Linux (Ubuntu, Debian, Fedora, CentOS, RHEL, Arch, openSUSE, etc.)
+- Windows (XP, Vista, 7, 8, 10, 11, Server 2003-2022)
+- Linux (Ubuntu, Debian, Fedora, CentOS, RHEL, Arch, openSUSE, etc.)
 
 
 ## License
 
-Open source.
+Attribution-NonCommercial-ShareAlike 4.0 International. See LICENSE file
 
 ---
 
