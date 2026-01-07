@@ -624,19 +624,19 @@ class QCow2CloneResizerGUI:
             
         except OSError as e:
             error_msg = f"System error preparing backup: {str(e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             messagebox.showerror("System Error", error_msg)
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
         except PermissionError as e:
             error_msg = f"Permission denied preparing backup: {str(e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             messagebox.showerror("Permission Error", error_msg)
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
         except ValueError as e:
             error_msg = f"Invalid path for backup: {str(e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             messagebox.showerror("Value Error", error_msg)
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
@@ -644,7 +644,7 @@ class QCow2CloneResizerGUI:
     def _backup_worker(self, source_path, backup_path):
         """Worker thread for rsync backup with progress tracking"""
         try:
-            self.log(f"Starting backup: {source_path} -> {backup_path}")
+            log_info(f"Starting backup: {source_path} -> {backup_path}")
             self.update_progress(5, "Initializing backup...")
             
             source_size = os.path.getsize(source_path)
@@ -701,7 +701,7 @@ class QCow2CloneResizerGUI:
                 )
             
             self.update_progress(100, "Backup completed successfully")
-            self.log(f"Backup created successfully: {backup_path}")
+            log_info(f"Backup created successfully: {backup_path}")
             
             backup_msg = f"BACKUP CREATED SUCCESSFULLY!\n\n"
             backup_msg += f"Original: {os.path.basename(source_path)}\n"
@@ -716,37 +716,37 @@ class QCow2CloneResizerGUI:
             
         except FileNotFoundError as fnf_e:
             error_msg = f"Backup failed - file not found: {str(fnf_e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
             self.update_progress(0, "Backup failed")
         except PermissionError as perm_e:
             error_msg = f"Backup failed - permission denied: {str(perm_e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
             self.update_progress(0, "Backup failed")
         except subprocess.CalledProcessError as cpe:
             error_msg = f"Backup failed - rsync error (code {cpe.returncode})"
-            self.log(error_msg)
+            log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Backup Failed", error_msg))
             self.update_progress(0, "Backup failed")
         except subprocess.TimeoutExpired as timeout_e:
             error_msg = f"Backup failed - operation timed out"
-            self.log(error_msg)
+            log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Timeout", error_msg))
             self.update_progress(0, "Backup failed")
         except ValueError as val_e:
             error_msg = f"Backup failed - verification error: {str(val_e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("Verification Failed", error_msg))
             self.update_progress(0, "Backup failed")
         except OSError as os_e:
             error_msg = f"Backup failed - system error: {str(os_e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
             self.update_progress(0, "Backup failed")
         except IOError as io_e:
             error_msg = f"Backup failed - I/O error: {str(io_e)}"
-            self.log(error_msg)
+            log_error(error_msg)
             self.root.after(0, lambda: messagebox.showerror("I/O Error", error_msg))
             self.update_progress(0, "Backup failed")
         finally:
@@ -1688,42 +1688,42 @@ class QCow2CloneResizerGUI:
             print(f"Dialog result: {self.dialog_result_value}")
             self.dialog_result_event.set()
         except ImportError as e:
-            self.log(f"Final size dialog error - missing module: {e}")
+            log_error(f"Final size dialog error - missing module: {e}")
             print(f"ERROR in _show_final_size_dialog - import error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except AttributeError as e:
-            self.log(f"Final size dialog error - attribute error: {e}")
+            log_error(f"Final size dialog error - attribute error: {e}")
             print(f"ERROR in _show_final_size_dialog - attribute error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except TypeError as e:
-            self.log(f"Final size dialog error - type error: {e}")
+            log_error(f"Final size dialog error - type error: {e}")
             print(f"ERROR in _show_final_size_dialog - type error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except ValueError as e:
-            self.log(f"Final size dialog error - value error: {e}")
+            log_error(f"Final size dialog error - value error: {e}")
             print(f"ERROR in _show_final_size_dialog - value error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except KeyError as e:
-            self.log(f"Final size dialog error - missing data key: {e}")
+            log_error(f"Final size dialog error - missing data key: {e}")
             print(f"ERROR in _show_final_size_dialog - key error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except tk.TclError as e:
-            self.log(f"Final size dialog error - Tkinter error: {e}")
+            log_error(f"Final size dialog error - Tkinter error: {e}")
             print(f"ERROR in _show_final_size_dialog - Tkinter error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except RuntimeError as e:
-            self.log(f"Final size dialog error - runtime error: {e}")
+            log_error(f"Final size dialog error - runtime error: {e}")
             print(f"ERROR in _show_final_size_dialog - runtime error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
         except OSError as e:
-            self.log(f"Final size dialog error - system error: {e}")
+            log_error(f"Final size dialog error - system error: {e}")
             print(f"ERROR in _show_final_size_dialog - system error: {e}")
             self.dialog_result_value = None
             self.dialog_result_event.set()
@@ -1979,24 +1979,24 @@ class QCow2CloneResizerGUI:
             self._show_message_and_wait("Compression Complete", success_msg)
             
         except KeyError as e:
-            self.log(f"Windows completion dialog error - missing key: {e}")
+            log_error(f"Windows completion dialog error - missing key: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"Windows image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
                 f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
                 f"Note: Some statistics unavailable.")
         except ZeroDivisionError as e:
-            self.log(f"Windows completion dialog error - division by zero: {e}")
+            log_error(f"Windows completion dialog error - division by zero: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"Windows image compression completed!\n\n"
                 f"Cannot calculate compression ratio (zero size detected).")
         except TypeError as e:
-            self.log(f"Windows completion dialog error - type error: {e}")
+            log_error(f"Windows completion dialog error - type error: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"Windows image compression completed!\n\n"
                 f"Some statistics could not be calculated.")
         except ValueError as e:
-            self.log(f"Windows completion dialog error - value error: {e}")
+            log_error(f"Windows completion dialog error - value error: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"Windows image compression completed!\n\n"
                 f"Invalid values encountered in statistics.")
@@ -2037,24 +2037,24 @@ class QCow2CloneResizerGUI:
             self._show_message_and_wait("Compression Complete", success_msg)
             
         except KeyError as e:
-            self.log(f"BIOS completion dialog error - missing key: {e}")
+            log_error(f"BIOS completion dialog error - missing key: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"BIOS Linux image compression completed!\n\n"
                 f"Original: {original_source_size / (1024**3):.2f} GB\n"
                 f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
                 f"Note: Some statistics unavailable.")
         except ZeroDivisionError as e:
-            self.log(f"BIOS completion dialog error - division by zero: {e}")
+            log_error(f"BIOS completion dialog error - division by zero: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"BIOS Linux image compression completed!\n\n"
                 f"Cannot calculate compression ratio (zero size detected).")
         except TypeError as e:
-            self.log(f"BIOS completion dialog error - type error: {e}")
+            log_error(f"BIOS completion dialog error - type error: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"BIOS Linux image compression completed!\n\n"
                 f"Some statistics could not be calculated.")
         except ValueError as e:
-            self.log(f"BIOS completion dialog error - value error: {e}")
+            log_error(f"BIOS completion dialog error - value error: {e}")
             self._show_message_and_wait("Operation Complete",
                 f"BIOS Linux image compression completed!\n\n"
                 f"Invalid values encountered in statistics.")
@@ -2141,23 +2141,23 @@ class QCow2CloneResizerGUI:
                     f"Final optimized image: {final_path}")
             
         except KeyError as e:
-            self.log(f"Completion dialog error - missing data: {e}")
+            log_error(f"Completion dialog error - missing data: {e}")
             self._show_message_and_wait("Operation Complete", 
                 f"QCOW2 resize completed!\n\n"
                 f"Original: {source_path}\n"
                 f"Final: {final_path}\n\n"
                 f"Note: Some statistics unavailable.")
         except ZeroDivisionError as e:
-            self.log(f"Completion dialog error - division by zero: {e}")
+            log_error(f"Completion dialog error - division by zero: {e}")
             self._show_message_and_wait("Operation Complete", 
                 f"QCOW2 resize completed!\n\n"
                 f"Cannot calculate some ratios (zero size detected).")
         except TypeError as e:
-            self.log(f"Completion dialog error - type error: {e}")
+            log_error(f"Completion dialog error - type error: {e}")
             self._show_message_and_wait("Operation Complete", 
                 f"QCOW2 resize completed - check console for details.")
         except ValueError as e:
-            self.log(f"Completion dialog error - value error: {e}")
+            log_error(f"Completion dialog error - value error: {e}")
             self._show_message_and_wait("Operation Complete", 
                 f"QCOW2 resize completed - invalid values in statistics.")
 
@@ -2228,7 +2228,7 @@ class QCow2CloneResizerGUI:
                 f"The optimized image is ready for use!")
             
         except FileNotFoundError as e:
-            self.log(f"Cleanup failed - file not found: {e}")
+            log_error(f"Cleanup failed - file not found: {e}")
             error_msg = f"Could not find file during cleanup:\n{e}\n\n"
             error_msg += f"Files may have been moved or deleted.\n"
             error_msg += f"Check file locations manually:\n"
@@ -2237,7 +2237,7 @@ class QCow2CloneResizerGUI:
             error_msg += f"• Final: {final_path}"
             self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - File Not Found", error_msg))
         except PermissionError as e:
-            self.log(f"Cleanup failed - permission denied: {e}")
+            log_error(f"Cleanup failed - permission denied: {e}")
             error_msg = f"Permission denied during file cleanup:\n{e}\n\n"
             error_msg += f"Check file permissions or run as administrator.\n\n"
             error_msg += f"Manual cleanup may be required for:\n"
@@ -2246,7 +2246,7 @@ class QCow2CloneResizerGUI:
             error_msg += f"• Final: {final_path}"
             self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - Permission Denied", error_msg))
         except OSError as e:
-            self.log(f"Cleanup failed - system error: {e}")
+            log_error(f"Cleanup failed - system error: {e}")
             error_msg = f"System error during file cleanup:\n{e}\n\n"
             error_msg += f"Check disk space and file system status.\n\n"
             error_msg += f"Manual cleanup may be required for:\n"
@@ -2255,7 +2255,7 @@ class QCow2CloneResizerGUI:
             error_msg += f"• Final: {final_path}"
             self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - System Error", error_msg))
         except Exception as e:
-            self.log(f"Cleanup failed - unexpected error: {e}")
+            log_error(f"Cleanup failed - unexpected error: {e}")
             error_msg = f"Unexpected error during cleanup:\n{e}\n\n"
             error_msg += f"Check file status manually:\n"
             error_msg += f"• Original: {source_path}\n"
@@ -3225,12 +3225,7 @@ class QCow2CloneResizerGUI:
         
         return True
     
-    
-    def log(self, message):
-        """Log message to console with timestamp"""
-        timestamp = time.strftime("%H:%M:%S")
-        print(f"[{timestamp}] {message}")
-    
+
     def reset_ui(self):
         """Reset UI after operation"""
         try:
