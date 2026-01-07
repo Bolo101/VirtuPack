@@ -1,8 +1,6 @@
 import subprocess
 import os
 import json
-import time
-import select
 import re
 from log_handler import log_error, log_info
 from utils import (

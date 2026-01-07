@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-from pathlib import Path
 from QCow2CloneResizer import QCow2CloneResizer
 
 class NewSizeDialog:

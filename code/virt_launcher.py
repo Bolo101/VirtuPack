@@ -8,7 +8,6 @@ for virtual machine images on system storage or external drives.
 import os
 import subprocess
 import shutil
-import time
 from pathlib import Path
 
 

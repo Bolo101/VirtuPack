@@ -4,18 +4,7 @@ import os
 import time
 import threading
 from pathlib import Path
-# Supposons que log_info, log_error, log_warning sont définis ou importés comme dans votre code original
-# from log_handler import log_info, log_error, log_warning
-
-# Définitions de log_info, log_error, log_warning pour que le code soit exécutable
-def log_info(message):
-    print(f"INFO: {message}")
-
-def log_error(message):
-    print(f"ERROR: {message}")
-
-def log_warning(message):
-    print(f"WARNING: {message}")
+from log_handler import log_info, log_error, log_warning
 
 
 class FileDeleteManager:

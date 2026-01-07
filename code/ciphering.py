@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 import re
 import fcntl
-from log_handler import log_info, log_error, log_warning, session_start, session_end
+from log_handler import log_info, log_error, log_warning
 
 
 class LUKSCiphering:

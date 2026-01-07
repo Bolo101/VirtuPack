@@ -14,8 +14,7 @@ from log_handler import (log_info, log_error, log_warning, generate_session_pdf,
 generate_log_file_pdf, session_start, session_end,
 log_application_exit, get_current_session_logs,
 is_session_active)
-from utils import (get_disk_list, get_directory_space, format_bytes, get_active_disk,
-get_disk_info, is_system_disk)
+from utils import (get_disk_list, format_bytes,get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 from disk_mount_dialog import DiskMountDialog
 from qcow2_resize_dialog import QCow2CloneResizerGUI

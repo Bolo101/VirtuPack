@@ -18,7 +18,6 @@ class QCow2CloneResizer:
         """Check if required tools are available"""
         essential_tools = {
             'qemu-img': 'qemu-utils',
-            'qemu-nbd': 'qemu-utils',
             'parted': 'parted',
             'gparted': 'gparted',
             'dd': 'coreutils',

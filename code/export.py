@@ -10,9 +10,7 @@ from tkinter import ttk, messagebox, filedialog
 import os
 import subprocess
 import threading
-import time
 import re
-import fcntl
 from pathlib import Path
 from log_handler import log_info, log_error, log_warning
 
