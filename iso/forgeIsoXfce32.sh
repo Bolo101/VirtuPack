@@ -46,6 +46,13 @@ deb http://security.debian.org/debian-security bullseye-security main contrib no
 deb-src http://security.debian.org/debian-security bullseye-security main contrib non-free
 EOF
 
+# Pre-accept firmware licenses
+mkdir -p config/preseed
+cat << EOF > config/preseed/firmware.preseed
+firmware-ipw2x00 firmware-ipw2x00/license/accepted boolean true
+firmware-ivtv firmware-ivtv/license/accepted boolean true
+EOF
+
 # Add required packages with maximum hardware compatibility
 echo "Adding required packages..."
 mkdir -p config/package-lists/
@@ -94,9 +101,6 @@ firmware-iwlwifi
 firmware-bnx2
 firmware-bnx2x
 firmware-brcm80211
-firmware-ipw2x00
-firmware-intelwimax
-firmware-libertas
 firmware-ralink
 firmware-zd1211
 xserver-xorg-video-all
@@ -612,6 +616,6 @@ echo "6. Maximum Compatibility - All compatibility options enabled"
 echo ""
 echo "If you experience boot issues, try the options in this order: 2 → 3 → 6"
 
-# Cleanup
-cd ..
-# Keep work dir for debugging: sudo lb clean
+
+sudo lb clean
+echo "Done. ISO created at: $ISO_NAME"
