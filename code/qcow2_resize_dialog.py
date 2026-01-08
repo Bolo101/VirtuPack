@@ -1215,7 +1215,6 @@ class QCow2CloneResizerGUI:
                         original_source_size,
                         final_image_info,
                         final_image_size,
-                        new_size,
                         compression_stats
                     )
                     
@@ -1358,7 +1357,6 @@ class QCow2CloneResizerGUI:
                         original_source_size,
                         final_image_info,
                         final_image_size,
-                        new_size,
                         compression_stats
                     )
                     
