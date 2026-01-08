@@ -11,7 +11,7 @@ CODE_DIR="$(pwd)/../code"
 # Install necessary tools
 echo "Installing live-build and required dependencies..."
 sudo apt update
-sudo apt install -y live-build python3 calamares calamares-settings-debian syslinux osinfo-db osinfo-db-tools
+sudo apt install -y live-build python3 calamares calamares-settings-debian syslinux isolinux osinfo-db osinfo-db-tools
 
 # Update osinfo database for libvirt
 echo "Updating osinfo database for libvirt..."
@@ -23,23 +23,30 @@ mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
 # Clean previous build
-sudo lb clean
+sudo lb clean --purge
 
-# Configure live-build
-echo "Configuring live-build for Debian Bookworm..."
-lb config --distribution=bookworm --architectures=i386 \
+# Configure live-build - Use Bullseye for better legacy hardware support
+echo "Configuring live-build for Debian Bullseye (better legacy support)..."
+lb config --distribution=bullseye --architectures=i386 \
     --linux-packages=linux-image \
+    --linux-flavours=686-pae \
     --debian-installer=live \
-    --bootappend-live="boot=live components hostname=secure-eraser username=user locales=fr_FR.UTF-8 keyboard-layouts=fr"
+    --bootappend-live="boot=live components hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
+    --bootloaders="syslinux,grub-efi" \
+    --binary-images=iso-hybrid \
+    --mode=debian \
+    --system=live
 
 # Add Debian repositories for firmware
 mkdir -p config/archives
 cat << EOF > config/archives/debian.list.chroot
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb-src http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bullseye main contrib non-free
+deb-src http://deb.debian.org/debian bullseye main contrib non-free
+deb http://security.debian.org/debian-security bullseye-security main contrib non-free
+deb-src http://security.debian.org/debian-security bullseye-security main contrib non-free
 EOF
 
-# Add required packages
+# Add required packages with maximum hardware compatibility
 echo "Adding required packages..."
 mkdir -p config/package-lists/
 cat << EOF > config/package-lists/custom.list.chroot
@@ -55,10 +62,6 @@ libvirt-daemon
 libvirt-clients
 python3-tk
 dosfstools
-firmware-linux-free
-firmware-linux-nonfree
-calamares
-calamares-settings-debian
 squashfs-tools
 xorg
 gparted
@@ -80,6 +83,39 @@ caffeine
 systemd
 osinfo-db
 osinfo-db-tools
+calamares
+calamares-settings-debian
+firmware-linux-free
+firmware-linux-nonfree
+firmware-misc-nonfree
+firmware-realtek
+firmware-atheros
+firmware-iwlwifi
+firmware-bnx2
+firmware-bnx2x
+firmware-brcm80211
+firmware-ipw2x00
+firmware-intelwimax
+firmware-libertas
+firmware-ralink
+firmware-zd1211
+xserver-xorg-video-all
+xserver-xorg-video-intel
+xserver-xorg-video-ati
+xserver-xorg-video-nouveau
+xserver-xorg-video-vesa
+xserver-xorg-video-fbdev
+xserver-xorg-input-all
+pciutils
+usbutils
+acpi
+acpid
+cpufrequtils
+laptop-detect
+hdparm
+smartmontools
+lm-sensors
+beep
 EOF
 
 # Set system locale and keyboard layout to French AZERTY
@@ -201,6 +237,12 @@ Section "Monitor"
     Identifier "LVDS0"
     Option "DPMS" "false"
 EndSection
+
+Section "Device"
+    Identifier "Card0"
+    Driver "vesa"
+    Option "UseFBDev" "true"
+EndSection
 EOF
 
 # Configure libvirt to allow access to external drives
@@ -263,19 +305,11 @@ chmod 0440 config/includes.chroot/etc/sudoers.d/passwordless
 echo "Creating USB flash drive udev rules..."
 mkdir -p config/includes.chroot/etc/udev/rules.d/
 cat << 'EOF' > config/includes.chroot/etc/udev/rules.d/usb-flash.rules
-# Try to catch USB flash drives and set them as non-rotational. Probably no impact whatsoever : /
-# c.f. https://mpdesouza.com/blog/kernel-adventures-are-usb-sticks-rotational-devices/
-
-# Device is already marked as non-rotational, skip over it
+# Try to catch USB flash drives and set them as non-rotational
 ATTR{queue/rotational}=="0", GOTO="skip"
-
-# Device has some sort of queue support, likely to be an HDD actually
 ATTRS{queue_type}!="none", GOTO="skip"
-
-# Flip the rotational bit on this removable device and give audible signs of having caught a match
 ATTR{removable}=="1", SUBSYSTEM=="block", SUBSYSTEMS=="usb", ACTION=="add", ATTR{queue/rotational}="0"
 ATTR{removable}=="1", SUBSYSTEM=="block", SUBSYSTEMS=="usb", ACTION=="add", RUN+="/bin/beep -f 70 -r 2"
-
 LABEL="skip"
 EOF
 
@@ -295,8 +329,8 @@ Categories=System;Security;
 Keywords=p2v;v2v;virtualization;qcow2;migration;backup;image;disk;vm;qemu;kvm;convert;
 EOF
 
-# Make the launcher executable
 chmod +x config/includes.chroot/usr/share/applications/p2v_converter.desktop
+
 # Auto-start in live mode - Create XFCE autostart
 mkdir -p config/includes.chroot/etc/xdg/autostart/
 cat << EOF > config/includes.chroot/etc/xdg/autostart/p2v_converter.desktop
@@ -320,7 +354,7 @@ if [ -f /etc/bashrc ]; then
     . /etc/bashrc
 fi
 
-# Display information about the disk eraser
+# Display information about the P2V Converter
 echo "P2V Converter"
 echo "Type 'sudo d2q' to use the P2V Converter program"
 
@@ -328,7 +362,7 @@ echo "Type 'sudo d2q' to use the P2V Converter program"
 if grep -q "boot=live" /proc/cmdline; then
     # Only auto-start in terminals when in live mode
     if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-        echo "Live mode detected. Starting disk eraser..."
+        echo "Live mode detected. Starting P2V Converter..."
         sudo /usr/local/bin/d2q
     fi
 fi
@@ -370,42 +404,136 @@ echo "libvirt daemon initialized"
 EOF
 chmod +x config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
 
-# Configure Boot Menu (Syslinux)
+# Configure Boot Menu (Syslinux) with maximum compatibility options
+echo "Configuring Syslinux boot menu with compatibility options..."
 mkdir -p config/includes.binary/isolinux
-cat << 'EOF' > config/includes.binary/isolinux/menu.cfg
+cat << 'EOF' > config/includes.binary/isolinux/isolinux.cfg
 UI vesamenu.c32
 DEFAULT live
 TIMEOUT 50
+PROMPT 0
 
 MENU TITLE P2V Converter - Boot Menu
+MENU BACKGROUND splash.png
+MENU COLOR screen 37;40 #80ffffff #00000000 std
+MENU COLOR border 30;44 #40ffffff #a0000000 std
+MENU COLOR title 1;36;44 #ffffffff #a0000000 std
+MENU COLOR sel 7;37;40 #e0ffffff #20ffffff all
+MENU COLOR unsel 37;44 #50ffffff #a0000000 std
+MENU COLOR help 37;40 #c0ffffff #00000000 std
+MENU COLOR timeout_msg 37;40 #80ffffff #00000000 std
+MENU COLOR timeout 1;37;40 #c0ffffff #00000000 std
+MENU COLOR msg07 37;40 #90ffffff #a0000000 std
+MENU COLOR tabmsg 31;40 #ffDEDEDE #00000000 std
 
 LABEL live
-    MENU LABEL Start Live Environment
+    MENU LABEL ^Start Live Environment (Default)
+    MENU DEFAULT
     KERNEL /live/vmlinuz
-    APPEND initrd=/live/initrd.img boot=live components
+    APPEND initrd=/live/initrd.img boot=live components quiet splash
+
+LABEL live-nomodeset
+    MENU LABEL Start Live Environment (Safe ^Graphics)
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live components nomodeset quiet
+
+LABEL live-failsafe
+    MENU LABEL Start Live Environment (^Failsafe - Legacy Hardware)
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live components nomodeset acpi=off noapic nosplash
+
+LABEL live-acpioff
+    MENU LABEL Start Live Environment (^ACPI Disabled)
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live components nomodeset acpi=off quiet
+
+LABEL live-noapic
+    MENU LABEL Start Live Environment (^No APIC)
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live components nomodeset noapic quiet
+
+LABEL live-maxcompat
+    MENU LABEL Start Live Environment (Ma^ximum Compatibility)
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live components nomodeset acpi=off noapic nosplash irqpoll pci=nomsi
 
 LABEL install
-    MENU LABEL Install P2V Converter (Copy Live System)
+    MENU LABEL ^Install P2V Converter (Copy Live System)
     KERNEL /live/vmlinuz
-    APPEND initrd=/live/initrd.img boot=live components automatic calamares
+    APPEND initrd=/live/initrd.img boot=live components quiet splash calamares
+
+MENU SEPARATOR
+
+LABEL hdt
+    MENU LABEL ^Hardware Detection Tool (HDT)
+    COM32 hdt.c32
+
+LABEL memtest
+    MENU LABEL ^Memory Test (Memtest86+)
+    LINUX memtest
+
+MENU SEPARATOR
+
+LABEL reboot
+    MENU LABEL ^Reboot
+    COM32 reboot.c32
+
+LABEL poweroff
+    MENU LABEL ^Power Off
+    COM32 poweroff.c32
 EOF
 
-# Configure GRUB Boot Menu
-mkdir -p config/bootloaders
-cat << 'EOF' > config/bootloaders/grub.cfg
+# Configure GRUB Boot Menu with compatibility options
+echo "Configuring GRUB boot menu with compatibility options..."
+mkdir -p config/bootloaders/grub-pc
+cat << 'EOF' > config/bootloaders/grub-pc/grub.cfg
 set default=0
 set timeout=5
 
-menuentry "Start Live Environment" {
-    linux /live/vmlinuz boot=live components
+insmod all_video
+insmod gfxterm
+set gfxmode=auto
+terminal_output gfxterm
+
+menuentry "Start Live Environment (Default)" {
+    linux /live/vmlinuz boot=live components quiet splash
+    initrd /live/initrd.img
+}
+
+menuentry "Start Live Environment (Safe Graphics)" {
+    linux /live/vmlinuz boot=live components nomodeset quiet
+    initrd /live/initrd.img
+}
+
+menuentry "Start Live Environment (Failsafe - Legacy Hardware)" {
+    linux /live/vmlinuz boot=live components nomodeset acpi=off noapic nosplash
+    initrd /live/initrd.img
+}
+
+menuentry "Start Live Environment (ACPI Disabled)" {
+    linux /live/vmlinuz boot=live components nomodeset acpi=off quiet
+    initrd /live/initrd.img
+}
+
+menuentry "Start Live Environment (No APIC)" {
+    linux /live/vmlinuz boot=live components nomodeset noapic quiet
+    initrd /live/initrd.img
+}
+
+menuentry "Start Live Environment (Maximum Compatibility)" {
+    linux /live/vmlinuz boot=live components nomodeset acpi=off noapic nosplash irqpoll pci=nomsi
     initrd /live/initrd.img
 }
 
 menuentry "Install P2V Converter (Copy Live System)" {
-    linux /live/vmlinuz boot=live components automatic calamares
+    linux /live/vmlinuz boot=live components quiet splash calamares
     initrd /live/initrd.img
 }
 EOF
+
+# Also configure GRUB EFI
+mkdir -p config/bootloaders/grub-efi
+cp config/bootloaders/grub-pc/grub.cfg config/bootloaders/grub-efi/grub.cfg
 
 # Auto-start Calamares if in installer mode
 mkdir -p config/includes.chroot/etc/profile.d/
@@ -418,14 +546,72 @@ fi
 EOF
 chmod +x config/includes.chroot/etc/profile.d/autostart-calamares.sh
 
+# Create modprobe configuration for better hardware compatibility
+echo "Creating modprobe configuration for legacy hardware..."
+mkdir -p config/includes.chroot/etc/modprobe.d/
+cat << 'EOF' > config/includes.chroot/etc/modprobe.d/compatibility.conf
+# Disable problematic modules on old hardware
+options drm_kms_helper poll=0
+options i915 modeset=0
+options nouveau modeset=0
+options radeon modeset=0
+
+# Enable compatibility for old SATA/IDE controllers
+options libata force=noncq
+options libata atapi_enabled=1
+
+# USB compatibility
+options usbcore old_scheme_first=1
+EOF
+
+# Create kernel boot parameters helper script
+mkdir -p config/includes.chroot/usr/local/sbin/
+cat << 'EOF' > config/includes.chroot/usr/local/sbin/check-boot-params
+#!/bin/bash
+# Display current boot parameters for troubleshooting
+echo "=== Current Boot Parameters ==="
+cat /proc/cmdline
+echo ""
+echo "=== Loaded Kernel Modules ==="
+lsmod | head -20
+echo ""
+echo "=== Hardware Detection ==="
+lspci -nn | head -10
+EOF
+chmod +x config/includes.chroot/usr/local/sbin/check-boot-params
+
 # Build the ISO
 echo "Building the ISO..."
 sudo lb build
 
 # Move the ISO
-mv live-image-i386.hybrid.iso "$ISO_NAME"
+if [ -f live-image-i386.hybrid.iso ]; then
+    mv live-image-i386.hybrid.iso "$ISO_NAME"
+    echo "Done. ISO created at: $ISO_NAME"
+elif [ -f live-image-i386.iso ]; then
+    mv live-image-i386.iso "$ISO_NAME"
+    echo "Done. ISO created at: $ISO_NAME"
+else
+    echo "ERROR: Could not find generated ISO file"
+    exit 1
+fi
+
+# Display ISO info
+echo ""
+echo "=== ISO Information ==="
+echo "Filename: $ISO_NAME"
+echo "Size: $(du -h "$ISO_NAME" | cut -f1)"
+echo ""
+echo "=== Boot Options Available ==="
+echo "1. Start Live Environment (Default) - Standard boot"
+echo "2. Safe Graphics - For video card issues (nomodeset)"
+echo "3. Failsafe - For very old hardware (nomodeset acpi=off noapic)"
+echo "4. ACPI Disabled - For ACPI-related issues"
+echo "5. No APIC - For interrupt-related issues"
+echo "6. Maximum Compatibility - All compatibility options enabled"
+echo ""
+echo "If you experience boot issues, try the options in this order: 2 → 3 → 6"
 
 # Cleanup
-sudo lb clean
-
-echo "Done. ISO created at: $ISO_NAME"
+cd ..
+# Keep work dir for debugging: sudo lb clean
