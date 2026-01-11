@@ -2621,7 +2621,7 @@ class QCow2CloneResizerGUI:
                 progress_callback(75, "Cloning disk structure...")
             
             print("Cloning disk structure...")
-            self._clone_disk_structure_safe(existing_source_nbd, target_nbd, layout_info, progress_callback)
+            QCow2CloneResizer.clone_disk_structure(existing_source_nbd, target_nbd, layout_info, progress_callback)
             
             # Clone partition data with proper progress callback
             print("Cloning partition data...")
@@ -2757,46 +2757,45 @@ class QCow2CloneResizerGUI:
                     pass
             
             raise
-    
 
-    def _clone_disk_structure_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone disk structure with device verification and flag preservation"""
+    @staticmethod
+    def _clone_disk_structure_safe(source_nbd, target_nbd, layout_info, progress_callback=None, sync_callback=None):
+        """Clone disk structure - SIMPLE: just copy partition layout exactly as GParted created it with 5% extra buffer"""
         try:
             print(f"Cloning disk structure from {source_nbd} to {target_nbd}")
+            print(f"Copying partition layout exactly as GParted created it\n")
             
-            # Verify devices are different
             if source_nbd == target_nbd:
                 raise ValueError(f"Source and target NBD devices cannot be the same: {source_nbd}")
             
             if progress_callback:
                 progress_callback(76, "Copying partition table...")
             
-            # Step 1: Copy partition table and MBR/GPT
+            # Step 1: Copy partition table and MBR/GPT (first 1MB)
             cmd = [
                 'dd', 
                 f'if={source_nbd}',
                 f'of={target_nbd}',
                 'bs=1M',
-                'count=1',  # First MB for MBR/GPT
+                'count=1',
                 'conv=notrunc'
             ]
             
             print(f"Copying structure: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
-            if result.stderr:
-                print(f"DD stderr: {result.stderr}")
+            print("Syncing after partition table copy...")
+            QCow2CloneResizer._perform_safe_sync_static("After partition table copy")
             
             if progress_callback:
                 progress_callback(77, "Recreating partition table...")
             
-            # Step 2: Get partition table info from source
+            # Step 2: Get partition table type from source
             parted_result = subprocess.run(
                 ['parted', '-s', source_nbd, 'print'],
                 capture_output=True, text=True, check=True, timeout=60
             )
             
-            # Detect table type
-            table_type = 'msdos'  # default
+            table_type = 'msdos'
             for line in parted_result.stdout.split('\n'):
                 if 'Partition Table:' in line:
                     table_type = line.split(':')[1].strip()
@@ -2804,7 +2803,7 @@ class QCow2CloneResizerGUI:
             
             print(f"Detected partition table type: {table_type}")
             
-            # Parse partitions with flags
+            # Step 3: Parse partitions with flags from source
             partitions_with_flags = []
             for line in parted_result.stdout.split('\n'):
                 if re.match(r'^\s*\d+\s+', line.strip()):
@@ -2813,7 +2812,6 @@ class QCow2CloneResizerGUI:
                         part_num = int(parts[0])
                         flags = []
                         
-                        # Extract flags from the line
                         line_lower = line.lower()
                         if 'boot' in line_lower:
                             flags.append('boot')
@@ -2833,34 +2831,57 @@ class QCow2CloneResizerGUI:
             
             print(f"Parsed partitions with flags: {partitions_with_flags}")
             
-            # Create partition table on target
+            # Step 4: Create partition table on target
+            print("Creating partition table on target device...")
             subprocess.run([
                 'parted', '-s', target_nbd, 'mklabel', table_type
             ], check=True, timeout=60)
+            print("Syncing after mklabel...")
+            QCow2CloneResizer._perform_safe_sync_static("After mklabel")
             
-            # Recreate each partition
+            # Step 5: Recreate partitions with 5% extra buffer added to each
+            print(f"\nCreating partitions (GParted layout + 5% buffer per partition)...\n")
+            
             for i, partition in enumerate(layout_info['partitions']):
                 if progress_callback:
                     progress_callback(77 + i, f"Creating partition {partition['number']}...")
                 
-                print(f"Creating partition {partition['number']}: {partition['start']} - {partition['end']}")
+                part_num = partition['number']
                 
-                result = subprocess.run([
+                # Parse original end position and add 5% buffer
+                end_bytes = partition['end_bytes']
+                buffer_5percent = int(end_bytes * 0.05)
+                new_end_bytes = end_bytes + buffer_5percent
+                
+                # Convert to GB format
+                new_end_gb = new_end_bytes / (1024**3)
+                new_end_str = f"{new_end_gb:.2f}GB"
+                
+                print(f"\nPartition {part_num}:")
+                print(f"  Start:             {partition['start']}")
+                print(f"  Original end:      {partition['end']} ({QCow2CloneResizer.format_size(end_bytes)})")
+                print(f"  + 5% buffer:       {new_end_str} ({QCow2CloneResizer.format_size(new_end_bytes)})")
+                print(f"  Buffer size:       {QCow2CloneResizer.format_size(buffer_5percent)}")
+                
+                # Create with extended end position
+                subprocess.run([
                     'parted', '-s', target_nbd, 
                     'mkpart', 'primary',
-                    partition['start'], partition['end']
+                    partition['start'], new_end_str
                 ], capture_output=True, text=True, check=True, timeout=60)
                 
-                if result.stderr:
-                    print(f"Parted stderr for partition {partition['number']}: {result.stderr}")
+                print(f"  OK - Created")
+                
+                # Sync after each partition
+                QCow2CloneResizer._perform_safe_sync_static(f"After partition {part_num}")
+                subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
             
-            # Wait for partitions to be available
-            print("Waiting for target partitions to be available...")
-            time.sleep(3)
+            # Step 6: Final probe and sync
+            print("\nFinal partition probe...")
             subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
-            time.sleep(2)
+            QCow2CloneResizer._perform_safe_sync_static("Final sync before flags")
             
-            # Apply flags to target partitions
+            # Step 7: Apply flags
             if progress_callback:
                 progress_callback(78, "Applying partition flags...")
             
@@ -2876,43 +2897,39 @@ class QCow2CloneResizerGUI:
                                 'parted', '-s', target_nbd,
                                 'set', str(part_num), flag, 'on'
                             ], capture_output=True, text=True, check=True, timeout=30)
-                            print(f"  Set flag '{flag}' on partition {part_num}")
+                            print(f"  OK - Set flag '{flag}'")
                         except subprocess.CalledProcessError as e:
-                            print(f"  Warning: Could not set flag '{flag}' on partition {part_num}: {e}")
+                            print(f"  WARNING - Could not set flag '{flag}': {e}")
+                    
+                    QCow2CloneResizer._perform_safe_sync_static(f"After flags for partition {part_num}")
             
-            # Verify partitions were created on target
+            # Step 8: Final sync before verification
+            print("\nFinal sync...")
+            QCow2CloneResizer._perform_safe_sync_static("Final sync before verification")
+            
+            # Step 9: Verify
+            print("Verifying partitions...")
             verify_result = subprocess.run(['lsblk', target_nbd], 
                                         capture_output=True, text=True, timeout=30)
-            print(f"Target partition layout:\n{verify_result.stdout}")
+            print(f"Partitions:\n{verify_result.stdout}")
             
-            # Verify flags were set
-            verify_parted = subprocess.run(['parted', '-s', target_nbd, 'print'],
-                                        capture_output=True, text=True, timeout=30)
-            print(f"Target partition flags:\n{verify_parted.stdout}")
-            
+            print("\nOK - Disk structure cloning complete!")
             return True
             
         except subprocess.CalledProcessError as e:
-            print(f"ERROR in _clone_disk_structure_safe - command failed: {e}")
-            raise subprocess.CalledProcessError(e.returncode, e.cmd, f"Failed to clone disk structure: {e}")
-        except subprocess.TimeoutExpired as e:
-            print(f"ERROR in _clone_disk_structure_safe - timeout: {e}")
-            raise subprocess.TimeoutExpired(e.cmd, e.timeout, f"Disk structure cloning timed out: {e}")
-        except FileNotFoundError as e:
-            print(f"ERROR in _clone_disk_structure_safe - command not found: {e}")
-            raise FileNotFoundError(f"Required command not found for disk structure cloning: {e}")
-        except PermissionError as e:
-            print(f"ERROR in _clone_disk_structure_safe - permission denied: {e}")
-            raise PermissionError(f"Permission denied during disk structure cloning: {e}")
-        except ValueError as e:
-            print(f"ERROR in _clone_disk_structure_safe - invalid value: {e}")
-            raise ValueError(f"Invalid parameter for disk structure cloning: {e}")
-        except OSError as e:
-            print(f"ERROR in _clone_disk_structure_safe - system error: {e}")
-            raise OSError(f"System error during disk structure cloning: {e}")
+            print(f"ERROR: Command failed: {e}")
+            raise
+        except Exception as e:
+            print(f"ERROR: {type(e).__name__}: {e}")
+            raise
+
 
     def _clone_partition_data_safe(self, source_nbd, target_nbd, layout_info, progress_callback=None):
-        """Clone partition data with detailed progress updates and SWAP partition handling"""
+        """Clone partition data using dd, but skip SWAP partitions
+        
+        SWAP partitions don't need cloning - they're recreated at boot.
+        Use dd for all other partitions.
+        """
         source_part = None
         target_part = None
         process = None
@@ -2923,9 +2940,6 @@ class QCow2CloneResizerGUI:
             print(f"{'='*60}")
             print(f"Source NBD: {source_nbd}")
             print(f"Target NBD: {target_nbd}")
-
-            if source_nbd == target_nbd:
-                raise ValueError(f"Source and target NBD devices cannot be the same: {source_nbd}")
 
             total_partitions = len(layout_info['partitions'])
             print(f"Processing {total_partitions} partitions\n")
@@ -2972,10 +2986,11 @@ class QCow2CloneResizerGUI:
                     tgt_size = int(subprocess.run(['blockdev', '--getsize64', target_part],
                                                 capture_output=True, text=True, check=True, timeout=10).stdout.strip())
                     
-                    clone_size = min(src_size, tgt_size)
+                    clone_size = src_size
                     partition_size_formatted = QCow2CloneResizer.format_size(clone_size)
                     
-                    print(f"  Size: {partition_size_formatted}")
+                    print(f"  Source size: {QCow2CloneResizer.format_size(src_size)}")
+                    print(f"  Target size: {QCow2CloneResizer.format_size(tgt_size)}")
                     
                     if clone_size <= 0:
                         print(f"  Status: Empty partition - skipping")
@@ -2988,7 +3003,55 @@ class QCow2CloneResizerGUI:
                     print(f"ERROR: Could not determine partition size: {e}")
                     raise OSError(f"Failed to get partition size for {partition_num}: {e}")
 
-                # Clone with dd (simple, reliable)
+                # Detect if this is a SWAP partition
+                print(f"  Detecting partition type...")
+                is_swap = False
+                swap_uuid = None
+                
+                try:
+                    result = subprocess.run(['blkid', '-o', 'value', '-s', 'TYPE', source_part],
+                                        capture_output=True, text=True, timeout=10, check=False)
+                    partition_type = result.stdout.strip().lower()
+                    print(f"  Partition type: {partition_type}")
+                    
+                    if 'swap' in partition_type:
+                        is_swap = True
+                        
+                        # Get the current SWAP UUID
+                        uuid_result = subprocess.run(['blkid', '-o', 'value', '-s', 'UUID', source_part],
+                                                capture_output=True, text=True, timeout=10, check=False)
+                        swap_uuid = uuid_result.stdout.strip()
+                        
+                        print(f"  SWAP partition detected")
+                        print(f"  Current SWAP UUID: {swap_uuid}")
+                        print(f"  Recreating SWAP with same UUID on target...")
+                        
+                        # Recreate SWAP on target with same UUID
+                        if swap_uuid:
+                            cmd = ['mkswap', '-U', swap_uuid, target_part]
+                        else:
+                            cmd = ['mkswap', target_part]
+                        
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+                        
+                        if result.returncode == 0:
+                            print(f"  OK - SWAP recreated with UUID: {swap_uuid}")
+                            overall_percent = int((partition_index + 1) / total_partitions * 100)
+                            if progress_callback:
+                                progress_callback(overall_percent, f"Completed: {partition_label} (SWAP recreated)")
+                        else:
+                            print(f"  WARNING - Could not recreate SWAP: {result.stderr}")
+                            print(f"  Proceeding anyway...")
+                            overall_percent = int((partition_index + 1) / total_partitions * 100)
+                            if progress_callback:
+                                progress_callback(overall_percent, f"Skipped: {partition_label} (SWAP)")
+                        
+                        continue
+                        
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    print(f"  Could not detect partition type, assuming data partition")
+
+                # Clone with dd for non-SWAP partitions
                 print(f"  Cloning ({partition_size_formatted})...")
                 
                 cmd = [
@@ -3023,7 +3086,6 @@ class QCow2CloneResizerGUI:
                             time.sleep(0.2)
                             
                             try:
-                                # Lire stderr ligne par ligne
                                 line = process.stderr.readline()
                                 if not line:
                                     continue
@@ -3032,10 +3094,6 @@ class QCow2CloneResizerGUI:
                                 if not line:
                                     continue
                                 
-                                # dd progress output format: "12345 bytes (12 MB) copied, 1.5 s, 8.2 MB/s"
-                                # ou "12345 octets (12 MB) copiés, 1.5 s, 8.2 MB/s" (français)
-                                
-                                # Chercher le pattern "XXXXXX bytes" ou "XXXXXX octets"
                                 m = re.search(r'(\d+)\s+(?:bytes|octets)', line)
                                 
                                 if m:
@@ -3047,7 +3105,6 @@ class QCow2CloneResizerGUI:
                                         
                                         bytes_formatted = QCow2CloneResizer.format_size(bytes_copied)
                                         
-                                        # Afficher aussi dans la console
                                         print(f"    {partition_percent}% ({bytes_formatted}/{partition_size_formatted})", end='\r', flush=True)
                                         
                                         if progress_callback:
@@ -3061,7 +3118,7 @@ class QCow2CloneResizerGUI:
                         
                         return_code = process.returncode
                         if return_code == 0:
-                            print(f"\n  ✓ Partition {partition_num} cloned successfully")
+                            print(f"\n  OK - Partition {partition_num} cloned successfully")
                             overall_percent = int((partition_index + 1) / total_partitions * 100)
                             if progress_callback:
                                 progress_callback(overall_percent, f"Completed: {partition_label} ({partition_size_formatted})")
@@ -3069,11 +3126,11 @@ class QCow2CloneResizerGUI:
                             break
                         else:
                             last_error = RuntimeError(f"dd failed with return code {return_code}")
-                            print(f"\n  ✗ dd failed with code {return_code}, attempt {attempt + 1}/3")
+                            print(f"\n  WARNING - dd failed with code {return_code}, attempt {attempt + 1}/3")
                         
                     except subprocess.TimeoutExpired as timeout_e:
                         last_error = subprocess.TimeoutExpired(cmd, timeout_e.timeout)
-                        print(f"\n  ✗ dd timeout, attempt {attempt + 1}/3")
+                        print(f"\n  WARNING - dd timeout, attempt {attempt + 1}/3")
                         if process and process.poll() is None:
                             process.terminate()
                             try:
@@ -3083,17 +3140,17 @@ class QCow2CloneResizerGUI:
                     
                     except FileNotFoundError as file_e:
                         last_error = FileNotFoundError(f"dd command not found: {file_e}")
-                        print(f"\n  ✗ dd command not found")
+                        print(f"\n  ERROR - dd command not found")
                         raise last_error
                     
                     except PermissionError as perm_e:
                         last_error = PermissionError(f"Permission denied: {perm_e}")
-                        print(f"\n  ✗ Permission denied")
+                        print(f"\n  ERROR - Permission denied")
                         raise last_error
                     
                     except OSError as os_e:
                         last_error = OSError(f"OS error: {os_e}")
-                        print(f"\n  ✗ OS error, attempt {attempt + 1}/3")
+                        print(f"\n  WARNING - OS error, attempt {attempt + 1}/3")
                     
                     finally:
                         process = None
@@ -3104,15 +3161,20 @@ class QCow2CloneResizerGUI:
                     else:
                         raise RuntimeError(f"Failed to clone partition {partition_num} after 3 attempts")
                 
-                # Sync after each partition
-                subprocess.run(['sync'], check=False, timeout=30)
-                time.sleep(2)
+                # Sync after each partition - increased timeout
+                print(f"  Syncing filesystem...")
+                try:
+                    subprocess.run(['sync'], check=False, timeout=300)
+                except subprocess.TimeoutExpired:
+                    print(f"  WARNING - sync taking longer than 5 minutes, continuing anyway")
+                    pass
+                time.sleep(3)
 
             if progress_callback:
                 progress_callback(100, "All partitions cloned successfully!")
 
             print(f"\n{'='*60}")
-            print(f"✓ ALL PARTITIONS CLONED SUCCESSFULLY")
+            print(f"OK - ALL PARTITIONS CLONED SUCCESSFULLY")
             print(f"{'='*60}\n")
             
             return True
@@ -3172,7 +3234,6 @@ class QCow2CloneResizerGUI:
                     process.wait(timeout=5)
                 except:
                     pass
-
 
     def update_progress(self, percent, status):
         """Thread-safe GUI update"""
