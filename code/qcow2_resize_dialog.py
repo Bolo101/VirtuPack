@@ -3006,6 +3006,7 @@ class QCow2CloneResizerGUI:
                 # Detect if this is a SWAP partition
                 print(f"  Detecting partition type...")
                 is_swap = False
+                swap_uuid = None
                 
                 try:
                     result = subprocess.run(['blkid', '-o', 'value', '-s', 'TYPE', source_part],
@@ -3015,17 +3016,35 @@ class QCow2CloneResizerGUI:
                     
                     if 'swap' in partition_type:
                         is_swap = True
-                        print(f"  WARNING - SWAP partition detected, skipping clone")
-                        print(f"  SWAP will be recreated at first boot")
                         
-                        # Just zero out the target swap partition
-                        print(f"  Zeroing target SWAP partition...")
-                        zero_cmd = ['dd', f'if=/dev/zero', f'of={target_part}', 'bs=1M', 'count=1']
-                        subprocess.run(zero_cmd, capture_output=True, timeout=10, check=False)
+                        # Get the current SWAP UUID
+                        uuid_result = subprocess.run(['blkid', '-o', 'value', '-s', 'UUID', source_part],
+                                                capture_output=True, text=True, timeout=10, check=False)
+                        swap_uuid = uuid_result.stdout.strip()
                         
-                        overall_percent = int((partition_index + 1) / total_partitions * 100)
-                        if progress_callback:
-                            progress_callback(overall_percent, f"Skipped: {partition_label} (SWAP)")
+                        print(f"  SWAP partition detected")
+                        print(f"  Current SWAP UUID: {swap_uuid}")
+                        print(f"  Recreating SWAP with same UUID on target...")
+                        
+                        # Recreate SWAP on target with same UUID
+                        if swap_uuid:
+                            cmd = ['mkswap', '-U', swap_uuid, target_part]
+                        else:
+                            cmd = ['mkswap', target_part]
+                        
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+                        
+                        if result.returncode == 0:
+                            print(f"  OK - SWAP recreated with UUID: {swap_uuid}")
+                            overall_percent = int((partition_index + 1) / total_partitions * 100)
+                            if progress_callback:
+                                progress_callback(overall_percent, f"Completed: {partition_label} (SWAP recreated)")
+                        else:
+                            print(f"  WARNING - Could not recreate SWAP: {result.stderr}")
+                            print(f"  Proceeding anyway...")
+                            overall_percent = int((partition_index + 1) / total_partitions * 100)
+                            if progress_callback:
+                                progress_callback(overall_percent, f"Skipped: {partition_label} (SWAP)")
                         
                         continue
                         
