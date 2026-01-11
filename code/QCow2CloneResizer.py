@@ -732,123 +732,109 @@ class QCow2CloneResizer:
         except OSError as e:
             print(f"OS error checking if {device_path} is free: {e}")
             return False
-    
+
     @staticmethod
     def get_partition_layout(nbd_device):
-        """Get partition layout information after GParted operations"""
+        """Get partition layout from GParted-modified disk with 5% buffer calculation
+        
+        This simply extracts what GParted created - no recalculations.
+        The 5% buffer is added to the IMAGE SIZE, not to partition calculations.
+        """
         try:
-            # Use parted to get detailed info
+            print(f"\nGetting partition layout from {nbd_device}...")
+            
             result = subprocess.run(
                 ['parted', '-s', nbd_device, 'print'],
                 capture_output=True, text=True, check=True, timeout=30
             )
             
-            print(f"Parted output for {nbd_device}:")
             print(result.stdout)
-            print("=" * 50)
             
             lines = result.stdout.split('\n')
             partitions = []
-            all_end_values = []
+            max_end_bytes = 0
             
+            # Parse partitions
             for line in lines:
                 line = line.strip()
-                if re.match(r'^\s*\d+\s+', line):  # Partition line
+                if re.match(r'^\s*\d+\s+', line):
                     parts = line.split()
-                    print(f"DEBUG: Parsing line: '{line}'")
-                    print(f"DEBUG: Split into parts: {parts}")
                     
                     if len(parts) >= 3:
                         partition_num = int(parts[0])
                         start_str = parts[1]
                         end_str = parts[2]
                         
-                        print(f"DEBUG: Partition {partition_num} - start:'{start_str}' end:'{end_str}'")
-                        
-                        # Support both European (comma) and US (dot) decimal separators
-                        end_bytes = 0
-                        
-                        # Method 1: Look for GB values (support both 47.5GB and 47,5GB)
-                        gb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*GB', end_str, re.IGNORECASE)
-                        if gb_match:
-                            gb_value_str = gb_match.group(1).replace(',', '.')  # Convert European to US format
-                            gb_value = float(gb_value_str)
-                            end_bytes = int(gb_value * 1024**3)
-                            print(f"DEBUG: Found GB value: {gb_value_str}GB = {end_bytes} bytes")
-                        else:
-                            # Method 2: Look for MB values
-                            mb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*MB', end_str, re.IGNORECASE)
+                        # Parse to bytes for calculation
+                        def parse_size_str(size_str):
+                            """Parse '1049kB', '538MB', '10.7GB' to bytes"""
+                            size_str = size_str.strip()
+                            
+                            gb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*GB', size_str, re.IGNORECASE)
+                            if gb_match:
+                                return int(float(gb_match.group(1).replace(',', '.')) * 1024**3)
+                            
+                            mb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*MB', size_str, re.IGNORECASE)
                             if mb_match:
-                                mb_value_str = mb_match.group(1).replace(',', '.')
-                                mb_value = float(mb_value_str)
-                                end_bytes = int(mb_value * 1024**2)
-                                print(f"DEBUG: Found MB value: {mb_value_str}MB = {end_bytes} bytes")
-                            else:
-                                # Method 3: Look for kB values
-                                kb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*kB', end_str, re.IGNORECASE)
-                                if kb_match:
-                                    kb_value_str = kb_match.group(1).replace(',', '.')
-                                    kb_value = float(kb_value_str)
-                                    end_bytes = int(kb_value * 1024)
-                                    print(f"DEBUG: Found kB value: {kb_value_str}kB = {end_bytes} bytes")
-                                else:
-                                    print(f"DEBUG: Could not parse end value '{end_str}'")
-                                    continue
+                                return int(float(mb_match.group(1).replace(',', '.')) * 1024**2)
+                            
+                            kb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*kB', size_str, re.IGNORECASE)
+                            if kb_match:
+                                return int(float(kb_match.group(1).replace(',', '.')) * 1024)
+                            
+                            try:
+                                return int(float(size_str.replace(',', '.')))
+                            except:
+                                return 0
                         
-                        all_end_values.append({
-                            'partition': partition_num,
-                            'end_str': end_str,
-                            'end_bytes': end_bytes,
-                            'end_formatted': QCow2CloneResizer.format_size(end_bytes)
-                        })
-                        
-                        # Parse start too (with same European format support)
-                        start_bytes = 0
-                        gb_start = re.search(r'(\d+(?:[,\.]\d+)?)\s*GB', start_str, re.IGNORECASE)
-                        if gb_start:
-                            start_bytes = int(float(gb_start.group(1).replace(',', '.')) * 1024**3)
-                        else:
-                            mb_start = re.search(r'(\d+(?:[,\.]\d+)?)\s*MB', start_str, re.IGNORECASE)
-                            if mb_start:
-                                start_bytes = int(float(mb_start.group(1).replace(',', '.')) * 1024**2)
-                            else:
-                                kb_start = re.search(r'(\d+(?:[,\.]\d+)?)\s*kB', start_str, re.IGNORECASE)
-                                if kb_start:
-                                    start_bytes = int(float(kb_start.group(1).replace(',', '.')) * 1024)
+                        start_bytes = parse_size_str(start_str)
+                        end_bytes = parse_size_str(end_str)
                         
                         partitions.append({
                             'number': partition_num,
-                            'start': start_str,
-                            'end': end_str,
+                            'start': start_str,      # Keep original strings for parted
+                            'end': end_str,          # Keep original strings for parted
                             'start_bytes': start_bytes,
                             'end_bytes': end_bytes,
                             'size': parts[3] if len(parts) > 3 else 'unknown',
-                            'filesystem': parts[4] if len(parts) > 4 else 'unknown'
+                            'blockdev_size_bytes': None,  # Will be filled from blockdev if available
                         })
+                        
+                        max_end_bytes = max(max_end_bytes, end_bytes)
             
-            print("\nDEBUG: All end values found:")
-            for item in all_end_values:
-                print(f"  Partition {item['partition']}: '{item['end_str']}' = {item['end_bytes']} bytes = {item['end_formatted']}")
-            
-            # Find the maximum end value
-            if all_end_values:
-                max_end_bytes = max(item['end_bytes'] for item in all_end_values)
-                max_partition = max(all_end_values, key=lambda x: x['end_bytes'])
+            # Get blockdev sizes for reference (but DON'T use for partition creation)
+            print(f"\nActual partition sizes from kernel:")
+            for partition in partitions:
+                part_num = partition['number']
+                part_device = None
                 
-                print(f"\nDEBUG: Maximum end value:")
-                print(f"  Partition {max_partition['partition']}: {max_partition['end_formatted']} ({max_end_bytes} bytes)")
-            else:
-                max_end_bytes = 0
-                print("\nDEBUG: No partition end values found!")
+                for path_fmt in [f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"]:
+                    if os.path.exists(path_fmt):
+                        part_device = path_fmt
+                        break
+                
+                if part_device:
+                    try:
+                        result = subprocess.run(
+                            ['blockdev', '--getsize64', part_device],
+                            capture_output=True, text=True, check=True, timeout=10
+                        )
+                        actual_size = int(result.stdout.strip())
+                        partition['blockdev_size_bytes'] = actual_size
+                        print(f"  Partition {part_num}: {QCow2CloneResizer.format_size(actual_size)}")
+                    except:
+                        pass
             
-            # Add 200MB buffer
-            buffer_size = 200 * 1024 * 1024  # 200MB
-            required_minimum_bytes = max_end_bytes + buffer_size
+            # Add 5% buffer to max_end_bytes for the image size
+            buffer_5percent = int(max_end_bytes * 0.05)
+            required_minimum_bytes = max_end_bytes + buffer_5percent
             
-            print(f"\nDEBUG: Final calculation:")
-            print(f"  Maximum partition end: {QCow2CloneResizer.format_size(max_end_bytes)}")
-            print(f"  Buffer: {QCow2CloneResizer.format_size(buffer_size)}")
-            print(f"  Required minimum: {QCow2CloneResizer.format_size(required_minimum_bytes)}")
+            print(f"\n{'='*60}")
+            print(f"Image size calculation:")
+            print(f"  Last partition ends at: {QCow2CloneResizer.format_size(max_end_bytes)}")
+            print(f"  Safety buffer (5%):     {QCow2CloneResizer.format_size(buffer_5percent)}")
+            print(f"  RECOMMENDED IMAGE SIZE: {QCow2CloneResizer.format_size(required_minimum_bytes)}")
+            print(f"{'='*60}\n")
             
             return {
                 'partitions': partitions,
@@ -857,16 +843,37 @@ class QCow2CloneResizer:
                 'partition_count': len(partitions)
             }
             
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"parted command failed: {e}")
-        except subprocess.TimeoutExpired:
-            raise Exception(f"parted command timed out for device {nbd_device}")
-        except FileNotFoundError:
-            raise Exception("parted command not found")
-        except ValueError as e:
-            raise Exception(f"Failed to parse partition information: {e}")
-        except IndexError as e:
-            raise Exception(f"Unexpected parted output format: {e}")
+        except Exception as e:
+            print(f"ERROR getting partition layout: {e}")
+            raise
+
+
+    def _perform_safe_sync_static(operation_name="Sync"):
+        """Perform sync operation with proper error handling"""
+        try:
+            print(f"{operation_name}: Starting sync...")
+            
+            try:
+                process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = process.communicate(timeout=120)
+                if process.returncode == 0:
+                    print(f"{operation_name}: Sync completed")
+                    time.sleep(2)
+                    return True
+            except subprocess.TimeoutExpired:
+                print(f"{operation_name}: Sync taking longer, continuing...")
+                time.sleep(5)
+                return True
+                
+            # Fallback
+            subprocess.run(['sync', '-f'], check=False, timeout=30)
+            time.sleep(2)
+            return True
+            
+        except Exception as e:
+            print(f"{operation_name}: Error (non-fatal): {e}")
+            time.sleep(5)
+            return False
     
     @staticmethod
     def launch_gparted(nbd_device):
@@ -1043,7 +1050,7 @@ class QCow2CloneResizer:
         except OSError as e:
             print(f"ERROR creating image: {e}")
             raise Exception(f"Failed to create image: {e}")
-    
+
     @staticmethod
     def clone_disk_structure(source_nbd, target_nbd, layout_info, progress_callback=None):
         """Clone disk structure (partition table + partitions)"""
@@ -1133,7 +1140,6 @@ class QCow2CloneResizer:
         except OSError as e:
             print(f"ERROR in clone_disk_structure: {e}")
             raise Exception(f"System error during disk structure cloning: {e}")
-    
     
     @staticmethod
     def create_backup(image_path):
