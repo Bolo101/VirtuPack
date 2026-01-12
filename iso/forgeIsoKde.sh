@@ -103,7 +103,6 @@ osinfo-db
 osinfo-db-tools
 xserver-xorg-video-all
 xserver-xorg-video-intel
-xserver-xorg-video-amd
 xserver-xorg-video-ati
 xserver-xorg-video-nouveau
 xserver-xorg-video-vesa

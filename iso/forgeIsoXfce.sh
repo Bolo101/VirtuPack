@@ -105,7 +105,6 @@ calamares
 calamares-settings-debian
 xserver-xorg-video-all
 xserver-xorg-video-intel
-xserver-xorg-video-amd
 xserver-xorg-video-ati
 xserver-xorg-video-nouveau
 xserver-xorg-video-vesa
