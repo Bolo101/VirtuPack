@@ -109,17 +109,20 @@ xserver-xorg-video-ati
 xserver-xorg-video-nouveau
 xserver-xorg-video-vesa
 xserver-xorg-video-fbdev
+xserver-xorg-video-cirrus
+xserver-xorg-video-dummy
 xserver-xorg-input-all
 pciutils
 usbutils
 acpi
 acpid
-cpufrequtils
-laptop-detect
 hdparm
 smartmontools
 lm-sensors
 beep
+edac-utils
+i2c-tools
+memtest86+
 EOF
 
 # Set system locale and keyboard layout to French AZERTY
@@ -616,6 +619,7 @@ echo "6. Maximum Compatibility - All compatibility options enabled"
 echo ""
 echo "If you experience boot issues, try the options in this order: 2 → 3 → 6"
 
-
+# Cleanup
 sudo lb clean
+
 echo "Done. ISO created at: $ISO_NAME"
