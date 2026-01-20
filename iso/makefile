@@ -1,9 +1,14 @@
 # Define variables
 
-SCRIPT_XFCE     := ./xfce-64-bits/forgeIsoXfce.sh
-SCRIPT_KDE      := ./kde-64-bits/forgeIsoKde.sh
-SCRIPT_XFCE_32  := ./xfce-32-bits/forgeIsoXfce32.sh
-SCRIPT_KDE_32   := ./kde-32-bits/forgeIsoKde32.sh
+SCRIPT_XFCE     := forgeIsoXfce.sh
+SCRIPT_KDE      := forgeIsoKde.sh
+SCRIPT_XFCE_32  := forgeIsoXfce32.sh
+SCRIPT_KDE_32   := forgeIsoKde32.sh
+
+DIR_XFCE_64     := xfce-64-bits
+DIR_KDE_64      := kde-64-bits
+DIR_XFCE_32     := xfce-32-bits
+DIR_KDE_32      := kde-32-bits
 
 BUILD_DIR_XFCE_64    := ./xfce-64-bits/debian-live-build
 BUILD_DIR_KDE_64     := ./kde-64-bits/debian-live-build
@@ -15,20 +20,16 @@ BUILD_DIR_KDE_32     := ./kde-32-bits/debian-live-build
 # Default target: run the script
 
 all:
-	chmod +x $(SCRIPT_XFCE)
-	bash $(SCRIPT_XFCE)
+	cd $(DIR_XFCE_64) && chmod +x $(SCRIPT_XFCE) && bash $(SCRIPT_XFCE)
 
 kde:
-	chmod +x $(SCRIPT_KDE)
-	bash $(SCRIPT_KDE)
+	cd $(DIR_KDE_64) && chmod +x $(SCRIPT_KDE) && bash $(SCRIPT_KDE)
 
 xfce32:
-	chmod +x $(SCRIPT_XFCE_32)
-	bash $(SCRIPT_XFCE_32)
+	cd $(DIR_XFCE_32) && chmod +x $(SCRIPT_XFCE_32) && bash $(SCRIPT_XFCE_32)
 
 kde32:
-	chmod +x $(SCRIPT_KDE_32)
-	bash $(SCRIPT_KDE_32)
+	cd $(DIR_KDE_32) && chmod +x $(SCRIPT_KDE_32) && bash $(SCRIPT_KDE_32)
 
 # Build all ISOs
 
