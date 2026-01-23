@@ -31,15 +31,20 @@ Transform physical disks into **qcow2 virtual machine images** ready for any hyp
 ## Quick Start
 
 ### Download Pre-built ISO (Recommended)
-**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v0.1)**
+**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v1.0)**
 
+Select ISO version you need, 32 bits or 64 bits, XFCE (lighter) or KDE. 
 ### Or Build Your Own
 
 ```bash
 cd iso/
-make kde-iso     # KDE Plasma environment
-make xfce-iso    # XFCE environment (lighter)
-make clean       # Clean build files
+make
+make xfce32  # 32 bits XFCE environment (lighter)
+make kde     # KDE 64 bits environment
+make kde32   # KDE 32 bits environment
+make all-iso # All 4 ISOs generated
+make clean   # Clean build files
+make help    # Display helper message
 ```
 
 ***
