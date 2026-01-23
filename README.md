@@ -33,6 +33,13 @@ Transform physical disks into **qcow2 virtual machine images** ready for any hyp
 ### Download Pre-built ISO (Recommended)
 **[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v1.0)**
 
+  ```txt
+  f64933b9c944f753f81999a0eea20a238c808e6cac98ca85db6b8f43a5be5ae6  p2vConverter-v1.0-KDE-32bits.iso
+  782faa1ce20c52def6bf8dc9fa21217016216b0f0c8a4a2b34349712a719fb66  p2vConverter-v1.0-KDE-64bits.iso
+  b16b2db810c8dd476891bbd70a109748647b3edf2567c47b931c249b9fea4e6f  p2vConverter-v1.0-XFCE-32bits.iso
+  ca22d449e7b094e6d5d0e16ead44e7795a125a9a47487b0a6740b180fa63a6cf  p2vConverter-v1.0-XFCE-64bits.iso
+  ```
+
 Select ISO version you need, 32 bits or 64 bits, XFCE (lighter) or KDE. 
 ### Or Build Your Own
 
