@@ -6,7 +6,7 @@ set -e
 # Variables
 ISO_NAME="$(pwd)/p2vConverter-v1.0-KDE-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
-CODE_DIR="$(pwd)/../code"
+CODE_DIR="$(pwd)/../../code"
 
 echo "Installing live-build and required dependencies..."
 sudo apt update
@@ -33,7 +33,7 @@ lb config \
   --bootloaders="syslinux" \
   --binary-images=iso-hybrid
 
-# Add Debian repositories for firmware
+# Repositories in chroot
 mkdir -p config/archives
 cat << 'EOF' > config/archives/debian.list.chroot
 deb http://deb.debian.org/debian bullseye main contrib non-free
@@ -127,6 +127,8 @@ cat << 'EOF' > config/includes.chroot/etc/systemd/logind.conf.d/no-suspend.conf
 HandleSuspendKey=ignore
 HandleHibernateKey=ignore
 HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
 IdleAction=ignore
 EOF
 
@@ -135,9 +137,35 @@ cat << 'EOF' > config/includes.chroot/etc/systemd/sleep.conf.d/no-sleep.conf
 [Sleep]
 AllowSuspend=no
 AllowHibernation=no
+AllowSuspendThenHibernate=no
+AllowHybridSleep=no
 EOF
 
-# KDE power management
+mkdir -p config/includes.chroot/etc/systemd/system/sleep.target.d/
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/sleep.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+mkdir -p config/includes.chroot/etc/systemd/system/suspend.target.d/
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/suspend.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+mkdir -p config/includes.chroot/etc/systemd/system/hibernate.target.d/
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/hibernate.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+mkdir -p config/includes.chroot/etc/systemd/system/hybrid-sleep.target.d/
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/hybrid-sleep.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+echo "Disabling screen blanking..."
 mkdir -p config/includes.chroot/etc/xdg
 cat << 'EOF' > config/includes.chroot/etc/xdg/powerdevilrc
 [General]
@@ -159,7 +187,6 @@ PowerButtonAction=1
 SuspendSession=-1
 EOF
 
-echo "Disabling screen blanking..."
 mkdir -p config/includes.chroot/etc/X11/xorg.conf.d/
 cat << 'EOF' > config/includes.chroot/etc/X11/xorg.conf.d/10-monitor.conf
 Section "ServerFlags"
@@ -219,7 +246,7 @@ Name=P2V Converter (32-bit KDE)
 Comment=Transform physical disks into qcow2 virtual machine images
 Exec=sudo /usr/local/bin/d2q
 Icon=drive-harddisk
-Terminal=true
+Terminal=false
 Type=Application
 Categories=System;
 EOF
@@ -230,7 +257,7 @@ cat << 'EOF' > config/includes.chroot/etc/xdg/autostart/p2v_converter.desktop
 Type=Application
 Name=P2V Converter (32-bit KDE)
 Exec=sudo /usr/local/bin/d2q
-Terminal=true
+Terminal=false
 OnlyShowIn=KDE;
 EOF
 
@@ -246,7 +273,9 @@ echo "Type 'sudo d2q' to use the P2V Converter program"
 if grep -q "boot=live" /proc/cmdline; then
   if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
     echo "Live mode detected. Starting P2V Converter..."
-    sudo /usr/local/bin/d2q
+    sudo /usr/local/bin/d2q &
+    sleep 2
+    exit 0
   fi
 fi
 EOF

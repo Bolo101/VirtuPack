@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# arrêter en cas d'erreur
+# Exit on any error
 set -e
 
-# Nom ISO et répertoire de travail
+# Variables
 ISO_NAME="$(pwd)/p2vConverter-v1.0-XFCE-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
-CODE_DIR="$(pwd)/../code"
+CODE_DIR="$(pwd)/../../code"
 
 echo "Installing live-build and required dependencies..."
 sudo apt update
@@ -33,7 +33,7 @@ lb config \
   --bootloaders="syslinux" \
   --binary-images=iso-hybrid
 
-# Dépôts dans le chroot
+# Repositories in chroot
 mkdir -p config/archives
 cat << 'EOF' > config/archives/debian.list.chroot
 deb http://deb.debian.org/debian bullseye main contrib non-free
@@ -192,7 +192,7 @@ Name=P2V Converter (32-bit)
 Comment=Transform physical disks into qcow2 virtual machine images
 Exec=sudo /usr/local/bin/d2q
 Icon=drive-harddisk
-Terminal=true
+Terminal=false
 Type=Application
 Categories=System;
 EOF
@@ -203,7 +203,7 @@ cat << 'EOF' > config/includes.chroot/etc/xdg/autostart/p2v_converter.desktop
 Type=Application
 Name=P2V Converter (32-bit)
 Exec=sudo /usr/local/bin/d2q
-Terminal=true
+Terminal=false
 OnlyShowIn=XFCE;
 EOF
 
@@ -219,7 +219,9 @@ echo "Type 'sudo d2q' to use the P2V Converter program"
 if grep -q "boot=live" /proc/cmdline; then
   if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
     echo "Live mode detected. Starting P2V Converter..."
-    sudo /usr/local/bin/d2q
+    sudo /usr/local/bin/d2q &
+    sleep 2
+    exit 0
   fi
 fi
 EOF
