@@ -26,8 +26,8 @@ cd "$WORK_DIR"
 sudo lb clean
 
 # Configure live-build
-echo "Configuring live-build for Debian Bookworm..."
-lb config --distribution=bookworm --architectures=amd64 \
+echo "Configuring live-build for Debian Bullseye..."
+lb config --distribution=bullseye --architectures=amd64 \
     --linux-packages=linux-image \
     --debian-installer=live \
     --bootappend-live="boot=live components hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr"
@@ -35,8 +35,10 @@ lb config --distribution=bookworm --architectures=amd64 \
 # Add Debian repositories for firmware
 mkdir -p config/archives
 cat << EOF > config/archives/debian.list.chroot
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb-src http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bullseye main contrib non-free
+deb-src http://deb.debian.org/debian bullseye main contrib non-free
+deb http://security.debian.org/debian-security bullseye-security main contrib non-free
+deb-src http://security.debian.org/debian-security bullseye-security main contrib non-free
 EOF
 
 # Add required packages
@@ -57,6 +59,9 @@ python3-tk
 dosfstools
 firmware-linux-free
 firmware-linux-nonfree
+firmware-misc-nonfree
+firmware-realtek
+firmware-atheros
 calamares
 calamares-settings-debian
 squashfs-tools
