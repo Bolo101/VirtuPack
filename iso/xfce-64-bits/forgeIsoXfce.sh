@@ -8,53 +8,52 @@ ISO_NAME="$(pwd)/p2vConverter-v1.0-XFCE-64bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../../code"
 
+# Install necessary tools
 echo "Installing live-build and required dependencies..."
 sudo apt update
-sudo apt install -y live-build python3 calamares calamares-settings-debian syslinux isolinux osinfo-db osinfo-db-tools
+sudo apt install -y live-build python3 calamares calamares-settings-debian syslinux osinfo-db osinfo-db-tools
 
+# Update osinfo database for libvirt
 echo "Updating osinfo database for libvirt..."
 sudo osinfo-db-import --local --latest
 
+# Create working directory
 echo "Setting up live-build workspace..."
-rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-sudo lb clean --purge || true
+# Clean previous build
+sudo lb clean
 
-echo "Configuring live-build for Debian Bullseye amd64..."
-lb config \
-  --distribution=bullseye \
-  --architectures=amd64 \
-  --linux-packages=linux-image \
-  --debian-installer=live \
-  --bootappend-live="boot=live components config hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
-  --bootloaders="syslinux" \
-  --binary-images=iso-hybrid
+# Configure live-build
+echo "Configuring live-build for Debian Bookworm..."
+lb config --distribution=bookworm --architectures=amd64 \
+    --linux-packages=linux-image \
+    --debian-installer=live \
+    --bootappend-live="boot=live components hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr"
 
-# Repositories in chroot
+# Add Debian repositories for firmware
 mkdir -p config/archives
-cat << 'EOF' > config/archives/debian.list.chroot
-deb http://deb.debian.org/debian bullseye main contrib non-free
-deb-src http://deb.debian.org/debian bullseye main contrib non-free
-deb http://security.debian.org/debian-security bullseye-security main contrib non-free
-deb-src http://security.debian.org/debian-security bullseye-security main contrib non-free
+cat << EOF > config/archives/debian.list.chroot
+deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
+deb-src http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
 EOF
 
+# Add required packages
 echo "Adding required packages..."
 mkdir -p config/package-lists/
-cat << 'EOF' > config/package-lists/custom.list.chroot
+cat << EOF > config/package-lists/custom.list.chroot
 coreutils
 parted
 ntfs-3g
 python3
-python3-tk
 qemu-utils
-qemu-system-x86
+qemu-kvm
 virt-manager
 bridge-utils
 libvirt-daemon
 libvirt-clients
+python3-tk
 dosfstools
 firmware-linux-free
 firmware-linux-nonfree
@@ -64,6 +63,7 @@ squashfs-tools
 xorg
 gparted
 xfce4
+xfce4-terminal
 xfce4-power-manager
 network-manager
 network-manager-gnome
@@ -71,38 +71,38 @@ sudo
 live-boot
 live-config
 live-tools
+tasksel
+tasksel-data
 console-setup
 keyboard-configuration
+cryptsetup
+dmsetup
+caffeine
 systemd
 osinfo-db
 osinfo-db-tools
-xserver-xorg-video-all
-xserver-xorg-video-intel
-xserver-xorg-video-ati
-xserver-xorg-video-nouveau
-xserver-xorg-video-vesa
-xserver-xorg-video-fbdev
-xserver-xorg-input-all
-pciutils
-usbutils
-acpi
 EOF
 
+# Set system locale and keyboard layout to French AZERTY
 echo "Configuring live system for French AZERTY keyboard..."
 mkdir -p config/includes.chroot/etc/default/
-cat << 'EOF' > config/includes.chroot/etc/default/locale
+
+# Set default locale to French
+cat << EOF > config/includes.chroot/etc/default/locale
 LANG=fr_FR.UTF-8
 LC_ALL=fr_FR.UTF-8
 EOF
 
-cat << 'EOF' > config/includes.chroot/etc/default/keyboard
+# Set keyboard layout to AZERTY
+cat << EOF > config/includes.chroot/etc/default/keyboard
 XKBMODEL="pc105"
 XKBLAYOUT="fr"
 XKBVARIANT="azerty"
 XKBOPTIONS=""
 EOF
 
-cat << 'EOF' > config/includes.chroot/etc/default/console-setup
+# Set console keymap for tty
+cat << EOF > config/includes.chroot/etc/default/console-setup
 ACTIVE_CONSOLES="/dev/tty[1-6]"
 CHARMAP="UTF-8"
 CODESET="Lat15"
@@ -110,192 +110,333 @@ XKBLAYOUT="fr"
 XKBVARIANT="azerty"
 EOF
 
+# Disable all power management and suspend features
 echo "Disabling power management and suspend..."
 mkdir -p config/includes.chroot/etc/systemd/logind.conf.d/
-cat << 'EOF' > config/includes.chroot/etc/systemd/logind.conf.d/no-suspend.conf
+cat << EOF > config/includes.chroot/etc/systemd/logind.conf.d/no-suspend.conf
 [Login]
 HandleSuspendKey=ignore
 HandleHibernateKey=ignore
 HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
 IdleAction=ignore
 EOF
 
+# Disable systemd sleep targets
 mkdir -p config/includes.chroot/etc/systemd/sleep.conf.d/
-cat << 'EOF' > config/includes.chroot/etc/systemd/sleep.conf.d/no-sleep.conf
+cat << EOF > config/includes.chroot/etc/systemd/sleep.conf.d/no-sleep.conf
 [Sleep]
 AllowSuspend=no
 AllowHibernation=no
+AllowSuspendThenHibernate=no
+AllowHybridSleep=no
 EOF
 
+# Create systemd override to mask suspend/hibernate targets
+mkdir -p config/includes.chroot/etc/systemd/system/sleep.target.d/
+cat << EOF > config/includes.chroot/etc/systemd/system/sleep.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+mkdir -p config/includes.chroot/etc/systemd/system/suspend.target.d/
+cat << EOF > config/includes.chroot/etc/systemd/system/suspend.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+mkdir -p config/includes.chroot/etc/systemd/system/hibernate.target.d/
+cat << EOF > config/includes.chroot/etc/systemd/system/hibernate.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+mkdir -p config/includes.chroot/etc/systemd/system/hybrid-sleep.target.d/
+cat << EOF > config/includes.chroot/etc/systemd/system/hybrid-sleep.target.d/override.conf
+[Unit]
+ConditionPathExists=/dev/null
+EOF
+
+# Configure XFCE Power Manager to never suspend
 mkdir -p config/includes.chroot/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/
 cat << 'EOF' > config/includes.chroot/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfce4-power-manager" version="1.0">
   <property name="xfce4-power-manager" type="empty">
+    <property name="power-button-action" type="uint" value="3"/>
+    <property name="show-tray-icon" type="bool" value="true"/>
+    <property name="logind-handle-lid-switch" type="bool" value="false"/>
     <property name="dpms-enabled" type="bool" value="false"/>
     <property name="blank-on-ac" type="int" value="0"/>
     <property name="blank-on-battery" type="int" value="0"/>
+    <property name="dpms-on-ac-sleep" type="uint" value="0"/>
+    <property name="dpms-on-ac-off" type="uint" value="0"/>
+    <property name="dpms-on-battery-sleep" type="uint" value="0"/>
+    <property name="dpms-on-battery-off" type="uint" value="0"/>
+    <property name="brightness-on-ac" type="uint" value="9"/>
+    <property name="brightness-on-battery" type="uint" value="9"/>
+    <property name="inactivity-on-ac" type="uint" value="0"/>
+    <property name="inactivity-on-battery" type="uint" value="0"/>
+    <property name="inactivity-sleep-mode-on-ac" type="uint" value="1"/>
+    <property name="inactivity-sleep-mode-on-battery" type="uint" value="1"/>
+    <property name="lid-action-on-ac" type="uint" value="0"/>
+    <property name="lid-action-on-battery" type="uint" value="0"/>
+    <property name="lock-screen-suspend-hibernate" type="bool" value="false"/>
+    <property name="critical-power-action" type="uint" value="1"/>
   </property>
 </channel>
 EOF
 
-echo "Disabling screen blanking..."
+# Disable screen blanking and DPMS
 mkdir -p config/includes.chroot/etc/X11/xorg.conf.d/
-cat << 'EOF' > config/includes.chroot/etc/X11/xorg.conf.d/10-monitor.conf
+cat << EOF > config/includes.chroot/etc/X11/xorg.conf.d/10-monitor.conf
 Section "ServerFlags"
-  Option "BlankTime" "0"
-  Option "StandbyTime" "0"
-  Option "SuspendTime" "0"
-  Option "OffTime" "0"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+
+Section "Monitor"
+    Identifier "LVDS0"
+    Option "DPMS" "false"
 EndSection
 EOF
 
-echo "Configuring libvirt..."
+# Configure libvirt to allow access to external drives
+echo "Configuring libvirt for external drive access..."
 mkdir -p config/includes.chroot/etc/libvirt/
+
+# Create custom qemu.conf to allow access to /mnt and /media
 cat << 'EOF' > config/includes.chroot/etc/libvirt/qemu.conf
+# Run qemu as root to access external drives
 user = "root"
 group = "root"
+
+# Disable security driver restrictions - needed for external drives
 security_driver = "none"
+
+# Allow dynamic ownership of files
 dynamic_ownership = 0
+
+# Set VNC listen address
 vnc_listen = "0.0.0.0"
+
+# Allow stdio in monitor
+stdio_handler = "file"
 EOF
 
+# Ensure libvirtd starts and runs on boot
 mkdir -p config/includes.chroot/etc/systemd/system/
 cat << 'EOF' > config/includes.chroot/etc/systemd/system/libvirtd-startup.service
 [Unit]
 Description=Start libvirtd daemon on boot
 After=network.target
+Before=virt-manager.service
 
 [Service]
 Type=oneshot
 ExecStart=/bin/systemctl start libvirtd
+ExecStart=/bin/sleep 2
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-echo "Copying application files..."
+# Copy all files from CODE_DIR to /usr/local/bin
+echo "Copying all files from $CODE_DIR to /usr/local/bin..."
 mkdir -p config/includes.chroot/usr/local/bin/
-cp -r "${CODE_DIR}"/* config/includes.chroot/usr/local/bin/ 2>/dev/null || true
-chmod +x config/includes.chroot/usr/local/bin/* 2>/dev/null || true
-ln -sf /usr/local/bin/main.py config/includes.chroot/usr/local/bin/d2q 2>/dev/null || true
+cp -r "$CODE_DIR"/* config/includes.chroot/usr/local/bin/
+chmod +x config/includes.chroot/usr/local/bin/*
 
+# FIX: Create d2q as a real wrapper script instead of a symlink to a .py file.
+# A symlink to main.py can fail with "Exec format error" if the shebang is missing
+# or if sudo doesn't resolve symlinks correctly. A wrapper script is more robust.
+cat << 'EOF' > config/includes.chroot/usr/local/bin/d2q
+#!/bin/bash
+exec python3 /usr/local/bin/main.py "$@"
+EOF
+chmod +x config/includes.chroot/usr/local/bin/d2q
+
+# Allow sudo without password
+echo "Configuring sudo to be passwordless..."
 mkdir -p config/includes.chroot/etc/sudoers.d/
 echo "user ALL=(ALL) NOPASSWD: ALL" > config/includes.chroot/etc/sudoers.d/passwordless
 chmod 0440 config/includes.chroot/etc/sudoers.d/passwordless
 
+# Create USB flash drive udev rules
+echo "Creating USB flash drive udev rules..."
 mkdir -p config/includes.chroot/etc/udev/rules.d/
 cat << 'EOF' > config/includes.chroot/etc/udev/rules.d/usb-flash.rules
+# Try to catch USB flash drives and set them as non-rotational.
+# c.f. https://mpdesouza.com/blog/kernel-adventures-are-usb-sticks-rotational-devices/
+
+# Device is already marked as non-rotational, skip over it
+ATTR{queue/rotational}=="0", GOTO="skip"
+
+# Device has some sort of queue support, likely to be an HDD actually
+ATTRS{queue_type}!="none", GOTO="skip"
+
+# Flip the rotational bit on this removable device and give audible signs of having caught a match
 ATTR{removable}=="1", SUBSYSTEM=="block", SUBSYSTEMS=="usb", ACTION=="add", ATTR{queue/rotational}="0"
 ATTR{removable}=="1", SUBSYSTEM=="block", SUBSYSTEMS=="usb", ACTION=="add", RUN+="/bin/beep -f 70 -r 2"
+
+LABEL="skip"
 EOF
 
+# Create application launcher for the installed version
+echo "Creating application launcher..."
 mkdir -p config/includes.chroot/usr/share/applications/
-cat << 'EOF' > config/includes.chroot/usr/share/applications/p2v_converter.desktop
+cat << EOF > config/includes.chroot/usr/share/applications/p2v_converter.desktop
 [Desktop Entry]
 Version=1.0
-Name=P2V Converter (64-bit)
-Comment=Transform physical disks into qcow2 virtual machine images
-Exec=sudo /usr/local/bin/d2q
+Name=P2V Converter
+Comment=Transform physical disks into qcow2 virtual machine images ready for any hypervisor
+Exec=xfce4-terminal --title="P2V Converter" -e "sudo /usr/local/bin/d2q"
 Icon=drive-harddisk
 Terminal=false
 Type=Application
-Categories=System;
+Categories=System;Security;
+Keywords=p2v;virtualization;qcow2;migration;backup;image;disk;vm;qemu;kvm;convert;
 EOF
 
+# FIX: XDG autostart with explicit terminal emulator.
+# "Terminal=true" in XDG autostart entries is ignored by XFCE's session manager —
+# the process is launched directly without a terminal, causing a GUI-less Python/Tk
+# app to fail silently. We must explicitly invoke xfce4-terminal and pass the command
+# to it via -e. P2V_AUTOSTART=1 lets .bashrc identify this specific terminal instance
+# so the app only auto-launches here, not in every new terminal the user opens.
 mkdir -p config/includes.chroot/etc/xdg/autostart/
-cat << 'EOF' > config/includes.chroot/etc/xdg/autostart/p2v_converter.desktop
+cat << EOF > config/includes.chroot/etc/xdg/autostart/p2v_converter.desktop
 [Desktop Entry]
 Type=Application
-Name=P2V Converter (64-bit)
-Exec=sudo /usr/local/bin/d2q
+Name=P2V Converter
+Comment=Start P2V Converter automatically in live mode
+Exec=xfce4-terminal --title="P2V Converter" -e "env P2V_AUTOSTART=1 bash"
 Terminal=false
+Icon=drive-harddisk
+Categories=System;Security;
 OnlyShowIn=XFCE;
 EOF
 
+# Configure .bashrc to run main.py on login in live mode
+echo "Configuring .bashrc to run main.py in live mode..."
 mkdir -p config/includes.chroot/etc/skel/
 cat << 'EOF' > config/includes.chroot/etc/skel/.bashrc
+# Source global definitions
 if [ -f /etc/bashrc ]; then
-  . /etc/bashrc
+    . /etc/bashrc
 fi
 
-echo "P2V Converter (64-bit)"
+# Display information about the P2V Converter
+echo "P2V Converter"
 echo "Type 'sudo d2q' to use the P2V Converter program"
 
-if grep -q "boot=live" /proc/cmdline; then
-  if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+# FIX: Auto-launch only in the terminal that was opened by the XDG autostart entry.
+# The old check used [ -z "$DISPLAY" ] which is always false under XFCE (DISPLAY is
+# always set), so the auto-launch block was never reached. Instead, we rely on the
+# P2V_AUTOSTART env variable set by the autostart desktop entry to identify the right
+# terminal, then run the app inside it.
+if [ -n "$P2V_AUTOSTART" ]; then
     echo "Live mode detected. Starting P2V Converter..."
-    sudo /usr/local/bin/d2q &
-    sleep 2
-    exit 0
-  fi
+    sudo /usr/local/bin/d2q
 fi
 EOF
 
-mkdir -p config/includes.chroot/etc/kbd/
-cat << 'EOF' > config/includes.chroot/etc/kbd/config
-SCREEN_BLANKING=0
-EOF
-
+# Create a boot hook script to ensure libvirtd starts properly and osinfo-db is updated
+echo "Creating libvirtd boot initialization hook..."
 mkdir -p config/includes.chroot/lib/live/boot
 cat << 'EOF' > config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
 #!/bin/sh
-echo "Initializing libvirt daemon..."
-mkdir -p /var/lib/libvirt/images /var/lib/libvirt/qemu /var/run/libvirt
-chmod 755 /var/lib/libvirt /var/lib/libvirt/images /var/lib/libvirt/qemu /var/run/libvirt
-/usr/sbin/libvirtd -d 2>/dev/null || true
+# Initialize libvirtd for live system
+
+echo "Initializing libvirt daemon for live system..."
+
+# Create necessary directories
+mkdir -p /var/lib/libvirt/images
+mkdir -p /var/lib/libvirt/qemu
+mkdir -p /var/run/libvirt
+
+# Ensure directories have correct permissions
+chmod 755 /var/lib/libvirt
+chmod 755 /var/lib/libvirt/images
+chmod 755 /var/lib/libvirt/qemu
+chmod 755 /var/run/libvirt
+
+# Update osinfo database if network is available
+if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    echo "Updating osinfo database..."
+    osinfo-db-import --local --latest >/dev/null 2>&1 || true
+fi
+
+# Start libvirtd daemon
+/usr/sbin/libvirtd -d
+
+# Give it a moment to start
 sleep 2
+
 echo "libvirt daemon initialized"
 EOF
 chmod +x config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
 
-echo "Configuring boot menu..."
+# Configure Boot Menu (Syslinux)
 mkdir -p config/includes.binary/isolinux
-cat << 'EOF' > config/includes.binary/isolinux/isolinux.cfg
+cat << 'EOF' > config/includes.binary/isolinux/menu.cfg
 UI vesamenu.c32
 DEFAULT live
 TIMEOUT 50
 
-MENU TITLE P2V Converter (64-bit) - Boot Menu
+MENU TITLE P2V Converter - Boot Menu
 
 LABEL live
-  MENU LABEL Start Live Environment
-  MENU DEFAULT
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img boot=live config components
-
-LABEL live-safe
-  MENU LABEL Start Live Environment - Safe Mode (nomodeset)
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img boot=live config components nomodeset
+    MENU LABEL Start Live Environment
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live components
 
 LABEL install
-  MENU LABEL Install to Disk
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img boot=live config components calamares
+    MENU LABEL Install P2V Converter (Copy Live System)
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd.img boot=live components automatic calamares
 EOF
 
+# Configure GRUB Boot Menu
+mkdir -p config/bootloaders
+cat << 'EOF' > config/bootloaders/grub.cfg
+set default=0
+set timeout=5
+
+menuentry "Start Live Environment" {
+    linux /live/vmlinuz boot=live components
+    initrd /live/initrd.img
+}
+
+menuentry "Install P2V Converter (Copy Live System)" {
+    linux /live/vmlinuz boot=live components automatic calamares
+    initrd /live/initrd.img
+}
+EOF
+
+# Auto-start Calamares if in installer mode
 mkdir -p config/includes.chroot/etc/profile.d/
 cat << 'EOF' > config/includes.chroot/etc/profile.d/autostart-calamares.sh
 #!/bin/bash
-if grep -q "calamares" /proc/cmdline; then
-  calamares --debug
+if [[ "$(cat /proc/cmdline)" == *"calamares"* ]]; then
+    echo "Starting Calamares Installer..."
+    calamares --debug
 fi
 EOF
 chmod +x config/includes.chroot/etc/profile.d/autostart-calamares.sh
 
+# Build the ISO
 echo "Building the ISO..."
 sudo lb build
 
-if [ -f live-image-amd64.hybrid.iso ]; then
-  mv live-image-amd64.hybrid.iso "$ISO_NAME"
-elif [ -f live-image-amd64.iso ]; then
-  mv live-image-amd64.iso "$ISO_NAME"
-else
-  echo "ERROR: Could not find generated ISO file"
-  exit 1
-fi
+# Move the ISO
+mv live-image-amd64.hybrid.iso "$ISO_NAME"
 
+# Cleanup
 sudo lb clean
+
 echo "Done. ISO created at: $ISO_NAME"
