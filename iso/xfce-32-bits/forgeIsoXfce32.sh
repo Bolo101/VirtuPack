@@ -24,7 +24,7 @@ sudo lb clean --purge || true
 
 echo "Configuring live-build for Debian Bullseye i386..."
 lb config \
-  --distribution=bookworm \
+  --distribution=bullseye \
   --architectures=i386 \
   --linux-packages=linux-image \
   --linux-flavours=686 \
@@ -36,10 +36,10 @@ lb config \
 # Repositories in chroot
 mkdir -p config/archives
 cat << 'EOF' > config/archives/debian.list.chroot
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb-src http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
-deb-src http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bullseye main contrib non-free
+deb-src http://deb.debian.org/debian bullseye main contrib non-free
+deb http://security.debian.org/debian-security bullseye-security main contrib non-free
+deb-src http://security.debian.org/debian-security bullseye-security main contrib non-free
 EOF
 
 echo "Adding required packages..."
@@ -87,7 +87,6 @@ xserver-xorg-input-all
 pciutils
 usbutils
 acpi
-xfce4-terminal
 EOF
 
 echo "Configuring live system for French AZERTY keyboard..."
@@ -173,11 +172,7 @@ echo "Copying application files..."
 mkdir -p config/includes.chroot/usr/local/bin/
 cp -r "${CODE_DIR}"/* config/includes.chroot/usr/local/bin/ 2>/dev/null || true
 chmod +x config/includes.chroot/usr/local/bin/* 2>/dev/null || true
-cat << 'WRAPPER' > config/includes.chroot/usr/local/bin/d2q
-#!/bin/bash
-exec python3 /usr/local/bin/main.py "$@"
-WRAPPER
-chmod +x config/includes.chroot/usr/local/bin/d2q
+ln -sf /usr/local/bin/main.py config/includes.chroot/usr/local/bin/d2q 2>/dev/null || true
 
 mkdir -p config/includes.chroot/etc/sudoers.d/
 echo "user ALL=(ALL) NOPASSWD: ALL" > config/includes.chroot/etc/sudoers.d/passwordless
@@ -206,8 +201,8 @@ mkdir -p config/includes.chroot/etc/xdg/autostart/
 cat << 'EOF' > config/includes.chroot/etc/xdg/autostart/p2v_converter.desktop
 [Desktop Entry]
 Type=Application
-Name=P2V Converter (32-bit XFCE)
-Exec=xfce4-terminal --title "P2V Converter" -e "env P2V_AUTOSTART=1 bash"
+Name=P2V Converter (32-bit)
+Exec=sudo /usr/local/bin/d2q
 Terminal=false
 OnlyShowIn=XFCE;
 EOF
@@ -221,12 +216,13 @@ fi
 echo "P2V Converter (32-bit)"
 echo "Type 'sudo d2q' to use the P2V Converter program"
 
-# Auto-launch only in the terminal opened by the XDG autostart entry.
-# P2V_AUTOSTART is set by the autostart desktop Exec line so this block
-# never triggers in terminals the user opens manually.
-if [ -n "$P2V_AUTOSTART" ]; then
-  echo "Live mode detected. Starting P2V Converter..."
-  sudo /usr/local/bin/d2q
+if grep -q "boot=live" /proc/cmdline; then
+  if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+    echo "Live mode detected. Starting P2V Converter..."
+    sudo /usr/local/bin/d2q &
+    sleep 2
+    exit 0
+  fi
 fi
 EOF
 
