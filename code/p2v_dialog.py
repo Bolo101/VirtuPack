@@ -1719,129 +1719,396 @@ class P2VConverterGUI:
             self.root.quit()
             self.root.destroy()
     
-    def generate_session_pdf(self):
-        """Generate PDF from current session logs"""
+    # -------------------------------------------------------------------------
+    #  External-storage helpers (detect / mount / unmount / export)
+    # -------------------------------------------------------------------------
+
+    def _get_external_disks(self) -> list:
+        """
+        Return a list of dicts describing block devices that are NOT the
+        active system disk and NOT a virtual/loop device.
+
+        Each dict has:
+            device       – base device name, e.g. 'sdb'
+            path         – full path, e.g. '/dev/sdb'
+            size         – human-readable size from lsblk
+            model        – model string (may be empty)
+            partitions   – list of partition names, e.g. ['sdb1', 'sdb2']
+            mount_points – dict {partition_name: mount_point or None}
+        """
+        import subprocess as _sp
+        import json as _json
+
+        result = []
+
         try:
-            log_info("Generating session log PDF...")
-            
-            # Disable button during generation
-            self.session_pdf_btn.config(state=tk.DISABLED)
-            self.status_var.set("Generating PDF...")
-            
-            # Generate PDF using the log_handler function
-            pdf_path = generate_session_pdf()
-            
-            # Show success message with option to open location
-            result = messagebox.askyesnocancel("PDF Generated", 
-                                            f"Session log PDF generated successfully!\n\n"
-                                            f"Location: {pdf_path}\n\n"
-                                            f"Would you like to open the containing folder?")
-            
-            if result:  # Yes - open folder
+            raw = _sp.run(
+                ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MODEL,MOUNTPOINT"],
+                stdout=_sp.PIPE, stderr=_sp.PIPE
+            ).stdout.decode()
+            data = _json.loads(raw)
+        except Exception as e:
+            log_error(f"lsblk JSON failed: {e}")
+            return result
+
+        for dev in data.get("blockdevices", []):
+            dev_name = dev.get("name", "")
+            dev_type = dev.get("type", "")
+
+            # Only plain disks
+            if dev_type not in ("disk",):
+                continue
+            # Skip loop devices
+            if dev_name.startswith("loop"):
+                continue
+            # Skip system disk (uses is_system_disk from utils)
+            if is_system_disk(f"/dev/{dev_name}"):
+                continue
+
+            partitions = []
+            mount_map  = {}
+
+            children = dev.get("children") or []
+            if children:
+                for child in children:
+                    p_name = child.get("name", "")
+                    p_type = child.get("type", "")
+                    if p_type == "part":
+                        partitions.append(p_name)
+                        mount_map[p_name] = child.get("mountpoint") or None
+            else:
+                # Disk with no partition table – treat disk itself as target
+                partitions.append(dev_name)
+                mount_map[dev_name] = dev.get("mountpoint") or None
+
+            result.append({
+                "device":       dev_name,
+                "path":         f"/dev/{dev_name}",
+                "size":         dev.get("size", "?"),
+                "model":        (dev.get("model") or "").strip(),
+                "partitions":   partitions,
+                "mount_points": mount_map,
+            })
+
+        return result
+
+    def _mount_partition(self, partition: str) -> str | None:
+        """
+        Mount /dev/<partition> to a unique temp directory.
+        Returns the mount point on success, None on failure.
+        """
+        import tempfile as _tf
+
+        mount_dir = _tf.mkdtemp(prefix="p2v_export_")
+        try:
+            r = subprocess.run(
+                ["mount", f"/dev/{partition}", mount_dir],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            if r.returncode != 0:
+                err = r.stderr.decode().strip()
+                log_error(f"mount /dev/{partition} -> {mount_dir} failed: {err}")
                 try:
-                    import platform
-                    folder_path = os.path.dirname(pdf_path)
-                    
-                    if platform.system() == "Linux":
-                        subprocess.run(["xdg-open", folder_path])
-                    elif platform.system() == "Darwin":  # macOS
-                        subprocess.run(["open", folder_path])
-                    elif platform.system() == "Windows":
-                        subprocess.run(["explorer", folder_path])
-                except FileNotFoundError as e:
-                    log_warning(f"Folder not found: {str(e)}")
-                    messagebox.showerror("Error", f"Could not find folder: {str(e)}")
-                except subprocess.CalledProcessError as e:
-                    log_warning(f"Failed to open folder: {str(e)}")
-                    messagebox.showerror("Error", f"Failed to open folder: {str(e)}")
-                except OSError as e:
-                    log_warning(f"System error opening folder: {str(e)}")
-                    messagebox.showerror("Error", f"System error opening folder: {str(e)}")
-            
-            log_info(f"Session PDF generated: {pdf_path}")
-            
+                    os.rmdir(mount_dir)
+                except OSError:
+                    pass
+                return None
+            log_info(f"Mounted /dev/{partition} at {mount_dir}")
+            return mount_dir
+        except FileNotFoundError:
+            log_error("mount command not found")
+            return None
+        except Exception as e:
+            log_error(f"Unexpected error mounting /dev/{partition}: {e}")
+            return None
+
+    def _unmount_partition(self, mount_dir: str) -> None:
+        """Unmount and remove the temporary mount directory."""
+        try:
+            r = subprocess.run(["umount", mount_dir],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if r.returncode != 0:
+                log_error(f"umount {mount_dir} failed: {r.stderr.decode().strip()}")
+            else:
+                log_info(f"Unmounted {mount_dir}")
+        except Exception as e:
+            log_error(f"Error during umount {mount_dir}: {e}")
+        finally:
+            try:
+                os.rmdir(mount_dir)
+            except OSError:
+                pass
+
+    def _show_disk_picker(self, external_disks: list):
+        """
+        Modal dialog to pick one partition from the list of external disks.
+        Returns (partition_name, already_mounted, existing_mount_point)
+        or (None, False, None) if cancelled.
+        """
+        result = {"partition": None, "already_mounted": False, "mount_point": None}
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Sélectionner le support externe")
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        ttk.Label(
+            dlg,
+            text="Choisissez le support externe pour l'export PDF",
+            font=("Arial", 11, "bold"),
+            padding=(10, 10)
+        ).pack(fill=tk.X)
+
+        ttk.Label(
+            dlg,
+            text="Seuls les disques hors système sont listés.\n"
+                 "Le support sera monté automatiquement si nécessaire.",
+            foreground="#555555",
+            padding=(10, 0, 10, 6)
+        ).pack(fill=tk.X)
+
+        frame = ttk.Frame(dlg, padding=(10, 0, 10, 6))
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        lb = tk.Listbox(frame, width=70, height=12, font=("Courier", 9),
+                        selectmode=tk.SINGLE, activestyle="dotbox")
+        sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=lb.yview)
+        lb.configure(yscrollcommand=sb.set)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Flat list: disk headers (unselectable) + indented partitions
+        entries = []
+        for disk in external_disks:
+            model_str = f" [{disk['model']}]" if disk['model'] else ""
+            lb.insert(tk.END, f"── {disk['path']}  {disk['size']}{model_str}")
+            lb.itemconfig(tk.END, foreground="#333388", background="#eeeeff")
+            entries.append(None)  # disk header – not selectable
+
+            for part in disk["partitions"]:
+                mp = disk["mount_points"].get(part)
+                status = f"monté sur {mp}" if mp else "non monté"
+                lb.insert(tk.END, f"     /dev/{part:<14}  {status}")
+                entries.append((part, mp is not None, mp))
+
+        btn_frame = ttk.Frame(dlg, padding=(10, 6))
+        btn_frame.pack(fill=tk.X)
+
+        def on_select():
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showwarning("Aucune sélection",
+                                       "Veuillez sélectionner une partition.",
+                                       parent=dlg)
+                return
+            entry = entries[sel[0]]
+            if entry is None:
+                messagebox.showwarning("Sélection invalide",
+                                       "Veuillez sélectionner une partition,\n"
+                                       "pas un en-tête de disque.",
+                                       parent=dlg)
+                return
+            result.update({"partition": entry[0],
+                           "already_mounted": entry[1],
+                           "mount_point": entry[2]})
+            dlg.destroy()
+
+        ttk.Button(btn_frame, text="Sélectionner", command=on_select).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Annuler", command=dlg.destroy).pack(side=tk.LEFT, padx=4)
+
+        dlg.update_idletasks()
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        x = self.root.winfo_rootx() + (self.root.winfo_width()  - w) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{x}+{y}")
+        self.root.wait_window(dlg)
+
+        return result["partition"], result["already_mounted"], result["mount_point"]
+
+    def _request_external_export_path(self, default_filename: str):
+        """
+        Full export-path workflow:
+          1. Detect external disks (mounted or not).
+          2. Show the disk picker dialog.
+          3. Mount the chosen partition if not already mounted.
+          4. Open the standard Tk save-as dialog on that mount point.
+          5. Validate the destination is on the external mount.
+          6. Return the chosen path.
+             After the PDF is written, call _finalize_export() to unmount.
+
+        Returns:
+            str | None: Chosen absolute file path, or None if cancelled.
+        """
+        external_disks = self._get_external_disks()
+        if not external_disks:
+            messagebox.showerror(
+                "Aucun support externe détecté",
+                "Aucun disque externe n'a été détecté.\n\n"
+                "Branchez une clé USB, un disque dur externe ou tout autre "
+                "support amovible, puis réessayez."
+            )
+            return None
+
+        partition, already_mounted, existing_mp = self._show_disk_picker(external_disks)
+        if not partition:
+            return None
+
+        # Mount if needed
+        self._pending_unmount_dir = None
+        if already_mounted and existing_mp:
+            mount_point = existing_mp
+        else:
+            self.status_var.set(f"Montage de /dev/{partition}…")
+            self.root.update_idletasks()
+            mount_point = self._mount_partition(partition)
+            if not mount_point:
+                messagebox.showerror(
+                    "Erreur de montage",
+                    f"Impossible de monter /dev/{partition}.\n\n"
+                    "Vérifiez que le support est correctement branché et "
+                    "que le système de fichiers est supporté (ext4, NTFS, FAT32…)."
+                )
+                self.status_var.set("Ready")
+                return None
+            self._pending_unmount_dir = mount_point
+
+        chosen_path = filedialog.asksaveasfilename(
+            title="Exporter le PDF — support externe",
+            initialdir=mount_point,
+            initialfile=default_filename,
+            defaultextension=".pdf",
+            filetypes=[("Fichiers PDF", "*.pdf"), ("Tous les fichiers", "*.*")],
+        )
+
+        if not chosen_path:
+            if self._pending_unmount_dir:
+                self.status_var.set(f"Démontage de /dev/{partition}…")
+                self.root.update_idletasks()
+                self._unmount_partition(self._pending_unmount_dir)
+                self._pending_unmount_dir = None
+            self.status_var.set("Ready")
+            return None
+
+        # Validate the chosen path sits on the external mount point
+        mp_norm   = mount_point.rstrip('/') + '/'
+        path_norm = os.path.abspath(chosen_path).rstrip('/') + '/'
+        if not path_norm.startswith(mp_norm):
+            messagebox.showwarning(
+                "Destination invalide",
+                "Le chemin choisi n'est pas sur le support externe monté.\n"
+                f"Veuillez choisir un emplacement sous : {mount_point}"
+            )
+            if self._pending_unmount_dir:
+                self._unmount_partition(self._pending_unmount_dir)
+                self._pending_unmount_dir = None
+            return None
+
+        return chosen_path
+
+    def _finalize_export(self) -> None:
+        """
+        Unmount the temporary mount directory created during an export (if any).
+        Call this after the PDF has been successfully written.
+        """
+        if getattr(self, '_pending_unmount_dir', None):
+            self.status_var.set("Démontage du support externe…")
+            self.root.update_idletasks()
+            self._unmount_partition(self._pending_unmount_dir)
+            self._pending_unmount_dir = None
+            self.status_var.set("Support externe démonté.")
+            log_info("Support externe démonté avec succès après export.")
+
+    # -------------------------------------------------------------------------
+    #  PDF generation (export to external storage)
+    # -------------------------------------------------------------------------
+
+    def generate_session_pdf(self):
+        """Generate PDF from current session logs and export to external storage."""
+        from datetime import datetime as _dt
+        default_name = f"p2v_session_{_dt.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+
+        export_path = self._request_external_export_path(default_name)
+        if not export_path:
+            log_info("Export PDF session annulé par l'utilisateur.")
+            self.status_var.set("Ready")
+            return
+
+        try:
+            log_info("Génération du PDF de session…")
+            self.session_pdf_btn.config(state=tk.DISABLED)
+            self.status_var.set("Génération du PDF…")
+
+            pdf_path = generate_session_pdf(output_path=export_path)
+
+            self._finalize_export()
+
+            messagebox.showinfo(
+                "PDF Exporté",
+                f"PDF de session exporté avec succès !\n\nEnregistré : {pdf_path}"
+            )
+            log_info(f"PDF de session exporté : {pdf_path}")
+
         except ValueError as e:
             log_warning(f"Cannot generate session PDF: {str(e)}")
-            messagebox.showerror("PDF Generation Error", f"Cannot generate session PDF:\n\n{str(e)}")
+            messagebox.showerror("Erreur PDF", f"Impossible de générer le PDF de session :\n\n{str(e)}")
         except PermissionError as e:
             log_error(f"Permission denied: {str(e)}")
-            messagebox.showerror("Permission Error", f"Permission denied generating PDF:\n\n{str(e)}")
-        except OSError as e:
+            messagebox.showerror("Erreur de permission", f"Permission refusée :\n\n{str(e)}")
+        except (OSError, IOError) as e:
             log_error(f"System error generating PDF: {str(e)}")
-            messagebox.showerror("System Error", f"System error generating PDF:\n\n{str(e)}")
+            messagebox.showerror("Erreur système", f"Erreur système :\n\n{str(e)}")
         except ImportError as e:
             log_error(f"Missing required module: {str(e)}")
-            messagebox.showerror("Module Error", f"Missing required module:\n\n{str(e)}")
+            messagebox.showerror("Module manquant", f"Module requis absent :\n\n{str(e)}")
         except (AttributeError, TypeError) as e:
             log_error(f"Internal error generating PDF: {str(e)}")
-            messagebox.showerror("Internal Error", f"Internal error generating PDF:\n\n{str(e)}")
+            messagebox.showerror("Erreur interne", f"Erreur interne :\n\n{str(e)}")
         finally:
-            # Re-enable button and reset status
             self.session_pdf_btn.config(state=tk.NORMAL)
             self.status_var.set("Ready")
-        
+
     def generate_log_file_pdf(self):
-        """Generate PDF from complete log file"""
+        """Generate PDF from complete log file and export to external storage."""
+        from datetime import datetime as _dt
+        default_name = f"p2v_complete_log_{_dt.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+
+        export_path = self._request_external_export_path(default_name)
+        if not export_path:
+            log_info("Export PDF journal complet annulé par l'utilisateur.")
+            self.status_var.set("Ready")
+            return
+
         try:
-            log_info("Generating complete log file PDF...")
-            
-            # Disable button during generation
+            log_info("Génération du PDF journal complet…")
             self.file_pdf_btn.config(state=tk.DISABLED)
-            self.status_var.set("Generating PDF...")
-            
-            # Generate PDF using the log_handler function
-            pdf_path = generate_log_file_pdf()
-            
-            # Show success message with option to open location
-            result = messagebox.askyesnocancel("PDF Generated", 
-                                             f"Complete log file PDF generated successfully!\n\n"
-                                             f"Location: {pdf_path}\n\n"
-                                             f"Would you like to open the containing folder?")
-            
-            if result:  # Yes - open folder
-                try:
-                    import subprocess
-                    import platform
-                    folder_path = os.path.dirname(pdf_path)
-                    
-                    if platform.system() == "Linux":
-                        subprocess.run(["xdg-open", folder_path])
-                    elif platform.system() == "Darwin":  # macOS
-                        subprocess.run(["open", folder_path])
-                    elif platform.system() == "Windows":
-                        subprocess.run(["explorer", folder_path])
-                except (OSError, subprocess.CalledProcessError, FileNotFoundError) as e:
-                    log_warning(f"Could not open folder: {str(e)}")
-            
-            log_info(f"Complete log PDF generated: {pdf_path}")
-            
+            self.status_var.set("Génération du PDF…")
+
+            pdf_path = generate_log_file_pdf(output_path=export_path)
+
+            self._finalize_export()
+
+            messagebox.showinfo(
+                "PDF Exporté",
+                f"PDF journal complet exporté avec succès !\n\nEnregistré : {pdf_path}"
+            )
+            log_info(f"PDF journal complet exporté : {pdf_path}")
+
         except FileNotFoundError as e:
-            log_warning(f"Cannot generate log file PDF: {str(e)}")
-            messagebox.showwarning("Log File Not Found", 
-                                 f"Cannot generate PDF:\n\n{str(e)}")
+            log_warning(f"Log file not found: {str(e)}")
+            messagebox.showwarning("Fichier introuvable", f"Fichier journal introuvable :\n\n{str(e)}")
         except (PermissionError, OSError, IOError) as e:
-            error_msg = f"Failed to generate log file PDF: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("PDF Generation Error", 
-                               f"Failed to generate PDF:\n\n{error_msg}")
+            log_error(f"Failed to generate log file PDF: {str(e)}")
+            messagebox.showerror("Erreur PDF", f"Échec de génération du PDF :\n\n{str(e)}")
         except UnicodeDecodeError as e:
-            error_msg = f"Text encoding error in log file: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("PDF Generation Error", 
-                               f"Text encoding error:\n\n{error_msg}")
+            log_error(f"Text encoding error in log file: {str(e)}")
+            messagebox.showerror("Erreur d'encodage", f"Erreur d'encodage dans le journal :\n\n{str(e)}")
         except ImportError as e:
-            error_msg = f"Missing required module for PDF generation: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("PDF Generation Error", 
-                               f"Missing dependency:\n\n{error_msg}")
+            log_error(f"Missing required module: {str(e)}")
+            messagebox.showerror("Module manquant", f"Module requis absent :\n\n{str(e)}")
         except (AttributeError, TypeError, KeyError, ValueError) as e:
-            error_msg = f"Unexpected error generating log file PDF: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("PDF Generation Error", 
-                               f"Unexpected error:\n\n{error_msg}")
-        
+            log_error(f"Unexpected error generating log file PDF: {str(e)}")
+            messagebox.showerror("Erreur inattendue", f"Erreur inattendue :\n\n{str(e)}")
         finally:
-            # Re-enable button and reset status
             self.file_pdf_btn.config(state=tk.NORMAL)
             self.status_var.set("Ready")
 
