@@ -174,6 +174,18 @@ def get_all_log_files() -> List[str]:
     return files
 
 
+def purge_logs() -> None:
+    """Delete all log files (current + rotated). Reserved for admin use."""
+    for f in get_all_log_files():
+        try:
+            os.remove(f)
+        except OSError as e:
+            _logger.error(f"Cannot delete {f}: {e}")
+    # Re-open a fresh file handler
+    _setup_file_handler()
+    log_info("Logs purged by administrator.")
+
+
 # ── PDF generation (stdlib only) ───────────────────────────────────────────────
 def generate_session_pdf(output_path: str = None) -> str:
     """Generate a PDF from the current session logs. Returns path to PDF."""

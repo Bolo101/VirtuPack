@@ -10,10 +10,11 @@ from tkinter import ttk, messagebox, filedialog
 import os
 import subprocess
 import threading
-from log_handler import (log_info, log_error, log_warning, generate_session_pdf,
-generate_log_file_pdf, session_start, session_end,
-log_application_exit, get_current_session_logs,
-is_session_active)
+from log_handler import (log_info, log_error, log_warning,
+                         session_start, session_end,
+                         log_application_exit, get_current_session_logs,
+                         is_session_active)
+from admin_interface import open_admin_panel
 from utils import (get_disk_list, format_bytes,get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 from stats_manager import get_conversion_count, record_conversion
@@ -216,40 +217,12 @@ class P2VConverterGUI:
         button_frame = ttk.Frame(header_frame)
         button_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
         
-        # Determine button width based on screen size
-        screen_width = self.root.winfo_screenwidth()
-        if screen_width < 1024:
-            btn_width = 12
-        elif screen_width < 1400:
-            btn_width = 15
-        else:
-            btn_width = 18
-        
-        # Print session log button
-        self.session_pdf_btn = ttk.Button(button_frame, 
-                                        text="Session Log",
-                                        command=self.generate_session_pdf,
-                                        width=btn_width)
-        self.session_pdf_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
-        
-        # Print complete log file button
-        self.file_pdf_btn = ttk.Button(button_frame, 
-                                    text="Complete Log",
-                                    command=self.generate_log_file_pdf,
-                                    width=btn_width)
-        self.file_pdf_btn.grid(row=0, column=1, padx=(0, 5), sticky="ew")
-        
-        # Exit button
-        self.exit_btn = ttk.Button(button_frame, 
-                                text="Exit",
-                                command=self.exit_application,
-                                width=10)
-        self.exit_btn.grid(row=0, column=2, padx=(0, 5), sticky="ew")
-
-        # Poweroff button
-        self.poweroff_btn = ttk.Button(button_frame, text="Power Off",
-                                    command=self.power_off_system, width=10)
-        self.poweroff_btn.grid(row=0, column=3, sticky="ew")
+        # Administration button – PDF export, log management, shutdown, etc.
+        self.admin_btn = ttk.Button(button_frame,
+                                    text="⚙  Administration",
+                                    command=lambda: open_admin_panel(self.root),
+                                    width=20)
+        self.admin_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
         
         # Add separator
         separator = ttk.Separator(self.root, orient='horizontal')
@@ -1014,106 +987,6 @@ class P2VConverterGUI:
         else:
             log_info("All prerequisites are available")
 
-    def power_off_system(self):
-        """Power off the system after confirmation."""
-        try:
-            # Check if any operation is running
-            if self.operation_running:
-                messagebox.showwarning(
-                    "Operation in Progress",
-                    "Cannot power off while an operation is running.\n\n"
-                    "Please stop the current operation first."
-                )
-                return
-            
-            # Final confirmation
-            result = messagebox.askyesno(
-                "Power Off Confirmation",
-                "Are you sure you want to power off the system?\n\n"
-                "This will:\n"
-                "• Close all applications\n"
-                "• Save session logs\n"
-                "• Shut down the system\n\n"
-                "Continue with power off?"
-            )
-            
-            if not result:
-                log_info("Power off cancelled by user")
-                return
-            
-            log_info("System power off requested by user")
-            
-            # End session before shutdown
-            try:
-                if is_session_active():
-                    log_info("Ending session before system power off")
-                    session_end()
-            except (AttributeError, IOError, OSError, KeyError, ValueError) as e:
-                log_warning(f"Error ending session before power off: {str(e)}")
-            
-            # Show final message
-            self.status_var.set("Shutting down system...")
-            self.root.update_idletasks()
-            
-            # Attempt to power off using various methods
-            try:
-                # Try systemctl first (systemd systems)
-                subprocess.run(
-                    ['systemctl', 'poweroff'],
-                    check=True,
-                    timeout=5
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                try:
-                    # Try shutdown command
-                    subprocess.run(
-                        ['shutdown', '-h', 'now'],
-                        check=True,
-                        timeout=5
-                    )
-                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                    try:
-                        # Try poweroff command directly
-                        subprocess.run(
-                            ['poweroff'],
-                            check=True,
-                            timeout=5
-                        )
-                    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                        # All methods failed
-                        error_msg = (
-                            "Failed to power off the system.\n\n"
-                            "Attempted methods:\n"
-                            "• systemctl poweroff\n"
-                            "• shutdown -h now\n"
-                            "• poweroff\n\n"
-                            "Please run with sudo or use system power button."
-                        )
-                        log_error("All power off methods failed")
-                        messagebox.showerror("Power Off Failed", error_msg)
-                        return
-            
-        except PermissionError as e:
-            error_msg = f"Permission denied: {str(e)}\n\nPower off requires root/administrator privileges."
-            log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
-        except OSError as e:
-            error_msg = f"System error during power off: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
-        except subprocess.SubprocessError as e:
-            error_msg = f"Command execution error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
-        except tk.TclError as e:
-            error_msg = f"GUI error during power off: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("GUI Error", error_msg)
-        except (AttributeError, TypeError) as e:
-            error_msg = f"Internal error during power off: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Internal Error", error_msg)
-    
     def update_log_from_session(self):
         """Update log display from session logs"""
         try:
@@ -1744,11 +1617,10 @@ class P2VConverterGUI:
             self.root.quit()
             self.root.destroy()
     
-    # -------------------------------------------------------------------------
-    #  External-storage helpers (detect / mount / unmount / export)
-    # -------------------------------------------------------------------------
+    # (External-storage helpers and PDF/log export methods have been moved
+    #  to admin_interface.py and are accessible via the Administration panel.)
 
-    def _get_external_disks(self) -> list:
+    def _get_external_disks(self) -> list:  # kept for internal use by other tools
         """
         Return a list of dicts describing block devices that are NOT the
         active system disk and NOT a virtual/loop device.
@@ -1864,278 +1736,6 @@ class P2VConverterGUI:
             except OSError:
                 pass
 
-    def _show_disk_picker(self, external_disks: list):
-        """
-        Modal dialog to pick one partition from the list of external disks.
-        Returns (partition_name, already_mounted, existing_mount_point)
-        or (None, False, None) if cancelled.
-        """
-        result = {"partition": None, "already_mounted": False, "mount_point": None}
-
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Sélectionner le support externe")
-        dlg.grab_set()
-        dlg.resizable(False, False)
-
-        ttk.Label(
-            dlg,
-            text="Choisissez le support externe pour l'export PDF",
-            font=("Arial", 11, "bold"),
-            padding=(10, 10)
-        ).pack(fill=tk.X)
-
-        ttk.Label(
-            dlg,
-            text="Seuls les disques hors système sont listés.\n"
-                 "Le support sera monté automatiquement si nécessaire.",
-            foreground="#555555",
-            padding=(10, 0, 10, 6)
-        ).pack(fill=tk.X)
-
-        frame = ttk.Frame(dlg, padding=(10, 0, 10, 6))
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        lb = tk.Listbox(frame, width=70, height=12, font=("Courier", 9),
-                        selectmode=tk.SINGLE, activestyle="dotbox")
-        sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=lb.yview)
-        lb.configure(yscrollcommand=sb.set)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Flat list: disk headers (unselectable) + indented partitions
-        entries = []
-        for disk in external_disks:
-            model_str = f" [{disk['model']}]" if disk['model'] else ""
-            lb.insert(tk.END, f"── {disk['path']}  {disk['size']}{model_str}")
-            lb.itemconfig(tk.END, foreground="#333388", background="#eeeeff")
-            entries.append(None)  # disk header – not selectable
-
-            for part in disk["partitions"]:
-                mp = disk["mount_points"].get(part)
-                status = f"monté sur {mp}" if mp else "non monté"
-                lb.insert(tk.END, f"     /dev/{part:<14}  {status}")
-                entries.append((part, mp is not None, mp))
-
-        btn_frame = ttk.Frame(dlg, padding=(10, 6))
-        btn_frame.pack(fill=tk.X)
-
-        def on_select():
-            sel = lb.curselection()
-            if not sel:
-                messagebox.showwarning("Aucune sélection",
-                                       "Veuillez sélectionner une partition.",
-                                       parent=dlg)
-                return
-            entry = entries[sel[0]]
-            if entry is None:
-                messagebox.showwarning("Sélection invalide",
-                                       "Veuillez sélectionner une partition,\n"
-                                       "pas un en-tête de disque.",
-                                       parent=dlg)
-                return
-            result.update({"partition": entry[0],
-                           "already_mounted": entry[1],
-                           "mount_point": entry[2]})
-            dlg.destroy()
-
-        ttk.Button(btn_frame, text="Sélectionner", command=on_select).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="Annuler", command=dlg.destroy).pack(side=tk.LEFT, padx=4)
-
-        dlg.update_idletasks()
-        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        x = self.root.winfo_rootx() + (self.root.winfo_width()  - w) // 2
-        y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
-        dlg.geometry(f"+{x}+{y}")
-        self.root.wait_window(dlg)
-
-        return result["partition"], result["already_mounted"], result["mount_point"]
-
-    def _request_external_export_path(self, default_filename: str):
-        """
-        Full export-path workflow:
-          1. Detect external disks (mounted or not).
-          2. Show the disk picker dialog.
-          3. Mount the chosen partition if not already mounted.
-          4. Open the standard Tk save-as dialog on that mount point.
-          5. Validate the destination is on the external mount.
-          6. Return the chosen path.
-             After the PDF is written, call _finalize_export() to unmount.
-
-        Returns:
-            str | None: Chosen absolute file path, or None if cancelled.
-        """
-        external_disks = self._get_external_disks()
-        if not external_disks:
-            messagebox.showerror(
-                "Aucun support externe détecté",
-                "Aucun disque externe n'a été détecté.\n\n"
-                "Branchez une clé USB, un disque dur externe ou tout autre "
-                "support amovible, puis réessayez."
-            )
-            return None
-
-        partition, already_mounted, existing_mp = self._show_disk_picker(external_disks)
-        if not partition:
-            return None
-
-        # Mount if needed
-        self._pending_unmount_dir = None
-        if already_mounted and existing_mp:
-            mount_point = existing_mp
-        else:
-            self.status_var.set(f"Montage de /dev/{partition}…")
-            self.root.update_idletasks()
-            mount_point = self._mount_partition(partition)
-            if not mount_point:
-                messagebox.showerror(
-                    "Erreur de montage",
-                    f"Impossible de monter /dev/{partition}.\n\n"
-                    "Vérifiez que le support est correctement branché et "
-                    "que le système de fichiers est supporté (ext4, NTFS, FAT32…)."
-                )
-                self.status_var.set("Ready")
-                return None
-            self._pending_unmount_dir = mount_point
-
-        chosen_path = filedialog.asksaveasfilename(
-            title="Exporter le PDF — support externe",
-            initialdir=mount_point,
-            initialfile=default_filename,
-            defaultextension=".pdf",
-            filetypes=[("Fichiers PDF", "*.pdf"), ("Tous les fichiers", "*.*")],
-        )
-
-        if not chosen_path:
-            if self._pending_unmount_dir:
-                self.status_var.set(f"Démontage de /dev/{partition}…")
-                self.root.update_idletasks()
-                self._unmount_partition(self._pending_unmount_dir)
-                self._pending_unmount_dir = None
-            self.status_var.set("Ready")
-            return None
-
-        # Validate the chosen path sits on the external mount point
-        mp_norm   = mount_point.rstrip('/') + '/'
-        path_norm = os.path.abspath(chosen_path).rstrip('/') + '/'
-        if not path_norm.startswith(mp_norm):
-            messagebox.showwarning(
-                "Destination invalide",
-                "Le chemin choisi n'est pas sur le support externe monté.\n"
-                f"Veuillez choisir un emplacement sous : {mount_point}"
-            )
-            if self._pending_unmount_dir:
-                self._unmount_partition(self._pending_unmount_dir)
-                self._pending_unmount_dir = None
-            return None
-
-        return chosen_path
-
-    def _finalize_export(self) -> None:
-        """
-        Unmount the temporary mount directory created during an export (if any).
-        Call this after the PDF has been successfully written.
-        """
-        if getattr(self, '_pending_unmount_dir', None):
-            self.status_var.set("Démontage du support externe…")
-            self.root.update_idletasks()
-            self._unmount_partition(self._pending_unmount_dir)
-            self._pending_unmount_dir = None
-            self.status_var.set("Support externe démonté.")
-            log_info("Support externe démonté avec succès après export.")
-
-    # -------------------------------------------------------------------------
-    #  PDF generation (export to external storage)
-    # -------------------------------------------------------------------------
-
-    def generate_session_pdf(self):
-        """Generate PDF from current session logs and export to external storage."""
-        from datetime import datetime as _dt
-        default_name = f"p2v_session_{_dt.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-
-        export_path = self._request_external_export_path(default_name)
-        if not export_path:
-            log_info("Export PDF session annulé par l'utilisateur.")
-            self.status_var.set("Ready")
-            return
-
-        try:
-            log_info("Génération du PDF de session…")
-            self.session_pdf_btn.config(state=tk.DISABLED)
-            self.status_var.set("Génération du PDF…")
-
-            pdf_path = generate_session_pdf(output_path=export_path)
-
-            self._finalize_export()
-
-            messagebox.showinfo(
-                "PDF Exporté",
-                f"PDF de session exporté avec succès !\n\nEnregistré : {pdf_path}"
-            )
-            log_info(f"PDF de session exporté : {pdf_path}")
-
-        except ValueError as e:
-            log_warning(f"Cannot generate session PDF: {str(e)}")
-            messagebox.showerror("Erreur PDF", f"Impossible de générer le PDF de session :\n\n{str(e)}")
-        except PermissionError as e:
-            log_error(f"Permission denied: {str(e)}")
-            messagebox.showerror("Erreur de permission", f"Permission refusée :\n\n{str(e)}")
-        except (OSError, IOError) as e:
-            log_error(f"System error generating PDF: {str(e)}")
-            messagebox.showerror("Erreur système", f"Erreur système :\n\n{str(e)}")
-        except ImportError as e:
-            log_error(f"Missing required module: {str(e)}")
-            messagebox.showerror("Module manquant", f"Module requis absent :\n\n{str(e)}")
-        except (AttributeError, TypeError) as e:
-            log_error(f"Internal error generating PDF: {str(e)}")
-            messagebox.showerror("Erreur interne", f"Erreur interne :\n\n{str(e)}")
-        finally:
-            self.session_pdf_btn.config(state=tk.NORMAL)
-            self.status_var.set("Ready")
-
-    def generate_log_file_pdf(self):
-        """Generate PDF from complete log file and export to external storage."""
-        from datetime import datetime as _dt
-        default_name = f"p2v_complete_log_{_dt.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-
-        export_path = self._request_external_export_path(default_name)
-        if not export_path:
-            log_info("Export PDF journal complet annulé par l'utilisateur.")
-            self.status_var.set("Ready")
-            return
-
-        try:
-            log_info("Génération du PDF journal complet…")
-            self.file_pdf_btn.config(state=tk.DISABLED)
-            self.status_var.set("Génération du PDF…")
-
-            pdf_path = generate_log_file_pdf(output_path=export_path)
-
-            self._finalize_export()
-
-            messagebox.showinfo(
-                "PDF Exporté",
-                f"PDF journal complet exporté avec succès !\n\nEnregistré : {pdf_path}"
-            )
-            log_info(f"PDF journal complet exporté : {pdf_path}")
-
-        except FileNotFoundError as e:
-            log_warning(f"Log file not found: {str(e)}")
-            messagebox.showwarning("Fichier introuvable", f"Fichier journal introuvable :\n\n{str(e)}")
-        except (PermissionError, OSError, IOError) as e:
-            log_error(f"Failed to generate log file PDF: {str(e)}")
-            messagebox.showerror("Erreur PDF", f"Échec de génération du PDF :\n\n{str(e)}")
-        except UnicodeDecodeError as e:
-            log_error(f"Text encoding error in log file: {str(e)}")
-            messagebox.showerror("Erreur d'encodage", f"Erreur d'encodage dans le journal :\n\n{str(e)}")
-        except ImportError as e:
-            log_error(f"Missing required module: {str(e)}")
-            messagebox.showerror("Module manquant", f"Module requis absent :\n\n{str(e)}")
-        except (AttributeError, TypeError, KeyError, ValueError) as e:
-            log_error(f"Unexpected error generating log file PDF: {str(e)}")
-            messagebox.showerror("Erreur inattendue", f"Erreur inattendue :\n\n{str(e)}")
-        finally:
-            self.file_pdf_btn.config(state=tk.NORMAL)
-            self.status_var.set("Ready")
 
 
 def main():
