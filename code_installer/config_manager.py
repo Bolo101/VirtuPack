@@ -7,7 +7,6 @@ import hmac
 import json
 import os
 import secrets
-import sys
 
 CONFIG_DIR  = "/etc/p2v_converter"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "admin.conf")
