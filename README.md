@@ -28,16 +28,58 @@ Transform physical disks into **qcow2 virtual machine images** ready for any hyp
 
 ***
 
+## Live vs Installer mode
+Pre-built 64 bits ISO comes with two boot modes integrated.
+
+### Live mode
+Live mode is advised when virtualizing a machine by directly booting on the target system via a bootable USB key containing the ISO. The virtualization process runs entirely from the live environment without any installation required on the host machine.
+
+Users have access to all features, including the ability to export logs to an external storage device before shutting down the session.
+
+<div style="display: flex; align-items: center;">
+  <img src="./img/gui.png" alt="GUI" width="600" style="margin-right: 20px;">
+</div>
+
+### Installer mode
+Installer mode is designed for use as a **fixed virtualization workstation**, where physical drives removed from their original machines are connected directly to the station for virtualization. This mode is intended for a permanent, dedicated setup rather than on-site interventions.
+
+All features are available to the user, with the exception of the following operations which are **restricted to administrator access (password protected)**:
+
+| Protected action | Reason |
+|---|---|
+| Log export from the station | Prevent unauthorized data extraction |
+| Log purge | Preserve audit trail integrity |
+| System restart & shutdown | Ensure workstation availability |
+| Exiting kiosk mode | Maintain controlled environment |
+
+<div style="display: flex; align-items: center;">
+  <img src="./img/gui_installer.png" alt="GUI_installer" width="600" style="margin-right: 20px;">
+</div>
+
+### Quick comparison
+
+| | Live mode | Installer mode |
+|---|---|---|
+| **Use case** | On-site, boot on target machine | Fixed workstation, attach external drives |
+| **Installation required** | No | Yes |
+| **Log export** | ✅ User | 🔒 Admin only |
+| **Log purge** | ✅ User | 🔒 Admin only |
+| **Restart / Shutdown** | ✅ User | 🔒 Admin only |
+| **Exit kiosk mode** | ✅ User | 🔒 Admin only |
+| **Virtualize disk** | ✅ User | ✅ User |
+| **Resize VM filesystem** | ✅ User | ✅ User |
+| **Convert VM image format** | ✅ User | ✅ User |
+| **Cipher VM image** | ✅ User | ✅ User |
+| **Start VM on Qemu** | ✅ User | ✅ User |
+
 ## Quick Start
 
 ### Download Pre-built ISO (Recommended)
-**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v1.0)**
+**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v2.0)**
 
   ```txt
-  f64933b9c944f753f81999a0eea20a238c808e6cac98ca85db6b8f43a5be5ae6  p2vConverter-v1.0-KDE-32bits.iso
-  396e79b34c3a8961b5b2652ec41b63ec1b80b8654a10130cb4a8d4d557318fd4  p2vConverter-v1.0-KDE-64bits.iso
-  b16b2db810c8dd476891bbd70a109748647b3edf2567c47b931c249b9fea4e6f  p2vConverter-v1.0-XFCE-32bits.iso
-  e8b3b251ddff4f468c0404a77e77f5c13265fa5cdcae33911b926494fbcb335d  p2vConverter-v1.0-XFCE-64bits.iso
+  - p2vConverter-v2.0-64bits.iso : 1010839b032ae2066a894e581ae1f76daf32b440c855b86f4912eb2b0956a583
+  - p2vConverter-v2.0-32bits.iso : 880f6c004b712f0b35a5291b56cd0012869c2200f13092633d3769818265da6e
   ```
 
 Select ISO version you need, 32 bits or 64 bits, XFCE (lighter) or KDE. 

@@ -1,0 +1,1391 @@
+import tkinter as tk
+import os
+import subprocess
+import tempfile
+import json
+import shutil
+import time
+import re
+from pathlib import Path
+
+
+
+class QCow2CloneResizer:
+    """Secure version using cloning instead of direct resizing"""
+    
+    @staticmethod
+    def check_tools():
+        """Check if required tools are available"""
+        essential_tools = {
+            'qemu-img': 'qemu-utils',
+            'parted': 'parted',
+            'gparted': 'gparted',
+            'dd': 'coreutils',
+        }
+        
+        missing = []
+        optional = []
+        for tool, package in essential_tools.items():
+            if not shutil.which(tool):
+                if tool in ['partclone.ext4']:
+                    optional.append(f"{tool} ({package}) - recommended")
+                else:
+                    missing.append(f"{tool} ({package})")
+        
+        return missing, optional
+    
+    @staticmethod
+    def compress_qcow2_image(image_path, progress_callback=None, delete_original_source=None, process_tracker=None):
+        """Compress QCOW2 image with detailed progress updates (0-100%)
+        
+        Args:
+            image_path: Path to the image to compress  
+            progress_callback: Optional progress callback function
+            delete_original_source: NOT USED - kept for compatibility
+            process_tracker: Optional dict/object to track the subprocess for external termination
+        """
+        temp_compressed_path = f"{image_path}.compressed.tmp"
+        process = None
+        
+        try:
+            if progress_callback:
+                progress_callback(0, "Preparing compression...")
+            
+            print(f"Starting compression of: {image_path}")
+            
+            # Get original image info
+            original_info = QCow2CloneResizer.get_image_info(image_path)
+            original_file_size = os.path.getsize(image_path)
+            
+            print(f"Original image stats:")
+            print(f"  Virtual size: {QCow2CloneResizer.format_size(original_info['virtual_size'])}")
+            print(f"  File size: {QCow2CloneResizer.format_size(original_file_size)}")
+            
+            if progress_callback:
+                progress_callback(2, "Creating temporary file...")
+            
+            # Remove temp file if it exists
+            if os.path.exists(temp_compressed_path):
+                try:
+                    os.remove(temp_compressed_path)
+                except (FileNotFoundError, PermissionError, OSError) as e:
+                    print(f"Warning: Could not remove existing temp file: {e}")
+            
+            if progress_callback:
+                progress_callback(5, "Starting compression...")
+            
+            # Compression command
+            cmd = [
+                'qemu-img', 'convert',
+                '-f', 'qcow2',
+                '-O', 'qcow2',
+                '-c',  # Enable compression
+                '-o', 'compression_type=zlib,cluster_size=65536',
+                '-p',  # Show progress
+                image_path,
+                temp_compressed_path
+            ]
+            
+            print(f"Compressing image: {' '.join(cmd)}")
+            
+            # Execute with progress monitoring
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            # Track the process for external termination
+            if process_tracker is not None:
+                process_tracker.compression_process = process
+            
+            last_update_time = time.time()
+            update_interval = 0.5
+            
+            # Monitor compression progress
+            for line in process.stdout:
+                line = line.strip()
+                if line and '%' in line:
+                    current_time = time.time()
+                    if current_time - last_update_time >= update_interval:
+                        try:
+                            match = re.search(r'\((\d+(?:\.\d+)?)/100%\)', line)
+                            if match:
+                                percent = float(match.group(1))
+                                scaled_progress = 5 + int(percent * 0.85)
+                                
+                                if progress_callback:
+                                    progress_callback(scaled_progress, f"Compressing: {int(percent)}%")
+                                
+                                last_update_time = current_time
+                        except (ValueError, IndexError, AttributeError):
+                            pass
+            
+            return_code = process.wait()
+            
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, cmd)
+            
+            if progress_callback:
+                progress_callback(92, "Compression complete, verifying...")
+            
+            # Verify compressed image was created
+            if not os.path.exists(temp_compressed_path):
+                raise FileNotFoundError(f"Compressed image was not created: {temp_compressed_path}")
+            
+            compressed_file_size = os.path.getsize(temp_compressed_path)
+            
+            print(f"Compressed image stats:")
+            print(f"  File size: {QCow2CloneResizer.format_size(compressed_file_size)}")
+            
+            # Calculate compression ratio
+            compression_ratio = (original_file_size - compressed_file_size) / original_file_size * 100 if original_file_size > 0 else 0
+            
+            print(f"Compression results:")
+            print(f"  Original file size: {QCow2CloneResizer.format_size(original_file_size)}")
+            print(f"  Compressed file size: {QCow2CloneResizer.format_size(compressed_file_size)}")
+            print(f"  Space saved: {QCow2CloneResizer.format_size(original_file_size - compressed_file_size)}")
+            print(f"  Compression ratio: {compression_ratio:.1f}%")
+            
+            if progress_callback:
+                progress_callback(95, "Checking compression savings...")
+            
+            # Check if compression is worth it (more than 1MB savings)
+            min_savings = 1024 * 1024
+            if compressed_file_size >= (original_file_size - min_savings):
+                print(f"WARNING: Compression saved less than 1MB")
+                QCow2CloneResizer._force_remove_file(temp_compressed_path)
+                
+                if progress_callback:
+                    progress_callback(100, "Compression skipped (minimal savings)")
+                
+                return {
+                    'original_size': original_file_size,
+                    'compressed_size': original_file_size,
+                    'space_saved': 0,
+                    'compression_ratio': 0.0,
+                }
+            
+            if progress_callback:
+                progress_callback(97, "Replacing original with compressed version...")
+            
+            print(f"Replacing original with compressed version...")
+            
+            # Windows-safe file replacement with retries
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    os.remove(image_path)
+                    os.rename(temp_compressed_path, image_path)
+                    print(f"Image replaced successfully")
+                    break
+                except (PermissionError, FileNotFoundError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        print(f"Attempt {attempt + 1} failed: {e}")
+                        time.sleep(2)
+                    else:
+                        raise
+            
+            print(f"Image compression completed and replaced in place")
+            
+            if progress_callback:
+                progress_callback(100, "Compression complete")
+            
+            return {
+                'original_size': original_file_size,
+                'compressed_size': compressed_file_size,
+                'space_saved': original_file_size - compressed_file_size,
+                'compression_ratio': compression_ratio,
+            }
+            
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR - compression command failed: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
+            raise
+        except subprocess.TimeoutExpired as e:
+            print(f"ERROR - compression timed out: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
+            raise
+        except FileNotFoundError as e:
+            print(f"ERROR - file not found during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
+            raise
+        except PermissionError as e:
+            print(f"ERROR - permission denied during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
+            raise
+        except OSError as e:
+            print(f"ERROR - OS error during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
+            raise
+        except json.JSONDecodeError as e:
+            print(f"ERROR - JSON parsing error during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
+            raise
+        except ValueError as e:
+            print(f"ERROR - invalid value during compression: {e}")
+            QCow2CloneResizer._force_remove_file(temp_compressed_path)
+            raise
+        finally:
+            # Clear process reference
+            if process_tracker is not None:
+                process_tracker.compression_process = None
+
+    @staticmethod
+    def _force_remove_file(file_path):
+        """Force remove a file with retries (for Windows file locking)
+        
+        Gère le cas où le fichier a déjà été supprimé par qemu-img lors de son interruption
+        """
+        if not file_path:
+            return True
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            print(f"✓ File already cleaned up: {Path(file_path).name}")
+            return True
+        
+        print(f"\nCleaning up temporary file: {file_path}")
+        max_retries = 5
+        
+        for attempt in range(max_retries):
+            try:
+                os.remove(file_path)
+                print(f"✓ Temporary file successfully removed: {Path(file_path).name}")
+                return True
+            except FileNotFoundError:
+                print(f"✓ File already cleaned up: {Path(file_path).name}")
+                return True
+            except (PermissionError, OSError) as e:
+                if attempt < max_retries - 1:
+                    print(f"  Attempt {attempt + 1}/{max_retries}: File locked, retrying in 1 second...")
+                    time.sleep(1)
+                else:
+                    print(f"✗ Could not remove temporary file after {max_retries} attempts: {e}")
+                    return False
+        
+        return False
+        
+    @staticmethod
+    def parse_size(size_str):
+        """Parse size string like '20G', '512M' to bytes"""
+        if isinstance(size_str, (int, float)):
+            return int(size_str)
+        
+        size_str = str(size_str).strip().upper()
+        
+        # Match pattern like "20G", "512M", "1.5T"
+        match = re.match(r'^(\d+(?:\.\d+)?)\s*([KMGT]?)B?$', size_str)
+        if not match:
+            raise ValueError(f"Invalid size format: {size_str}")
+        
+        number = float(match.group(1))
+        unit = match.group(2)
+        
+        multipliers = {'': 1, 'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4}
+        return int(number * multipliers[unit])
+    
+    @staticmethod
+    def format_size(bytes_val):
+        """Format bytes to human readable"""
+        if bytes_val == 0:
+            return "0 B"
+        
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_val < 1024:
+                return f"{bytes_val:.1f} {unit}"
+            bytes_val /= 1024
+        return f"{bytes_val:.1f} PB"
+    
+    @staticmethod
+    def get_image_info(image_path):
+        """Get QCOW2 image information"""
+        try:
+            # First check if file exists and is readable
+            if not os.path.exists(image_path):
+                raise FileNotFoundError(f"Image file does not exist: {image_path}")
+            
+            if not os.access(image_path, os.R_OK):
+                raise PermissionError(f"Image file is not readable (check permissions): {image_path}")
+            
+            file_size = os.path.getsize(image_path)
+            print(f"Image file exists: {image_path} ({QCow2CloneResizer.format_size(file_size)})")
+            
+            result = subprocess.run(
+                ['qemu-img', 'info', '--output=json', image_path],
+                capture_output=True, text=True, check=True, timeout=30
+            )
+            data = json.loads(result.stdout)
+            
+            return {
+                'virtual_size': data.get('virtual-size', 0),
+                'actual_size': data.get('actual-size', 0),
+                'format': data.get('format', 'unknown'),
+                'compressed': data.get('compressed', False)
+            }
+        except subprocess.CalledProcessError as e:
+            error_msg = f"qemu-img failed to analyze image: {image_path}\n"
+            error_msg += f"Return code: {e.returncode}\n"
+            if e.stdout:
+                error_msg += f"Stdout: {e.stdout}\n"
+            if e.stderr:
+                error_msg += f"Stderr: {e.stderr}\n"
+            
+            # Try to get more info with non-JSON output
+            try:
+                fallback_result = subprocess.run(
+                    ['qemu-img', 'info', image_path],
+                    capture_output=True, text=True, timeout=30, check=False
+                )
+                if fallback_result.stdout:
+                    error_msg += f"Fallback info output:\n{fallback_result.stdout}\n"
+                if fallback_result.stderr:
+                    error_msg += f"Fallback info stderr:\n{fallback_result.stderr}\n"
+            except subprocess.TimeoutExpired as fallback_timeout:
+                error_msg += f"Fallback check also timed out: {fallback_timeout}\n"
+            except subprocess.CalledProcessError as fallback_e:
+                error_msg += f"Fallback check also failed: {fallback_e}\n"
+            except FileNotFoundError as fallback_file:
+                error_msg += f"qemu-img command not found in fallback: {fallback_file}\n"
+            except OSError as fallback_os:
+                error_msg += f"OS error in fallback check: {fallback_os}\n"
+            
+            print(f"ERROR: {error_msg}")
+            raise RuntimeError(error_msg)
+        except subprocess.TimeoutExpired:
+            raise subprocess.TimeoutExpired(['qemu-img', 'info'], 30, 
+                f"qemu-img timed out while analyzing image: {image_path}")
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(f"Failed to parse qemu-img JSON output", e.doc, e.pos)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Image file not found: {image_path}")
+        except PermissionError:
+            raise PermissionError(f"Permission denied accessing image: {image_path}")
+        except OSError as e:
+            raise OSError(f"OS error accessing image {image_path}: {e}")
+    
+    @staticmethod
+    def setup_nbd_device(image_path, progress_callback=None, exclude_devices=None):
+        """Setup NBD device with proper availability detection"""
+        try:
+            if progress_callback:
+                progress_callback(5, "Setting up NBD device...")
+            
+            # Load nbd module
+            subprocess.run(['modprobe', 'nbd'], check=False)
+            
+            exclude_devices = exclude_devices or []
+            
+            # Find available NBD device with better detection
+            nbd_device = None
+            for i in range(16):  # Check nbd0 to nbd15
+                device = f"/dev/nbd{i}"
+                
+                # Skip excluded devices
+                if device in exclude_devices:
+                    print(f"Skipping excluded device: {device}")
+                    continue
+                    
+                if not os.path.exists(device):
+                    print(f"Device {device} does not exist")
+                    continue
+                
+                # Check if device is available using multiple methods
+                device_available = True
+                
+                try:
+                    # Method 1: Check if qemu-nbd can list the device (means it's connected)
+                    list_result = subprocess.run(
+                        ['qemu-nbd', '--list', device],
+                        capture_output=True, text=True, timeout=3, check=False
+                    )
+                    # If --list succeeds, device is connected/busy
+                    if list_result.returncode == 0:
+                        print(f"Device {device} is connected (qemu-nbd --list succeeded)")
+                        device_available = False
+                    
+                except subprocess.TimeoutExpired:
+                    print(f"Device {device} check timed out, assuming busy")
+                    device_available = False
+                except FileNotFoundError:
+                    print(f"qemu-nbd not found for checking {device}")
+                except subprocess.SubprocessError as e:
+                    print(f"Subprocess error checking {device} with qemu-nbd --list: {e}")
+                    # Continue with other checks
+                
+                if not device_available:
+                    continue
+                
+                try:
+                    # Method 2: Check if blockdev can get size (means device has content)
+                    size_result = subprocess.run(
+                        ['blockdev', '--getsize64', device],
+                        capture_output=True, text=True, timeout=3, check=False
+                    )
+                    # If blockdev succeeds and shows size > 0, device is connected
+                    if size_result.returncode == 0:
+                        size = int(size_result.stdout.strip())
+                        if size > 0:
+                            print(f"Device {device} has size {size}, appears connected")
+                            device_available = False
+                    
+                except ValueError as e:
+                    print(f"Error parsing size for {device}: {e}")
+                    # This is actually good - means device is likely free
+                except FileNotFoundError:
+                    print(f"blockdev command not found for checking {device}")
+                except subprocess.SubprocessError as e:
+                    print(f"Subprocess error checking {device} size: {e}")
+                    # This is actually good - means device is likely free
+                
+                if not device_available:
+                    continue
+                
+                try:
+                    # Method 3: Check lsblk more carefully
+                    lsblk_result = subprocess.run(
+                        ['lsblk', '-n', device],  # -n for no headers
+                        capture_output=True, text=True, timeout=3, check=False
+                    )
+                    # If lsblk shows the device with partitions, it's in use
+                    if lsblk_result.returncode == 0 and lsblk_result.stdout.strip():
+                        lines = [line.strip() for line in lsblk_result.stdout.strip().split('\n') if line.strip()]
+                        if len(lines) > 1:  # More than just the device line means partitions
+                            print(f"Device {device} has partitions: {lines}")
+                            device_available = False
+                    
+                except FileNotFoundError:
+                    print(f"lsblk command not found for checking {device}")
+                except subprocess.SubprocessError as e:
+                    print(f"Subprocess error checking {device} with lsblk: {e}")
+                
+                if device_available:
+                    nbd_device = device
+                    print(f"Device {device} appears to be available")
+                    break
+                else:
+                    print(f"Device {device} is busy/connected")
+            
+            if not nbd_device:
+                # Last resort: try to force disconnect all devices and retry
+                print("No free NBD device found, attempting cleanup...")
+                for i in range(16):
+                    device = f"/dev/nbd{i}"
+                    if device not in exclude_devices and os.path.exists(device):
+                        try:
+                            print(f"Force disconnecting {device}...")
+                            subprocess.run(['qemu-nbd', '--disconnect', device], 
+                                        capture_output=True, timeout=5, check=False)
+                        except subprocess.TimeoutExpired:
+                            print(f"Timeout while disconnecting {device}")
+                        except subprocess.SubprocessError as e:
+                            print(f"Subprocess error disconnecting {device}: {e}")
+                        except FileNotFoundError:
+                            print(f"qemu-nbd not found for disconnecting {device}")
+                
+                # Wait and try again
+                time.sleep(3)
+                
+                # Retry with first non-excluded device
+                for i in range(16):
+                    device = f"/dev/nbd{i}"
+                    if device not in exclude_devices and os.path.exists(device):
+                        nbd_device = device
+                        print(f"Using {device} after cleanup attempt")
+                        break
+            
+            if not nbd_device:
+                raise Exception("No available NBD device found after cleanup attempts")
+            
+            print(f"Selected NBD device: {nbd_device}")
+            
+            # Try to connect
+            connect_cmd = ['qemu-nbd', '--connect', nbd_device, image_path]
+            print(f"Connecting: {' '.join(connect_cmd)}")
+            
+            try:
+                result = subprocess.run(
+                    connect_cmd,
+                    capture_output=True, text=True, check=True, timeout=30
+                )
+                
+                if result.stdout:
+                    print(f"qemu-nbd stdout: {result.stdout}")
+                if result.stderr:
+                    print(f"qemu-nbd stderr: {result.stderr}")
+                    
+            except subprocess.CalledProcessError as e:
+                error_details = f"qemu-nbd connect failed for {nbd_device}:\n"
+                error_details += f"Return code: {e.returncode}\n"
+                if e.stdout:
+                    error_details += f"Stdout: {e.stdout}\n"
+                if e.stderr:
+                    error_details += f"Stderr: {e.stderr}\n"
+                    
+                # Try next available device if this one failed
+                print(f"Connection failed, trying alternative devices...")
+                for i in range(16):
+                    alt_device = f"/dev/nbd{i}"
+                    if alt_device != nbd_device and alt_device not in exclude_devices and os.path.exists(alt_device):
+                        try:
+                            print(f"Trying alternative device: {alt_device}")
+                            # Force disconnect first
+                            subprocess.run(['qemu-nbd', '--disconnect', alt_device], 
+                                        capture_output=True, timeout=5, check=False)
+                            time.sleep(1)
+                            # Try to connect
+                            subprocess.run(['qemu-nbd', '--connect', alt_device, image_path],
+                                        capture_output=True, text=True, check=True, timeout=30)
+                            nbd_device = alt_device
+                            print(f"Successfully connected to {alt_device}")
+                            break
+                        except subprocess.CalledProcessError as alt_e:
+                            print(f"Alternative device {alt_device} connection failed: {alt_e}")
+                            continue
+                        except subprocess.TimeoutExpired:
+                            print(f"Alternative device {alt_device} connection timed out")
+                            continue
+                        except FileNotFoundError:
+                            print(f"qemu-nbd not found for alternative device {alt_device}")
+                            continue
+                else:
+                    raise Exception(f"Could not connect to any NBD device. Last error: {error_details}")
+            except subprocess.TimeoutExpired:
+                raise Exception(f"NBD connection timed out for device {nbd_device}")
+            except FileNotFoundError:
+                raise Exception("qemu-nbd command not found")
+            
+            # Wait for device to be ready
+            print(f"Waiting for {nbd_device} to be ready...")
+            max_attempts = 20
+            for attempt in range(max_attempts):
+                time.sleep(1)
+                
+                # Force kernel to re-read partition table
+                subprocess.run(['partprobe', nbd_device], check=False, 
+                            capture_output=True, timeout=10)
+                time.sleep(1)
+                
+                # Check if device is accessible
+                try:
+                    result = subprocess.run(['lsblk', nbd_device], 
+                                        capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print(f"NBD device {nbd_device} is ready after {attempt + 1} attempts")
+                        if result.stdout.strip():
+                            print(f"Device info:\n{result.stdout}")
+                        break
+                except subprocess.TimeoutExpired:
+                    print(f"Attempt {attempt + 1}: Device check timed out")
+                except FileNotFoundError:
+                    print(f"Attempt {attempt + 1}: lsblk command not found")
+                except subprocess.SubprocessError as e:
+                    print(f"Attempt {attempt + 1}: Device check subprocess error: {e}")
+                
+                if attempt == max_attempts - 1:
+                    print(f"Warning: NBD device setup may be incomplete after {max_attempts} attempts")
+                    print("Proceeding anyway...")
+            
+            return nbd_device
+            
+        except FileNotFoundError:
+            print(f"ERROR: Required command not found during NBD setup")
+            raise Exception("Required system commands not available for NBD setup")
+        except PermissionError:
+            print(f"ERROR: Permission denied during NBD setup")
+            raise Exception("Permission denied - run as root or with sudo")
+        except OSError as e:
+            print(f"ERROR: System error during NBD setup: {e}")
+            raise Exception(f"System error during NBD setup: {e}")
+
+    @staticmethod
+    def cleanup_nbd_device(nbd_device):
+        """Enhanced NBD device cleanup with better error handling"""
+        if not nbd_device:
+            return
+            
+        try:
+            print(f"Cleaning up NBD device: {nbd_device}")
+            
+            # Multiple disconnect attempts
+            success = False
+            for attempt in range(5):  # Try up to 5 times
+                try:
+                    print(f"Disconnect attempt {attempt + 1}")
+                    result = subprocess.run(['qemu-nbd', '--disconnect', nbd_device], 
+                                        capture_output=True, text=True, 
+                                        timeout=10, check=True)
+                    print(f"Disconnect successful on attempt {attempt + 1}")
+                    if result.stdout:
+                        print(f"  stdout: {result.stdout}")
+                    success = True
+                    break
+                except subprocess.CalledProcessError as e:
+                    print(f"Disconnect attempt {attempt + 1} failed: return code {e.returncode}")
+                    if e.stderr:
+                        print(f"  stderr: {e.stderr}")
+                    time.sleep(2)
+                except subprocess.TimeoutExpired:
+                    print(f"Disconnect attempt {attempt + 1} timed out")
+                    time.sleep(2)
+                except FileNotFoundError:
+                    print(f"Disconnect attempt {attempt + 1}: qemu-nbd command not found")
+                    time.sleep(2)
+                except subprocess.SubprocessError as e:
+                    print(f"Disconnect attempt {attempt + 1} subprocess error: {e}")
+                    time.sleep(2)
+            
+            if not success:
+                print(f"Warning: Could not cleanly disconnect {nbd_device}")
+                print("Trying force kill of qemu-nbd processes...")
+                try:
+                    # Try to kill any qemu-nbd processes using this device
+                    subprocess.run(['pkill', '-f', f'qemu-nbd.*{nbd_device}'], 
+                                check=False, timeout=10)
+                    time.sleep(2)
+                except subprocess.TimeoutExpired:
+                    print("pkill command timed out")
+                except FileNotFoundError:
+                    print("pkill command not found")
+                except subprocess.SubprocessError as e:
+                    print(f"pkill subprocess error: {e}")
+            
+            # Final verification
+            time.sleep(2)
+            try:
+                result = subprocess.run(['lsblk', nbd_device],
+                                    capture_output=True, text=True, timeout=5)
+                if result.returncode != 0 or not result.stdout.strip():
+                    print(f"NBD device {nbd_device} appears to be disconnected")
+                else:
+                    print(f"Warning: {nbd_device} may still be connected")
+            except subprocess.TimeoutExpired:
+                print(f"NBD device {nbd_device} disconnect verification timed out")
+            except FileNotFoundError:
+                print(f"lsblk command not found for verification")
+            except subprocess.SubprocessError as e:
+                print(f"NBD device {nbd_device} disconnect verification subprocess error: {e}")
+                
+        except OSError as e:
+            print(f"OS error in cleanup_nbd_device: {e}")
+        except PermissionError:
+            print(f"Permission error in cleanup_nbd_device")
+
+    # Also need a simple helper to check if a specific NBD device is actually free
+    @staticmethod
+    def is_nbd_device_free(device_path):
+        """Check if a specific NBD device is actually free"""
+        try:
+            if not os.path.exists(device_path):
+                return False
+            
+            # Quick checks
+            # 1. Can we get size? If yes and > 0, it's connected
+            try:
+                result = subprocess.run(['blockdev', '--getsize64', device_path],
+                                    capture_output=True, text=True, timeout=3, check=False)
+                if result.returncode == 0 and int(result.stdout.strip()) > 0:
+                    return False
+            except ValueError as e:
+                print(f"Error parsing blockdev size for {device_path}: {e}")
+            except FileNotFoundError:
+                print(f"blockdev command not found for {device_path}")
+            except subprocess.SubprocessError as e:
+                print(f"blockdev subprocess error for {device_path}: {e}")
+            
+            # 2. Does qemu-nbd think it's connected?
+            try:
+                result = subprocess.run(['qemu-nbd', '--list', device_path],
+                                    capture_output=True, text=True, timeout=3, check=False)
+                if result.returncode == 0:
+                    return False
+            except subprocess.TimeoutExpired:
+                print(f"qemu-nbd list timed out for {device_path}")
+            except FileNotFoundError:
+                print(f"qemu-nbd command not found for {device_path}")
+            except subprocess.SubprocessError as e:
+                print(f"qemu-nbd list subprocess error for {device_path}: {e}")
+            
+            # 3. Does lsblk show partitions?
+            try:
+                result = subprocess.run(['lsblk', '-n', device_path],
+                                    capture_output=True, text=True, timeout=3, check=False)
+                if result.returncode == 0 and result.stdout.strip():
+                    lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+                    if len(lines) > 1:
+                        return False
+            except FileNotFoundError:
+                print(f"lsblk command not found for {device_path}")
+            except subprocess.SubprocessError as e:
+                print(f"lsblk subprocess error for {device_path}: {e}")
+            
+            return True
+            
+        except FileNotFoundError:
+            print(f"Device file not found: {device_path}")
+            return False
+        except PermissionError:
+            print(f"Permission denied checking if {device_path} is free")
+            return False
+        except OSError as e:
+            print(f"OS error checking if {device_path} is free: {e}")
+            return False
+
+    @staticmethod
+    def get_partition_layout(nbd_device):
+        """Get partition layout from GParted-modified disk with 5% buffer calculation
+        
+        This simply extracts what GParted created - no recalculations.
+        The 5% buffer is added to the IMAGE SIZE, not to partition calculations.
+        """
+        try:
+            print(f"\nGetting partition layout from {nbd_device}...")
+            
+            result = subprocess.run(
+                ['parted', '-s', nbd_device, 'print'],
+                capture_output=True, text=True, check=True, timeout=30
+            )
+            
+            print(result.stdout)
+            
+            lines = result.stdout.split('\n')
+            partitions = []
+            max_end_bytes = 0
+            
+            # Parse partitions
+            for line in lines:
+                line = line.strip()
+                if re.match(r'^\s*\d+\s+', line):
+                    parts = line.split()
+                    
+                    if len(parts) >= 3:
+                        partition_num = int(parts[0])
+                        start_str = parts[1]
+                        end_str = parts[2]
+                        
+                        # Parse to bytes for calculation
+                        def parse_size_str(size_str):
+                            """Parse '1049kB', '538MB', '10.7GB' to bytes"""
+                            size_str = size_str.strip()
+                            
+                            gb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*GB', size_str, re.IGNORECASE)
+                            if gb_match:
+                                return int(float(gb_match.group(1).replace(',', '.')) * 1024**3)
+                            
+                            mb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*MB', size_str, re.IGNORECASE)
+                            if mb_match:
+                                return int(float(mb_match.group(1).replace(',', '.')) * 1024**2)
+                            
+                            kb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*kB', size_str, re.IGNORECASE)
+                            if kb_match:
+                                return int(float(kb_match.group(1).replace(',', '.')) * 1024)
+                            
+                            try:
+                                return int(float(size_str.replace(',', '.')))
+                            except:
+                                return 0
+                        
+                        start_bytes = parse_size_str(start_str)
+                        end_bytes = parse_size_str(end_str)
+                        
+                        partitions.append({
+                            'number': partition_num,
+                            'start': start_str,      # Keep original strings for parted
+                            'end': end_str,          # Keep original strings for parted
+                            'start_bytes': start_bytes,
+                            'end_bytes': end_bytes,
+                            'size': parts[3] if len(parts) > 3 else 'unknown',
+                            'blockdev_size_bytes': None,  # Will be filled from blockdev if available
+                        })
+                        
+                        max_end_bytes = max(max_end_bytes, end_bytes)
+            
+            # Get blockdev sizes for reference (but DON'T use for partition creation)
+            print(f"\nActual partition sizes from kernel:")
+            for partition in partitions:
+                part_num = partition['number']
+                part_device = None
+                
+                for path_fmt in [f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"]:
+                    if os.path.exists(path_fmt):
+                        part_device = path_fmt
+                        break
+                
+                if part_device:
+                    try:
+                        result = subprocess.run(
+                            ['blockdev', '--getsize64', part_device],
+                            capture_output=True, text=True, check=True, timeout=10
+                        )
+                        actual_size = int(result.stdout.strip())
+                        partition['blockdev_size_bytes'] = actual_size
+                        print(f"  Partition {part_num}: {QCow2CloneResizer.format_size(actual_size)}")
+                    except:
+                        pass
+            
+            # Add 5% buffer to max_end_bytes for the image size
+            buffer_5percent = int(max_end_bytes * 0.05)
+            required_minimum_bytes = max_end_bytes + buffer_5percent
+            
+            print(f"\n{'='*60}")
+            print(f"Image size calculation:")
+            print(f"  Last partition ends at: {QCow2CloneResizer.format_size(max_end_bytes)}")
+            print(f"  Safety buffer (5%):     {QCow2CloneResizer.format_size(buffer_5percent)}")
+            print(f"  RECOMMENDED IMAGE SIZE: {QCow2CloneResizer.format_size(required_minimum_bytes)}")
+            print(f"{'='*60}\n")
+            
+            return {
+                'partitions': partitions,
+                'last_partition_end_bytes': max_end_bytes,
+                'required_minimum_bytes': required_minimum_bytes,
+                'partition_count': len(partitions)
+            }
+            
+        except Exception as e:
+            print(f"ERROR getting partition layout: {e}")
+            raise
+
+
+    def _perform_safe_sync_static(operation_name="Sync"):
+        """Perform sync operation with proper error handling"""
+        try:
+            print(f"{operation_name}: Starting sync...")
+            
+            try:
+                process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = process.communicate(timeout=120)
+                if process.returncode == 0:
+                    print(f"{operation_name}: Sync completed")
+                    time.sleep(2)
+                    return True
+            except subprocess.TimeoutExpired:
+                print(f"{operation_name}: Sync taking longer, continuing...")
+                time.sleep(5)
+                return True
+                
+            # Fallback
+            subprocess.run(['sync', '-f'], check=False, timeout=30)
+            time.sleep(2)
+            return True
+            
+        except Exception as e:
+            print(f"{operation_name}: Error (non-fatal): {e}")
+            time.sleep(5)
+            return False
+    
+    @staticmethod
+    def launch_gparted(nbd_device):
+        """Launch GParted GUI for partition operations"""
+        try:
+            if not shutil.which('gparted'):
+                raise Exception("GParted not available - install gparted package")
+            
+            print(f"Launching GParted for device: {nbd_device}")
+            
+            # Launch GParted with proper environment
+            env = os.environ.copy()
+            env['DISPLAY'] = env.get('DISPLAY', ':0')
+            
+            # Use privilege escalation if needed
+            if os.geteuid() != 0:
+                escalation_commands = [
+                    ['pkexec', 'gparted', nbd_device],
+                    ['gksudo', 'gparted', nbd_device],
+                    ['sudo', 'gparted', nbd_device]
+                ]
+                
+                for cmd in escalation_commands:
+                    if shutil.which(cmd[0]):
+                        try:
+                            print(f"Using {cmd[0]} for privilege escalation")
+                            subprocess.run(cmd, env=env, timeout=3600)
+                            return True
+                        except subprocess.TimeoutExpired:
+                            raise Exception("GParted operation timed out (1 hour limit)")
+                        except subprocess.CalledProcessError as e:
+                            print(f"Failed with {cmd[0]}: return code {e.returncode}")
+                            continue
+                        except FileNotFoundError:
+                            print(f"Command {cmd[0]} not found")
+                            continue
+                
+                print("Warning: No privilege escalation found, trying direct launch")
+            
+            # Direct launch
+            subprocess.run(['gparted', nbd_device], env=env, timeout=3600)
+            return True
+            
+        except subprocess.TimeoutExpired:
+            raise Exception("GParted operation timed out (1 hour limit)")
+        except FileNotFoundError:
+            raise Exception("GParted command not found")
+        except PermissionError:
+            raise Exception("Permission denied launching GParted")
+        except OSError as e:
+            raise Exception(f"System error launching GParted: {e}")
+    
+    @staticmethod
+    def create_new_qcow2_image(target_path, size_bytes, progress_callback=None):
+        """Create a new QCOW2 image with specified size and metadata preallocation"""
+        try:
+            if progress_callback:
+                progress_callback(20, "Creating new image with metadata preallocation...")
+            
+            # Remove file if it already exists
+            if os.path.exists(target_path):
+                print(f"Removing existing file: {target_path}")
+                os.remove(target_path)
+            
+            # Create new QCOW2 image with metadata preallocation
+            cmd = [
+                'qemu-img', 'create', 
+                '-f', 'qcow2',
+                '-o', 'preallocation=metadata',
+                target_path, 
+                str(size_bytes)
+            ]
+            
+            print(f"Creating new image: {' '.join(cmd)}")
+            print(f"This may take several minutes for large disks...")
+            
+            # Start the process WITHOUT timeout - let it finish naturally
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            # Monitor progress with periodic updates (no timeout limit)
+            start_time = time.time()
+            last_update = start_time
+            update_interval = 5.0  # Update every 5 seconds instead of 2
+            last_percent = 20
+            
+            while process.poll() is None:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                
+                # Update progress periodically
+                if current_time - last_update >= update_interval:
+                    if progress_callback:
+                        # Linear progress based on time (assume 1 minute per GB)
+                        size_gb = size_bytes / (1024**3)
+                        estimated_time = max(60, size_gb * 60)  # 1 minute per GB minimum
+                        percent = min(29, 20 + int((elapsed / estimated_time) * 9))
+                        
+                        if percent > last_percent:
+                            progress_callback(
+                                percent,
+                                f"Creating image... {int(elapsed)}s elapsed ({int(size_gb)}GB)"
+                            )
+                            last_percent = percent
+                    
+                    last_update = current_time
+                
+                # NO HARD TIMEOUT - just a warning every 5 minutes
+                if elapsed > 300 and int(elapsed) % 300 == 0:
+                    print(f"Note: Image creation still in progress ({int(elapsed)}s elapsed)...")
+                
+                time.sleep(1)  # Check process status every 1 second
+            
+            # Get final output
+            stdout, stderr = process.communicate(timeout=30)
+            
+            if stdout:
+                print(f"qemu-img output: {stdout}")
+            if stderr:
+                print(f"qemu-img stderr: {stderr}")
+            
+            # Check return code
+            if process.returncode != 0:
+                error_msg = f"qemu-img failed with return code {process.returncode}"
+                if stderr:
+                    error_msg += f"\nError: {stderr}"
+                raise subprocess.CalledProcessError(process.returncode, cmd, stderr)
+            
+            # Verify the image was created successfully
+            if not os.path.exists(target_path):
+                raise Exception(f"Image file was not created: {target_path}")
+            
+            # Brief wait for filesystem to catch up
+            time.sleep(2)
+            
+            # Verify image properties
+            verify_info = QCow2CloneResizer.get_image_info(target_path)
+            if verify_info['virtual_size'] != size_bytes:
+                print(f"WARNING: Image size mismatch - requested: {size_bytes}, actual: {verify_info['virtual_size']}")
+            
+            print(f"New image created successfully:")
+            print(f"  Path: {target_path}")
+            print(f"  Virtual Size: {QCow2CloneResizer.format_size(verify_info['virtual_size'])}")
+            print(f"  File Size: {QCow2CloneResizer.format_size(verify_info['actual_size'])}")
+            print(f"  Format: {verify_info['format']}")
+            
+            if progress_callback:
+                progress_callback(30, "New image created successfully")
+            
+            return target_path
+            
+        except subprocess.CalledProcessError as e:
+            error_msg = f"qemu-img failed: {e.stderr if e.stderr else str(e)}"
+            print(f"ERROR: {error_msg}")
+            raise Exception(error_msg)
+        except subprocess.TimeoutExpired:
+            error_msg = f"Image creation communication timed out. "
+            error_msg += "The image may have been created successfully. Check: " + target_path
+            print(f"ERROR: {error_msg}")
+            # Don't fail - image might still be created
+            if os.path.exists(target_path):
+                print("Image file exists, continuing...")
+                return target_path
+            raise Exception(error_msg)
+        except FileNotFoundError:
+            raise Exception("qemu-img command not found")
+        except PermissionError:
+            raise Exception(f"Permission denied creating image: {target_path}")
+        except OSError as e:
+            print(f"ERROR creating image: {e}")
+            raise Exception(f"Failed to create image: {e}")
+
+    @staticmethod
+    def clone_disk_structure(source_nbd, target_nbd, layout_info, progress_callback=None):
+        """Clone disk structure (partition table + partitions)"""
+        try:
+            if progress_callback:
+                progress_callback(40, "Cloning partition table...")
+            
+            print(f"Cloning disk structure from {source_nbd} to {target_nbd}")
+            
+            # Step 1: Copy partition table and MBR/GPT
+            cmd = [
+                'dd', 
+                f'if={source_nbd}',
+                f'of={target_nbd}',
+                'bs=1M',
+                'count=1',  # First MB for MBR/GPT
+                'conv=notrunc'
+            ]
+            
+            print(f"Copying structure: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+            if result.stderr:
+                print(f"DD stderr: {result.stderr}")
+            
+            if progress_callback:
+                progress_callback(50, "Recreating partition table...")
+            
+            # Step 2: Recreate partitions with parted
+            parted_result = subprocess.run(
+                ['parted', '-s', source_nbd, 'print'],
+                capture_output=True, text=True, check=True
+            )
+            
+            # Detect table type (msdos or gpt)
+            table_type = 'msdos'  # default
+            for line in parted_result.stdout.split('\n'):
+                if 'Partition Table:' in line:
+                    table_type = line.split(':')[1].strip()
+                    break
+            
+            print(f"Detected partition table type: {table_type}")
+            
+            # Create partition table on new image
+            subprocess.run([
+                'parted', '-s', target_nbd, 'mklabel', table_type
+            ], check=True)
+            
+            # Recreate each partition
+            for i, partition in enumerate(layout_info['partitions']):
+                if progress_callback:
+                    progress_callback(55 + i * 5, f"Recreating partition {partition['number']}...")
+                
+                print(f"Creating partition {partition['number']}: {partition['start']} - {partition['end']}")
+                
+                # Create partition
+                result = subprocess.run([
+                    'parted', '-s', target_nbd, 
+                    'mkpart', 'primary',
+                    partition['start'], partition['end']
+                ], capture_output=True, text=True, check=True)
+                
+                if result.stderr:
+                    print(f"Parted stderr for partition {partition['number']}: {result.stderr}")
+            
+            # Wait for partitions to be available
+            print("Waiting for partitions to be available...")
+            time.sleep(3)
+            subprocess.run(['partprobe', target_nbd], check=False)
+            time.sleep(2)
+            
+            # Verify partitions were created
+            verify_result = subprocess.run(['lsblk', target_nbd], 
+                                         capture_output=True, text=True, timeout=10)
+            print(f"New partition layout:\n{verify_result.stdout}")
+            
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR in clone_disk_structure: {e}")
+            raise Exception(f"Failed to clone structure: {e}")
+        except subprocess.TimeoutExpired:
+            raise Exception("Disk structure cloning timed out")
+        except FileNotFoundError:
+            raise Exception("Required command not found for disk structure cloning")
+        except PermissionError:
+            raise Exception("Permission denied during disk structure cloning")
+        except OSError as e:
+            print(f"ERROR in clone_disk_structure: {e}")
+            raise Exception(f"System error during disk structure cloning: {e}")
+    
+    @staticmethod
+    def create_backup(image_path):
+        """Create backup of image"""
+        try:
+            backup_path = f"{image_path}.backup.{int(time.time())}"
+            print(f"Creating backup: {image_path} -> {backup_path}")
+            shutil.copy2(image_path, backup_path)
+            return backup_path
+        except FileNotFoundError:
+            raise Exception(f"Source image not found: {image_path}")
+        except PermissionError:
+            raise Exception(f"Permission denied creating backup")
+        except OSError as e:
+            raise Exception(f"System error creating backup: {e}")
+        except shutil.Error as e:
+            raise Exception(f"Copy error creating backup: {e}")
+
+    @staticmethod
+    def detect_vm_os(nbd_device):
+        """Detect if VM is Linux or Windows
+        
+        Returns:
+            'linux', 'windows', or 'unknown'
+        """
+        try:
+            print(f"\n{'='*60}")
+            print(f"DETECTING VM OPERATING SYSTEM")
+            print(f"{'='*60}")
+            print(f"NBD Device: {nbd_device}")
+            
+            # Find all partitions
+            partitions = []
+            print(f"\nScanning for partitions...")
+            for i in range(1, 16):
+                for path_fmt in [f"{nbd_device}p{i}", f"{nbd_device}{i}"]:
+                    if os.path.exists(path_fmt):
+                        partitions.append((i, path_fmt))
+                        print(f"  Found partition {i}: {path_fmt}")
+                        break
+            
+            if not partitions:
+                print("✗ No partitions found")
+                return 'unknown'
+            
+            print(f"\nTotal partitions found: {len(partitions)}")
+            
+            # Get partition table type
+            print(f"\nChecking partition table type with parted...")
+            try:
+                parted_result = subprocess.run(
+                    ['parted', '-s', nbd_device, 'print'],
+                    capture_output=True, text=True, check=True, timeout=10
+                )
+                
+                print(f"Parted output:\n{parted_result.stdout}\n")
+                
+                parted_output = parted_result.stdout
+                
+                # Check for partition table type
+                if 'gpt' in parted_output.lower():
+                    print("Partition table: GPT (likely UEFI)")
+                elif 'msdos' in parted_output.lower():
+                    print("Partition table: MBR/MSDOS (likely BIOS)")
+                
+            except subprocess.CalledProcessError as parted_e:
+                print(f"⚠ Parted error: {parted_e}")
+            except subprocess.TimeoutExpired:
+                print(f"⚠ Parted timeout")
+            except FileNotFoundError:
+                print(f"⚠ Parted not found")
+            except OSError as e:
+                print(f"⚠ OS error: {e}")
+            
+            # Try to mount each partition and detect OS
+            print(f"\nAttempting to mount and scan partitions...\n")
+            
+            for part_num, part_device in partitions:
+                print(f"Checking partition {part_num}: {part_device}")
+                
+                with tempfile.TemporaryDirectory() as mount_point:
+                    try:
+                        # Try different filesystems (order matters)
+                        mount_success = False
+                        used_fs = None
+                        
+                        for fs_type in ['auto', 'ntfs', 'vfat', 'btrfs', 'xfs', 'ext4', 'ext3', 'ext2']:
+                            print(f"  Trying mount with {fs_type}...", end=' ')
+                            
+                            result = subprocess.run(
+                                ['mount', '-t', fs_type, '-o', 'ro', part_device, mount_point],
+                                capture_output=True, timeout=10, check=False
+                            )
+                            
+                            if result.returncode == 0:
+                                mount_success = True
+                                used_fs = fs_type
+                                print(f"✓ Mounted")
+                                break
+                            else:
+                                print(f"✗")
+                        
+                        if not mount_success:
+                            print(f"  Could not mount partition {part_num}")
+                            continue
+                        
+                        print(f"  Filesystem type: {used_fs}")
+                        print(f"  Mount point contents (first 15 items):")
+                        try:
+                            contents = os.listdir(mount_point)[:15]
+                            for item in contents:
+                                print(f"    - {item}")
+                        except OSError as list_e:
+                            print(f"    Error listing: {list_e}")
+                        
+                        # ===== CHECK FOR WINDOWS FIRST (more specific) =====
+                        print(f"\n  Checking for Windows indicators...")
+                        windows_indicators = [
+                            'Windows',
+                            'WINDOWS',
+                            'windows',
+                            'Program Files',
+                            'Program Files (x86)',
+                            'ProgramData',
+                            'Users',
+                            'System Volume Information',
+                            'Boot',
+                            'bootmgr',
+                            'BOOTMGR',
+                            'pagefile.sys',
+                            'hiberfil.sys',
+                        ]
+                        
+                        windows_found = []
+                        for win_indicator in windows_indicators:
+                            full_path = os.path.join(mount_point, win_indicator)
+                            if os.path.exists(full_path):
+                                windows_found.append(win_indicator)
+                                print(f"    ✓ Found Windows indicator: {win_indicator}")
+                        
+                        if windows_found:
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Windows (found {len(windows_found)} indicators)")
+                            print(f"{'='*60}\n")
+                            return 'windows'
+                        
+                        # ===== CHECK FOR EFI/BOOT DIRECTORY =====
+                        print(f"\n  Checking for EFI/Boot indicators...")
+                        efi_path = os.path.join(mount_point, 'EFI')
+                        if os.path.exists(efi_path):
+                            try:
+                                efi_contents = os.listdir(efi_path)
+                                print(f"    EFI directory found with: {efi_contents}")
+                                
+                                if 'Microsoft' in efi_contents or 'Boot' in efi_contents:
+                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                    print(f"\n✓ DETECTED: Windows (found EFI/Microsoft or EFI/Boot)")
+                                    print(f"{'='*60}\n")
+                                    return 'windows'
+                            except OSError as efi_e:
+                                print(f"    Error reading EFI: {efi_e}")
+                        
+                        # ===== CHECK FOR LINUX INDICATORS =====
+                        print(f"\n  Checking for Linux indicators...")
+                        linux_indicators = [
+                            ('etc/fstab', 'Linux fstab'),
+                            ('etc/passwd', 'Linux passwd'),
+                            ('etc/hostname', 'Linux hostname'),
+                            ('etc/os-release', 'Linux os-release'),
+                            ('bin/bash', 'Linux bash'),
+                            ('usr/bin', 'Linux usr/bin'),
+                            ('var/log', 'Linux var/log'),
+                            ('root/.bashrc', 'Linux root bashrc'),
+                            ('etc/debian_version', 'Debian version'),
+                            ('etc/redhat-release', 'RedHat release'),
+                        ]
+                        
+                        linux_found = []
+                        for linux_path, description in linux_indicators:
+                            full_path = os.path.join(mount_point, linux_path)
+                            if os.path.exists(full_path):
+                                linux_found.append(description)
+                                print(f"    ✓ Found Linux indicator: {description} ({linux_path})")
+                        
+                        if linux_found:
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Linux (found {len(linux_found)} indicators)")
+                            print(f"  Indicators: {', '.join(linux_found)}")
+                            print(f"{'='*60}\n")
+                            return 'linux'
+                        
+                        # ===== CHECK BOOT/GRUB DIRECTORY =====
+                        print(f"\n  Checking for GRUB/Boot directory...")
+                        boot_path = os.path.join(mount_point, 'boot')
+                        grub_path = os.path.join(mount_point, 'grub')
+                        
+                        if os.path.exists(boot_path):
+                            print(f"    ✓ Found /boot directory")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Linux (found /boot)")
+                            print(f"{'='*60}\n")
+                            return 'linux'
+                        
+                        if os.path.exists(grub_path):
+                            print(f"    ✓ Found /grub directory")
+                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            print(f"\n✓ DETECTED: Linux (found /grub)")
+                            print(f"{'='*60}\n")
+                            return 'linux'
+                        
+                        # Cleanup
+                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                        
+                    except subprocess.TimeoutExpired as mount_timeout:
+                        print(f"  ✗ Timeout: {mount_timeout}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except subprocess.CalledProcessError as mount_e:
+                        print(f"  ✗ Mount failed: {mount_e}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except FileNotFoundError as mount_file:
+                        print(f"  ✗ Command not found: {mount_file}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except PermissionError as mount_perm:
+                        print(f"  ✗ Permission denied: {mount_perm}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                    except OSError as mount_os:
+                        print(f"  ✗ OS error: {mount_os}")
+                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+            
+            print(f"\n✗ DETECTED: Unknown (could not determine OS)")
+            print(f"{'='*60}\n")
+            return 'unknown'
+            
+        except FileNotFoundError as e:
+            print(f"\n✗ ERROR: File not found: {e}")
+            print(f"{'='*60}\n")
+            return 'unknown'
+        except PermissionError as e:
+            print(f"\n✗ ERROR: Permission denied: {e}")
+            print(f"{'='*60}\n")
+            return 'unknown'
+        except OSError as e:
+            print(f"\n✗ ERROR: OS error: {e}")
+            print(f"{'='*60}\n")
+            return 'unknown'
+        except ValueError as e:
+            print(f"\n✗ ERROR: Value error: {e}")
+            print(f"{'='*60}\n")
+            return 'unknown'
