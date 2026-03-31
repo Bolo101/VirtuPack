@@ -55,6 +55,7 @@ parted
 ntfs-3g
 python3
 python3-tk
+gparted
 qemu-utils
 qemu-system-x86
 virt-manager

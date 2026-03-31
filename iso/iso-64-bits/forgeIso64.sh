@@ -71,6 +71,7 @@ usbutils
 acpi
 sudo
 rsync
+gparted
 grub-common
 grub-pc-bin
 grub-efi-amd64-bin
