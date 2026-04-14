@@ -225,6 +225,60 @@ LABEL="skip"
 EOF
 
 # ════════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION LIBVIRT – accès supports amovibles depuis virt-manager
+# Permet de booter une ISO sur /dev/sdX en mode live ET installer
+# ════════════════════════════════════════════════════════════════════════════════
+echo "=== Configuration libvirt / qemu.conf (supports amovibles) ==="
+mkdir -p config/includes.chroot/etc/libvirt/
+
+# qemu.conf : exécution en root + ACL étendue aux blocs amovibles courants
+# Note : les wildcards ne sont pas supportés dans cgroup_device_acl ;
+#        ajouter /dev/sdX supplémentaires si nécessaire.
+cat << 'EOF' > config/includes.chroot/etc/libvirt/qemu.conf
+# P2V Converter – accès QEMU aux supports amovibles (virt-manager)
+# Modifiez cgroup_device_acl si votre clé USB apparaît sur /dev/sdg ou au-delà.
+
+user  = "root"
+group = "root"
+
+cgroup_device_acl = [
+  "/dev/null",    "/dev/full",    "/dev/zero",
+  "/dev/random",  "/dev/urandom",
+  "/dev/ptmx",    "/dev/kvm",
+  "/dev/rtc",     "/dev/hpet",
+  "/dev/sdb",     "/dev/sdc",     "/dev/sdd",
+  "/dev/sde",     "/dev/sdf"
+]
+EOF
+
+# Service one-shot : ajoute l'utilisateur au groupe libvirt + redémarre libvirtd
+mkdir -p config/includes.chroot/etc/systemd/system/
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/p2v-libvirt-setup.service
+[Unit]
+Description=P2V Converter – initialisation libvirt pour supports amovibles
+After=libvirtd.service
+Requires=libvirtd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Ajout de l'utilisateur live au groupe libvirt
+ExecStart=/usr/sbin/usermod -a -G libvirt user
+# Rechargement de libvirtd pour prendre en compte qemu.conf
+ExecStartPost=/usr/bin/systemctl restart libvirtd
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Activation du service via un lien symbolique dans le target (sans systemctl enable)
+mkdir -p config/includes.chroot/etc/systemd/system/multi-user.target.wants/
+ln -sf /etc/systemd/system/p2v-libvirt-setup.service \
+       config/includes.chroot/etc/systemd/system/multi-user.target.wants/p2v-libvirt-setup.service
+
+echo " --> qemu.conf et p2v-libvirt-setup.service ecrits"
+
+# ════════════════════════════════════════════════════════════════════════════════
 # SESSION OPENBOX – dispatcher live / installer
 # ════════════════════════════════════════════════════════════════════════════════
 echo "=== Configuration OpenBox kiosque ==="
