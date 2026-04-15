@@ -1140,18 +1140,21 @@ class QCow2CloneResizer:
                 if progress_callback:
                     progress_callback(55 + i * 5, f"Creating partition {part_num}...")
 
-                # Start position: use the parted string from source (already MiB-aligned)
-                start_str = partition['start']
+                # ── Both start AND end must use the same unit (bytes) ─────────
+                # Mixing units (e.g. '538MB' start + '32234274816B' end) causes
+                # parted to exit with status 1.  We always express both in bytes.
+                start_bytes_val = partition['start_bytes']
+                start_str       = f"{start_bytes_val}B"
 
                 if is_last:
                     # Last partition → fill ALL remaining space on target disk.
-                    # This is the definitive guarantee that tgt_size >= src_size.
+                    # '100%' is special parted syntax, not a bytes value — it is
+                    # compatible with any start unit when used as end.
                     end_str = '100%'
                     print(f"Partition {part_num} (LAST): {start_str} → {end_str}  [fills disk]")
                 else:
-                    # Non-last partition: use true kernel size + 2 MiB alignment pad.
-                    # We retrieve blockdev_size_bytes stored by get_partition_layout(),
-                    # falling back to parted end_bytes if not available.
+                    # Non-last partition: true kernel size + 2 MiB alignment pad,
+                    # expressed in bytes so unit is consistent with start_str.
                     src_part_device = None
                     for fmt in (f"{source_nbd}p{part_num}", f"{source_nbd}{part_num}"):
                         if os.path.exists(fmt):
@@ -1169,14 +1172,13 @@ class QCow2CloneResizer:
                             print(f"  ⚠ blockdev fallback failed for {src_part_device}: {bde}")
 
                     if blockdev_bytes and blockdev_bytes > 0:
-                        start_bytes = partition['start_bytes']
-                        ALIGN_PAD   = 2 * 1024 * 1024   # 2 MiB — absorbs sector rounding
-                        end_bytes   = start_bytes + blockdev_bytes + ALIGN_PAD
-                        end_str     = f"{end_bytes}B"
+                        ALIGN_PAD = 2 * 1024 * 1024   # 2 MiB — absorbs sector rounding
+                        end_bytes = start_bytes_val + blockdev_bytes + ALIGN_PAD
+                        end_str   = f"{end_bytes}B"
                         print(f"Partition {part_num}: {start_str} → {end_str}  "
                               f"(blockdev={QCow2CloneResizer.format_size(blockdev_bytes)} + 2 MiB pad)")
                     else:
-                        # Last-resort fallback: parted end + 5 % buffer (old behaviour)
+                        # Last-resort fallback: parted end + 5 % buffer, in bytes
                         end_bytes_fallback = int(partition['end_bytes'] * 1.05)
                         end_str = f"{end_bytes_fallback}B"
                         print(f"Partition {part_num}: {start_str} → {end_str}  "
