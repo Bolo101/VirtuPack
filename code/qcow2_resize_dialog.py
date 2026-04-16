@@ -22,6 +22,7 @@ from NewSizeDialog import NewSizeDialog
 from QCow2CloneResizer import QCow2CloneResizer
 from log_handler import log_error, log_info, log_warning
 import queue
+import theme
 
 
 class QCow2CloneResizerGUI:
@@ -30,7 +31,7 @@ class QCow2CloneResizerGUI:
     def __init__(self, parent):
         self.parent = parent
         self.root = tk.Toplevel(parent)
-        self.root.title("QCOW2 Clone Resizer - GParted + Safe Cloning")
+        self.root.title("Redimensionneur QCOW2 — GParted + Clonage sécurisé")
         
         # Appropriate window size
         self.root.attributes("-fullscreen", True)
@@ -69,7 +70,7 @@ class QCow2CloneResizerGUI:
             
             # Create window
             selection_window = tk.Toplevel(self.root)
-            selection_window.title("Select Files to Delete")
+            selection_window.title("Sélectionner les fichiers à supprimer")
             selection_window.geometry("700x450")
             selection_window.resizable(True, True)
             
@@ -85,7 +86,7 @@ class QCow2CloneResizerGUI:
             
             # Title
             title_label = ttk.Label(main_frame, 
-                                text="ERROR CLEANUP - Select files to delete",
+                                text="NETTOYAGE ERREUR — Sélectionnez les fichiers à supprimer",
                                 font=("Arial", 12, "bold"))
             title_label.pack(fill="x", pady=(0, 10))
             
@@ -99,7 +100,7 @@ class QCow2CloneResizerGUI:
             desc_label.pack(fill="x", pady=(0, 15))
             
             # File listbox
-            list_frame = ttk.LabelFrame(main_frame, text="Temporary Files", padding="10")
+            list_frame = ttk.LabelFrame(main_frame, text="Fichiers temporaires", padding="10")
             list_frame.pack(fill="both", expand=True, pady=(0, 15))
             
             scrollbar = ttk.Scrollbar(list_frame)
@@ -141,8 +142,8 @@ class QCow2CloneResizerGUI:
                 file_listbox.selection_clear(0, "end")
                 update_total_size()
             
-            ttk.Button(button_frame, text="Select All", command=select_all).pack(side="left", padx=(0, 5))
-            ttk.Button(button_frame, text="Deselect All", command=deselect_all).pack(side="left", padx=(0, 15))
+            ttk.Button(button_frame, text="Tout sélectionner", command=select_all).pack(side="left", padx=(0, 5))
+            ttk.Button(button_frame, text="Tout désélectionner", command=deselect_all).pack(side="left", padx=(0, 15))
             
             total_size_label = ttk.Label(button_frame, text="", font=("Arial", 9))
             total_size_label.pack(side="left")
@@ -155,9 +156,9 @@ class QCow2CloneResizerGUI:
                         if idx < len(file_info):
                             total_size += os.path.getsize(file_info[idx][0])
                     size_str = self._format_size_compact(total_size)
-                    total_size_label.config(text=f"Total to delete: {size_str}")
+                    total_size_label.config(text=f"Total à supprimer : {size_str}")
                 except OSError:
-                    total_size_label.config(text="Total to delete: calculating...")
+                    total_size_label.config(text="Total à supprimer : calcul en cours...")
             
             file_listbox.bind("<<ListboxSelect>>", lambda e: update_total_size())
             update_total_size()
@@ -168,7 +169,7 @@ class QCow2CloneResizerGUI:
             
             info_label = ttk.Label(info_frame,
                                 text="⚠ WARNING: Files will be permanently deleted\n"
-                                    "Original image: " + original_path.name + " (will be preserved)",
+                                    "Image originale : " + original_path.name + " (sera conservée)",
                                 font=("Arial", 9),
                                 foreground="red",
                                 justify="left")
@@ -198,11 +199,11 @@ class QCow2CloneResizerGUI:
                 selection_window.destroy()
                 self.dialog_result_event.set()
             
-            ttk.Button(action_frame, text="Delete Selected Files", 
+            ttk.Button(action_frame, text="Supprimer les fichiers sélectionnés", 
                     command=on_delete).pack(side="left", padx=(0, 10))
-            ttk.Button(action_frame, text="Keep All Files", 
+            ttk.Button(action_frame, text="Conserver tous les fichiers", 
                     command=on_keep).pack(side="left", padx=(0, 10))
-            ttk.Button(action_frame, text="Cancel", 
+            ttk.Button(action_frame, text="Annuler", 
                     command=on_cancel).pack(side="right")
             
             # Center window
@@ -258,11 +259,11 @@ class QCow2CloneResizerGUI:
     def close_window(self):
         """Handle window close event - forcefully stop operations"""
         if self.operation_active:
-            result = messagebox.askyesno("Operation in Progress", 
+            result = messagebox.askyesno("Opération en cours", 
                                     "An operation is currently running.\n\n"
                                     "This will STOP the operation immediately.\n"
                                     "Temporary files will be handled appropriately.\n\n"
-                                    "Continue?")
+                                    "Continuer ?")
             if not result:
                 return
             
@@ -362,116 +363,125 @@ class QCow2CloneResizerGUI:
 
     def setup_ui(self):
         """Setup simplified user interface with single action button"""
-        # Main container with padding
-        main_frame = ttk.Frame(self.root, padding="20")
+        C = theme
+
+        # Apply dark theme to this Toplevel
+        theme.apply_theme(self.root)
+        self.root.configure(bg=C.BG)
+
+        # Main container
+        main_frame = ttk.Frame(self.root, style="TFrame", padding=(20, 16))
         main_frame.pack(fill="both", expand=True)
-        
-        # Header section
-        header_frame = ttk.Frame(main_frame)
-        header_frame.pack(fill="x", pady=(0, 20))
-        
-        # Title
-        title = ttk.Label(header_frame, text="QCOW2 Clone Resizer", 
-                        font=("Arial", 18, "bold"))
-        title.pack(pady=(0, 5))
-        
-        subtitle = ttk.Label(header_frame, text="GParted Manual Resizing + Safe Cloning", 
-                           font=("Arial", 11))
-        subtitle.pack(pady=(0, 10))
-        
-        # File selection section
-        file_frame = ttk.LabelFrame(main_frame, text="QCOW2 Image File", padding="15")
-        file_frame.pack(fill="x", pady=(0, 15))
-        
-        path_frame = ttk.Frame(file_frame)
-        path_frame.pack(fill="x", pady=(0, 10))
-        
-        self.path_entry = ttk.Entry(path_frame, textvariable=self.image_path, font=("Arial", 10))
+
+        # ── Header ────────────────────────────────────────────────────────
+        header_frame = ttk.Frame(main_frame, style="TFrame")
+        header_frame.pack(fill="x", pady=(0, 18))
+
+        ttk.Label(header_frame, text="Redimensionneur QCOW2",
+                  style="Title.TLabel").pack(anchor="center")
+        ttk.Label(header_frame, text="Redimensionnement manuel GParted + Clonage sécurisé",
+                  style="Subtitle.TLabel").pack(anchor="center", pady=(2, 0))
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill="x", pady=(0, 16))
+
+        # ── File selection ────────────────────────────────────────────────
+        file_frame = ttk.LabelFrame(main_frame, text="Fichier image QCOW2",
+                                     style="TLabelframe")
+        file_frame.pack(fill="x", pady=(0, 12))
+
+        path_frame = ttk.Frame(file_frame, style="Card.TFrame")
+        path_frame.pack(fill="x", pady=(0, 6))
+
+        self.path_entry = ttk.Entry(path_frame, textvariable=self.image_path,
+                                    font=C.FONT_NORMAL, style="TEntry")
         self.path_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        
-        ttk.Button(path_frame, text="Browse", command=self.browse_file).pack(side="right", padx=(0, 5))
-        ttk.Button(path_frame, text="Analyze", command=self.analyze_image).pack(side="right")
-        
-        # Image information display
-        info_frame = ttk.LabelFrame(main_frame, text="Image Information", padding="15")
-        info_frame.pack(fill="both", expand=True, pady=(0, 15))
-        
-        self.info_text = tk.Text(info_frame, height=10, state="disabled", wrap="word", 
-                                font=("Consolas", 9), bg="white")
-        info_scrollbar = ttk.Scrollbar(info_frame, orient="vertical", command=self.info_text.yview)
+
+        ttk.Button(path_frame, text="Parcourir",
+                   command=self.browse_file).pack(side="right", padx=(0, 5))
+        ttk.Button(path_frame, text="Analyser",
+                   command=self.analyze_image).pack(side="right")
+
+        # ── Image information ─────────────────────────────────────────────
+        info_frame = ttk.LabelFrame(main_frame, text="Informations sur l'image",
+                                     style="TLabelframe")
+        info_frame.pack(fill="both", expand=True, pady=(0, 12))
+
+        self.info_text = tk.Text(info_frame, height=10, state="disabled", wrap="word")
+        theme.style_text_widget(self.info_text)
+        info_scrollbar = ttk.Scrollbar(info_frame, orient="vertical",
+                                        command=self.info_text.yview)
         self.info_text.configure(yscrollcommand=info_scrollbar.set)
-        
         self.info_text.pack(side="left", fill="both", expand=True)
         info_scrollbar.pack(side="right", fill="y")
-        
-        # System requirements check
-        self.prereq_frame = ttk.LabelFrame(main_frame, text="System Status", padding="15")
-        self.prereq_frame.pack(fill="x", pady=(0, 15))
-        
-        self.prereq_label = ttk.Label(self.prereq_frame, text="Checking required tools...", 
-                                     font=("Arial", 9))
-        self.prereq_label.pack()
-        
-        # Progress section
-        progress_frame = ttk.LabelFrame(main_frame, text="Operation Progress", padding="15")
-        progress_frame.pack(fill="x", pady=(0, 20))
-        
-        self.progress = ttk.Progressbar(progress_frame, length=400, style="TProgressbar")
+
+        # ── System status ─────────────────────────────────────────────────
+        self.prereq_frame = ttk.LabelFrame(main_frame, text="État du système",
+                                            style="TLabelframe")
+        self.prereq_frame.pack(fill="x", pady=(0, 12))
+
+        self.prereq_label = ttk.Label(self.prereq_frame,
+                                       text="Vérification des outils requis...",
+                                       font=C.FONT_NORMAL, style="Card.TLabel")
+        self.prereq_label.pack(anchor="w")
+
+        # ── Progress section ──────────────────────────────────────────────
+        progress_frame = ttk.LabelFrame(main_frame, text="Progression de l'opération",
+                                         style="TLabelframe")
+        progress_frame.pack(fill="x", pady=(0, 16))
+
+        self.progress = ttk.Progressbar(progress_frame, length=400)
         self.progress.pack(fill="x", pady=(0, 8))
-        
-        self.progress_label = ttk.Label(progress_frame, text="Ready to begin", 
-                                       font=("Arial", 10, "bold"))
-        self.progress_label.pack()
-        
-        # Action buttons section
-        button_frame = ttk.Frame(main_frame)
+
+        self.progress_label = ttk.Label(progress_frame, text="Prêt à démarrer",
+                                         font=("Segoe UI", 10, "bold"),
+                                         style="Card.TLabel")
+        self.progress_label.pack(anchor="center")
+
+        # ── Action buttons ────────────────────────────────────────────────
+        button_frame = ttk.Frame(main_frame, style="TFrame")
         button_frame.pack(fill="x", pady=(0, 10))
-        
-        # Primary action button (large, prominent)
-        self.main_action_btn = ttk.Button(button_frame, 
-                                         text="START GPARTED + CLONE PROCESS", 
-                                         command=self.start_gparted_resize, 
-                                         state="disabled",
-                                         style="Accent.TButton")
-        self.main_action_btn.pack(side="top", fill="x", pady=(0, 15), ipady=8)
-        
-        # Secondary buttons (smaller, side by side)
-        secondary_frame = ttk.Frame(button_frame)
+
+        # Primary CTA
+        self.main_action_btn = ttk.Button(
+            button_frame,
+            text="DÉMARRER LE PROCESSUS GPARTED + CLONAGE",
+            command=self.start_gparted_resize,
+            state="disabled",
+            style="Primary.TButton",
+        )
+        self.main_action_btn.pack(side="top", fill="x", pady=(0, 12), ipady=6)
+
+        # Secondary row
+        secondary_frame = ttk.Frame(button_frame, style="TFrame")
         secondary_frame.pack(fill="x")
-        
-        self.backup_btn = ttk.Button(secondary_frame, text="Create Backup", 
-                                    command=self.create_backup)
-        self.backup_btn.pack(side="left", padx=(0, 10))
-        
-        ttk.Button(secondary_frame, text="Refresh", 
-                  command=self.analyze_image).pack(side="left", padx=(0, 10))
-        
-        ttk.Button(secondary_frame, text="Close", 
-                  command=self.close_window).pack(side="right")
-        
-        # Status bar
-        status_frame = ttk.Frame(main_frame)
-        status_frame.pack(fill="x", pady=(15, 0))
-        
-        separator = ttk.Separator(status_frame, orient="horizontal")
-        separator.pack(fill="x", pady=(0, 8))
-        
-        self.status_label = ttk.Label(status_frame, 
-                                     text="Ready - Select QCOW2 image file and ensure VM is shut down", 
-                                     font=("Arial", 9))
-        self.status_label.pack()
-        
-        # Configure styles
-        self.setup_styles()
-    
+
+        self.backup_btn = ttk.Button(secondary_frame, text="Créer une sauvegarde",
+                                      command=self.create_backup)
+        self.backup_btn.pack(side="left", padx=(0, 8))
+
+        ttk.Button(secondary_frame, text="Actualiser",
+                   command=self.analyze_image).pack(side="left", padx=(0, 8))
+
+        ttk.Button(secondary_frame, text="Fermer",
+                   command=self.close_window).pack(side="right")
+
+        # ── Status bar ────────────────────────────────────────────────────
+        status_frame = ttk.Frame(main_frame, style="TFrame")
+        status_frame.pack(fill="x", pady=(12, 0))
+
+        ttk.Separator(status_frame, orient="horizontal").pack(fill="x", pady=(0, 6))
+
+        self.status_label = ttk.Label(
+            status_frame,
+            text="Prêt — Sélectionnez un fichier image QCOW2 et vérifiez que la VM est arrêtée",
+            font=C.FONT_SMALL,
+            style="Muted.TLabel",
+        )
+        self.status_label.pack(anchor="center")
+
     def setup_styles(self):
-        """Setup custom styles"""
-        style = ttk.Style()
-        
-        # Configure accent button style for main action
-        style.configure("Accent.TButton",
-                       font=("Arial", 12, "bold"),
-                       padding=(20, 10))
+        """Legacy method — styles are now handled by theme.apply_theme()"""
+        pass
     
     def check_prerequisites(self):
         """Check if required tools are installed"""
@@ -479,7 +489,7 @@ class QCow2CloneResizerGUI:
         
         text = ""
         if missing:
-            text = f"Missing required tools: {', '.join(missing)}\n"
+            text = f"Outils manquants : {', '.join(missing)}\n"
             
             install_msg = "Required tools missing!\n\n"
             install_msg += "Ubuntu/Debian:\n"
@@ -489,25 +499,25 @@ class QCow2CloneResizerGUI:
             install_msg += "Arch Linux:\n"
             install_msg += "sudo pacman -S qemu parted gparted"
             
-            messagebox.showerror("Missing Tools", install_msg)
+            messagebox.showerror("Outils manquants", install_msg)
             
         else:
             text = "All required tools available\n"
         
         if optional:
-            text += f"Optional tools: {', '.join(optional)}\n"
+            text += f"Outils optionnels : {', '.join(optional)}\n"
         
-        root_status = "Running as root" if os.geteuid() == 0 else "Will use privilege escalation"
+        root_status = "Exécution en tant que root" if os.geteuid() == 0 else "Élévation de privilèges requise"
         text += root_status
         
-        color = "red" if missing else "green"
+        color = theme.ERROR if missing else theme.SUCCESS
         self.prereq_label.config(text=text, foreground=color)
     
     def browse_file(self):
         """Browse for QCOW2 file"""
         file_path = filedialog.askopenfilename(
-            title="Select QCOW2 Image File",
-            filetypes=[("QCOW2 files", "*.qcow2"), ("All files", "*.*")]
+            title="Sélectionner un fichier image QCOW2",
+            filetypes=[("Fichiers QCOW2", "*.qcow2"), ("All files", "*.*")]
         )
         if file_path:
             self.image_path.set(file_path)
@@ -517,11 +527,11 @@ class QCow2CloneResizerGUI:
         """Analyze selected image"""
         path = self.image_path.get().strip()
         if not path:
-            messagebox.showwarning("No File Selected", "Please select an image file first")
+            messagebox.showwarning("Aucun fichier sélectionné", "Veuillez d'abord sélectionner un fichier image")
             return
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", "The selected file does not exist")
+            messagebox.showerror("File Not Found", "Le fichier sélectionné n'existe pas")
             return
         
         try:
@@ -532,8 +542,8 @@ class QCow2CloneResizerGUI:
             # Enable action buttons
             self.main_action_btn.config(state="normal")
             
-            self.update_progress(0, "Analysis complete - Ready for GParted + Clone process")
-            self.status_label.config(text="Image analyzed - Ready to start GParted + Clone process")
+            self.update_progress(0, "Analyse terminée — Prêt pour GParted + Clonage")
+            self.status_label.config(text="Image analysée — Prêt à démarrer GParted + Clonage")
             
         except FileNotFoundError:
             messagebox.showerror("File Not Found", f"Image file not found: {path}")
@@ -600,7 +610,7 @@ class QCow2CloneResizerGUI:
         """Create backup of current image using rsync with progress"""
         path = self.image_path.get().strip()
         if not path or not os.path.exists(path):
-            messagebox.showwarning("No File", "Select a valid image file first")
+            messagebox.showwarning("Aucun fichier", "Sélectionnez d'abord un fichier image valide")
             return
         
         try:
@@ -709,9 +719,9 @@ class QCow2CloneResizerGUI:
             backup_msg += f"Size: {QCow2CloneResizer.format_size(backup_size)}\n\n"
             backup_msg += f"Location: {backup_path}\n\n"
             backup_msg += f"The backup is a complete copy of your virtual disk.\n"
-            backup_msg += f"You can now safely proceed with the resizing process."
+            backup_msg += f"Vous pouvez maintenant procéder au redimensionnement en toute sécurité."
             
-            self.root.after(0, lambda: messagebox.showinfo("Backup Complete", backup_msg))
+            self.root.after(0, lambda: messagebox.showinfo("Sauvegarde terminée", backup_msg))
             self.root.after(100, lambda: self.update_progress(0, "Backup complete"))
             
         except FileNotFoundError as fnf_e:
@@ -785,9 +795,9 @@ class QCow2CloneResizerGUI:
         msg += f"• APPLY ALL CHANGES in GParted before closing\n"
         msg += f"• Backup recommended before operation\n\n"
         
-        msg += f"Continue with GParted + Clone process?"
+        msg += f"Continuer avec le processus GParted + Clonage ?"
         
-        if not messagebox.askyesno("Confirm Operation", msg):
+        if not messagebox.askyesno("Confirmer l'opération", msg):
             return
         
         # Check root privileges
@@ -798,16 +808,16 @@ class QCow2CloneResizerGUI:
                     "when launching GParted.\n\n"
                     "For best experience, run entire application with:\n"
                     "sudo python3 qcow2_clone_resizer.py\n\n"
-                    "Continue anyway?")
+                    "Continuer quand même ?")
             
-            if not messagebox.askyesno("Root Privileges Required", root_msg):
+            if not messagebox.askyesno("Privilèges root requis", root_msg):
                 return
         
         # Start resize in thread
         self.operation_active = True
         self.main_action_btn.config(state="disabled")
         self.backup_btn.config(state="disabled")
-        self.status_label.config(text="GParted + Clone operation in progress...")
+        self.status_label.config(text="Opération GParted + Clonage en cours...")
         
         self.worker_thread = threading.Thread(target=self._gparted_clone_worker, args=(path,))
         self.worker_thread.daemon = True
@@ -1723,7 +1733,7 @@ class QCow2CloneResizerGUI:
         """Create and show file selection dialog"""
         try:
             selection_window = tk.Toplevel(self.root)
-            selection_window.title("Select Files to Delete")
+            selection_window.title("Sélectionner les fichiers à supprimer")
             selection_window.geometry("700x450")
             selection_window.resizable(True, True)
             
@@ -1735,7 +1745,7 @@ class QCow2CloneResizerGUI:
             main_frame.pack(fill="both", expand=True)
             
             title_label = ttk.Label(main_frame, 
-                                text="ERROR CLEANUP - Select files to delete",
+                                text="NETTOYAGE ERREUR — Sélectionnez les fichiers à supprimer",
                                 font=("Arial", 12, "bold"))
             title_label.pack(fill="x", pady=(0, 10))
             
@@ -1747,7 +1757,7 @@ class QCow2CloneResizerGUI:
                                 justify="left")
             desc_label.pack(fill="x", pady=(0, 15))
             
-            list_frame = ttk.LabelFrame(main_frame, text="Temporary Files", padding="10")
+            list_frame = ttk.LabelFrame(main_frame, text="Fichiers temporaires", padding="10")
             list_frame.pack(fill="both", expand=True, pady=(0, 15))
             
             scrollbar = ttk.Scrollbar(list_frame)
@@ -1786,8 +1796,8 @@ class QCow2CloneResizerGUI:
                 file_listbox.selection_clear(0, "end")
                 update_total_size()
             
-            ttk.Button(button_frame, text="Select All", command=select_all).pack(side="left", padx=(0, 5))
-            ttk.Button(button_frame, text="Deselect All", command=deselect_all).pack(side="left", padx=(0, 15))
+            ttk.Button(button_frame, text="Tout sélectionner", command=select_all).pack(side="left", padx=(0, 5))
+            ttk.Button(button_frame, text="Tout désélectionner", command=deselect_all).pack(side="left", padx=(0, 15))
             
             total_size_label = ttk.Label(button_frame, text="", font=("Arial", 9))
             total_size_label.pack(side="left")
@@ -1800,9 +1810,9 @@ class QCow2CloneResizerGUI:
                         if idx < len(file_info):
                             total_size += os.path.getsize(file_info[idx][0])
                     size_str = self._format_size_compact(total_size)
-                    total_size_label.config(text=f"Total to delete: {size_str}")
+                    total_size_label.config(text=f"Total à supprimer : {size_str}")
                 except (OSError, IndexError):
-                    total_size_label.config(text="Total to delete: calculating...")
+                    total_size_label.config(text="Total à supprimer : calcul en cours...")
             
             file_listbox.bind("<<ListboxSelect>>", lambda e: update_total_size())
             update_total_size()
@@ -1812,7 +1822,7 @@ class QCow2CloneResizerGUI:
             
             info_label = ttk.Label(info_frame,
                                 text="⚠ WARNING: Files will be permanently deleted\n"
-                                    "Original image: " + original_path.name + " (will be preserved)",
+                                    "Image originale : " + original_path.name + " (sera conservée)",
                                 font=("Arial", 9),
                                 foreground="red",
                                 justify="left")
@@ -1841,11 +1851,11 @@ class QCow2CloneResizerGUI:
                 selection_window.destroy()
                 self.dialog_result_event.set()
             
-            ttk.Button(action_frame, text="Delete Selected Files", 
+            ttk.Button(action_frame, text="Supprimer les fichiers sélectionnés", 
                     command=on_delete).pack(side="left", padx=(0, 10))
-            ttk.Button(action_frame, text="Keep All Files", 
+            ttk.Button(action_frame, text="Conserver tous les fichiers", 
                     command=on_keep).pack(side="left", padx=(0, 10))
-            ttk.Button(action_frame, text="Cancel", 
+            ttk.Button(action_frame, text="Annuler", 
                     command=on_cancel).pack(side="right")
             
             selection_window.update_idletasks()
@@ -3166,11 +3176,11 @@ class QCow2CloneResizerGUI:
                 if self.status_label.winfo_exists():
                     if percent == 0:
                         self.status_label.config(
-                            text="Ready - Select image and ensure VM is shut down"
+                            text="Prêt — Sélectionnez une image et vérifiez que la VM est arrêtée"
                         )
                     else:
                         self.status_label.config(
-                            text=f"Operation in progress: {status}"
+                            text=f"Opération en cours : {status}"
                         )
             except tk.TclError:
                 pass
@@ -3187,13 +3197,13 @@ class QCow2CloneResizerGUI:
         path = self.image_path.get().strip()
         
         if not path:
-            messagebox.showwarning("No File Selected", 
+            messagebox.showwarning("Aucun fichier sélectionné", 
                                   "Please select a QCOW2 image file first")
             return False
         
         if not os.path.exists(path):
             messagebox.showerror("File Not Found", 
-                                "The selected file does not exist")
+                                "Le fichier sélectionné n'existe pas")
             return False
         
         if not self.image_info:
@@ -3214,9 +3224,9 @@ class QCow2CloneResizerGUI:
             if self.progress.winfo_exists():
                 self.progress['value'] = 0
             if self.progress_label.winfo_exists():
-                self.progress_label.config(text="Operation completed")
+                self.progress_label.config(text="Opération terminée")
             if self.status_label.winfo_exists():
-                self.status_label.config(text="Operation completed - Ready for next operation")
+                self.status_label.config(text="Opération terminée — Prêt pour la prochaine opération")
         except tk.TclError:
             pass
         
