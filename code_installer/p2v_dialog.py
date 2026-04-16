@@ -6,7 +6,8 @@ with support for mounting unmounted disks for output storage and resizing QCOW2 
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, filedialog
+import theme
 import os
 import subprocess
 import threading
@@ -70,6 +71,7 @@ class P2VConverterGUI:
     
     def setup_window(self):
         """Configure the main window properties with responsive design"""
+        theme.apply_theme(self.root)
         self.root.resizable(True, True)
         
         # Get screen dimensions
@@ -184,7 +186,9 @@ class P2VConverterGUI:
         """Create all GUI widgets - Updated version with Format Converter integration"""
         self.create_header_frame()
         self.create_main_frame()
-        self.create_status_frame()  
+        self.create_status_frame()
+        self.notif_bar = theme.NotificationBar(self.root)
+        self.notif_bar.grid(row=3, column=0, sticky="ew")
     
     def create_header_frame(self):
         """Create the header frame with title and PDF generation buttons"""
@@ -251,7 +255,7 @@ class P2VConverterGUI:
         self.source_combo.bind("<<ComboboxSelected>>", self.on_source_selected)
         
         # Refresh button
-        self.refresh_btn = ttk.Button(source_frame, text="Refresh Disks", 
+        self.refresh_btn = ttk.Button(source_frame, text="Actualiser les disques", 
                                     command=self.refresh_disks)
         self.refresh_btn.grid(row=0, column=2, padx=(10, 0))
         
@@ -360,11 +364,13 @@ class P2VConverterGUI:
                                         command=self.check_space_requirements)
         self.check_space_btn.grid(row=0, column=0, padx=(0, 10), sticky="w")
         
-        self.convert_btn = ttk.Button(control_frame, text="Start P2V Conversion", 
+        self.convert_btn = ttk.Button(control_frame, text="Démarrer la conversion P2V",
+                                    style="Primary.TButton", 
                                     command=self.start_conversion)
         self.convert_btn.grid(row=0, column=1, padx=(0, 10), sticky="w")
         
-        self.stop_btn = ttk.Button(control_frame, text="Stop Operation", 
+        self.stop_btn = ttk.Button(control_frame, text="Arrêter l'opération",
+                                  style="Danger.TButton", 
                                 command=self.stop_operation, state=tk.DISABLED)
         self.stop_btn.grid(row=0, column=1, padx=(0, 10), sticky="e")
         
@@ -404,6 +410,16 @@ class P2VConverterGUI:
         # Track last displayed log count
         self.last_log_count = 0
 
+    def _notify(self, message: str, level: str = "info",
+                confirm: bool = False, on_yes=None, on_no=None):
+        """Notification inline sans pop-up."""
+        try:
+            self.notif_bar.show(message, level=level, confirm=confirm,
+                                on_yes=on_yes, on_no=on_no,
+                                auto_hide=not confirm)
+        except AttributeError:
+            print(f"[{level.upper()}] {message}")
+
     def open_image_exporter(self):
         """Open the Virtual Image Exporter dialog"""
         try:
@@ -417,38 +433,35 @@ class P2VConverterGUI:
         except ImportError as e:
             error_msg = f"Virtual Image Exporter not available: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Feature Not Available",
-                            "Virtual Image Exporter feature is not available.\n\n"
-                            "Please ensure export.py is in the same directory.\n\n"
-                            f"Missing dependency: {str(e)}")
+            self._notify("Notification", level="info")
         except tk.TclError as e:
             error_msg = f"Window creation error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Window Error", f"Failed to create exporter window:\n\n{error_msg}")
+            self._notify(f"Failed to create exporter window:\n\n{error_msg}", level="error")
         except (AttributeError, TypeError) as e:
             error_msg = f"Internal error initializing exporter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Internal Error", f"Failed to initialize exporter:\n\n{error_msg}")
+            self._notify(f"Failed to initialize exporter:\n\n{error_msg}", level="error")
         except OSError as e:
             error_msg = f"System error opening exporter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", f"Failed to open exporter:\n\n{error_msg}")
+            self._notify(f"Failed to open exporter:\n\n{error_msg}", level="error")
         except ValueError as e:
             error_msg = f"Invalid value for exporter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Value Error", f"Failed to initialize exporter:\n\n{error_msg}")
+            self._notify(f"Failed to initialize exporter:\n\n{error_msg}", level="error")
         except MemoryError as e:
             error_msg = "Insufficient memory to open Virtual Image Exporter"
             log_error(error_msg)
-            messagebox.showerror("Memory Error", f"Failed to open exporter:\n\n{error_msg}")
+            self._notify(f"Failed to open exporter:\n\n{error_msg}", level="error")
         except FileNotFoundError as e:
             error_msg = f"Required file not found: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("File Not Found", f"Failed to open exporter:\n\n{error_msg}")
+            self._notify(f"Failed to open exporter:\n\n{error_msg}", level="error")
         except PermissionError as e:
             error_msg = f"Permission denied: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Permission Error", f"Failed to open exporter:\n\n{error_msg}")
+            self._notify(f"Failed to open exporter:\n\n{error_msg}", level="error")
     
     def open_qcow2_resizer(self):
         """Open the QCOW2 resizer dialog as a modal window"""
@@ -464,40 +477,31 @@ class P2VConverterGUI:
         except ImportError as e:
             error_msg = f"QCOW2 Clone Resizer not available: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Feature Not Available", 
-                            "QCOW2 Clone Resizer feature is not available.\n\n"
-                            "Please ensure qcow2_resize_dialog.py is in the same directory.\n\n"
-                            "Missing dependency: qcow2_resize_dialog module")
+            self._notify("Notification", level="info")
         except AttributeError as e:
             error_msg = f"Error initializing QCOW2 Clone Resizer: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Initialization Error", 
-                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
+            self._notify(f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}", level="error")
         except tk.TclError as e:
             error_msg = f"Window creation error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Window Error", 
-                            f"Failed to create QCOW2 Clone Resizer window:\n\n{error_msg}")
+            self._notify(f"Failed to create QCOW2 Clone Resizer window:\n\n{error_msg}", level="error")
         except TypeError as e:
             error_msg = f"Type error initializing QCOW2 Clone Resizer: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Type Error", 
-                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
+            self._notify(f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}", level="error")
         except ValueError as e:
             error_msg = f"Invalid value for QCOW2 Clone Resizer: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Value Error", 
-                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
+            self._notify(f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}", level="error")
         except MemoryError as e:
             error_msg = "Insufficient memory to open QCOW2 Clone Resizer"
             log_error(error_msg)
-            messagebox.showerror("Memory Error", 
-                            f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
+            self._notify(f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}", level="error")
         except OSError as e:
             error_msg = f"System error opening QCOW2 Clone Resizer: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", 
-                            f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
+            self._notify(f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}", level="error")
             
     def open_luks_ciphering(self):
         """Open the LUKS Encryption dialog as a modal window"""
@@ -512,50 +516,39 @@ class P2VConverterGUI:
         except ImportError as e:
             error_msg = f"LUKS Ciphering not available: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Feature Not Available", 
-                            "LUKS Encryption feature is not available.\n\n"
-                            "Please ensure ciphering.py is in the same directory.\n\n"
-                            f"Missing dependency: {str(e)}")
+            self._notify("Notification", level="info")
         except AttributeError as e:
             error_msg = f"Error initializing LUKS Ciphering: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Initialization Error", 
-                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
+            self._notify(f"Failed to initialize LUKS Ciphering:\n\n{error_msg}", level="error")
         except tk.TclError as e:
             error_msg = f"Window creation error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Window Error", 
-                            f"Failed to create LUKS Ciphering window:\n\n{error_msg}")
+            self._notify(f"Failed to create LUKS Ciphering window:\n\n{error_msg}", level="error")
         except TypeError as e:
             error_msg = f"Type error initializing LUKS Ciphering: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Type Error", 
-                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
+            self._notify(f"Failed to initialize LUKS Ciphering:\n\n{error_msg}", level="error")
         except ValueError as e:
             error_msg = f"Invalid value for LUKS Ciphering: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Value Error", 
-                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
+            self._notify(f"Failed to initialize LUKS Ciphering:\n\n{error_msg}", level="error")
         except MemoryError as e:
             error_msg = "Insufficient memory to open LUKS Ciphering"
             log_error(error_msg)
-            messagebox.showerror("Memory Error", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+            self._notify(f"Failed to open LUKS Ciphering:\n\n{error_msg}", level="error")
         except OSError as e:
             error_msg = f"System error opening LUKS Ciphering: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+            self._notify(f"Failed to open LUKS Ciphering:\n\n{error_msg}", level="error")
         except FileNotFoundError as e:
             error_msg = f"Required file not found: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("File Not Found", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+            self._notify(f"Failed to open LUKS Ciphering:\n\n{error_msg}", level="error")
         except PermissionError as e:
             error_msg = f"Permission denied: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Permission Error", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+            self._notify(f"Failed to open LUKS Ciphering:\n\n{error_msg}", level="error")
 
     def open_delete_files_manager(self):
             """Open the Delete Files Manager for interactive file deletion"""
@@ -579,50 +572,39 @@ class P2VConverterGUI:
             except ImportError as e:
                 error_msg = f"Delete Files Manager not available: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Feature Not Available", 
-                                "Delete Files Manager is not available.\n\n"
-                                "Please ensure delete_files.py is in the same directory.\n\n"
-                                f"Missing dependency: {str(e)}")
+                self._notify("Notification", level="info")
             except AttributeError as e:
                 error_msg = f"Error initializing Delete Files Manager: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Initialization Error", 
-                                f"Failed to initialize Delete Files Manager:\n\n{error_msg}")
+                self._notify(f"Failed to initialize Delete Files Manager:\n\n{error_msg}", level="error")
             except tk.TclError as e:
                 error_msg = f"Window creation error: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Window Error", 
-                                f"Failed to create Delete Files Manager window:\n\n{error_msg}")
+                self._notify(f"Failed to create Delete Files Manager window:\n\n{error_msg}", level="error")
             except TypeError as e:
                 error_msg = f"Type error initializing Delete Files Manager: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Type Error", 
-                                f"Failed to initialize Delete Files Manager:\n\n{error_msg}")
+                self._notify(f"Failed to initialize Delete Files Manager:\n\n{error_msg}", level="error")
             except ValueError as e:
                 error_msg = f"Invalid value for Delete Files Manager: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Value Error", 
-                                f"Failed to initialize Delete Files Manager:\n\n{error_msg}")
+                self._notify(f"Failed to initialize Delete Files Manager:\n\n{error_msg}", level="error")
             except MemoryError as e:
                 error_msg = "Insufficient memory to open Delete Files Manager"
                 log_error(error_msg)
-                messagebox.showerror("Memory Error", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
+                self._notify(f"Failed to open Delete Files Manager:\n\n{error_msg}", level="error")
             except OSError as e:
                 error_msg = f"System error opening Delete Files Manager: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("System Error", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
+                self._notify(f"Failed to open Delete Files Manager:\n\n{error_msg}", level="error")
             except PermissionError as e:
                 error_msg = f"Permission denied: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Permission Error", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
+                self._notify(f"Failed to open Delete Files Manager:\n\n{error_msg}", level="error")
             except FileNotFoundError as e:
                 error_msg = f"Required file not found: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("File Not Found", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
+                self._notify(f"Failed to open Delete Files Manager:\n\n{error_msg}", level="error")
 
     def open_format_converter(self):
         """Open the Format Converter dialog as a modal window"""
@@ -637,50 +619,39 @@ class P2VConverterGUI:
         except ImportError as e:
             error_msg = f"Format Converter not available: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Feature Not Available", 
-                            "Format Converter feature is not available.\n\n"
-                            "Please ensure image_format_converter.py is in the same directory.\n\n"
-                            f"Missing dependency: {str(e)}")
+            self._notify("Notification", level="info")
         except AttributeError as e:
             error_msg = f"Error initializing Format Converter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Initialization Error", 
-                            f"Failed to initialize Format Converter:\n\n{error_msg}")
+            self._notify(f"Failed to initialize Format Converter:\n\n{error_msg}", level="error")
         except tk.TclError as e:
             error_msg = f"Window creation error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Window Error", 
-                            f"Failed to create Format Converter window:\n\n{error_msg}")
+            self._notify(f"Failed to create Format Converter window:\n\n{error_msg}", level="error")
         except TypeError as e:
             error_msg = f"Type error initializing Format Converter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Type Error", 
-                            f"Failed to initialize Format Converter:\n\n{error_msg}")
+            self._notify(f"Failed to initialize Format Converter:\n\n{error_msg}", level="error")
         except ValueError as e:
             error_msg = f"Invalid value for Format Converter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Value Error", 
-                            f"Failed to initialize Format Converter:\n\n{error_msg}")
+            self._notify(f"Failed to initialize Format Converter:\n\n{error_msg}", level="error")
         except MemoryError as e:
             error_msg = "Insufficient memory to open Format Converter"
             log_error(error_msg)
-            messagebox.showerror("Memory Error", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
+            self._notify(f"Failed to open Format Converter:\n\n{error_msg}", level="error")
         except OSError as e:
             error_msg = f"System error opening Format Converter: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
+            self._notify(f"Failed to open Format Converter:\n\n{error_msg}", level="error")
         except FileNotFoundError as e:
             error_msg = f"Required file not found: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("File Not Found", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
+            self._notify(f"Failed to open Format Converter:\n\n{error_msg}", level="error")
         except PermissionError as e:
             error_msg = f"Permission denied: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Permission Error", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
+            self._notify(f"Failed to open Format Converter:\n\n{error_msg}", level="error")
 
     def mount_disk_dialog(self):
         """Show dialog to select and mount a disk for output storage"""
@@ -700,31 +671,31 @@ class P2VConverterGUI:
         except PermissionError as e:
             error_msg = f"Permission denied accessing disk mount dialog: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
+            self._notify("Notification", level="info")
         except OSError as e:
             error_msg = f"System error in disk mount dialog: {str(e)}"
             log_error(error_msg) 
-            messagebox.showerror("System Error", error_msg)
+            self._notify("Notification", level="info")
         except ImportError as e:
             error_msg = f"Missing required module for disk mounting: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Import Error", error_msg)
+            self._notify("Notification", level="info")
         except subprocess.CalledProcessError as e:
             error_msg = f"Command failed in disk mount dialog: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg) 
+            self._notify("Notification", level="info") 
         except ValueError as e:
             error_msg = f"Invalid value in disk mount dialog: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Value Error", error_msg)
+            self._notify("Notification", level="info")
         except (AttributeError, TypeError) as e:
             error_msg = f"Internal error in disk mount dialog: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Internal Error", error_msg)
+            self._notify("Notification", level="info")
         except tk.TclError as e:
             error_msg = f"Dialog window error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Dialog Error", error_msg)
+            self._notify("Notification", level="info")
     
     def open_virt_manager(self):
         """Open virt-manager with proper permissions for VM management"""
@@ -740,7 +711,7 @@ class P2VConverterGUI:
                 error_msg += "\n\nPlease install the missing packages"
                 
                 log_error(f"Virt-manager check failed: {', '.join(missing_tools)}")
-                messagebox.showerror("Missing Virtualization Tools", error_msg)
+                self._notify("Notification", level="info")
                 return
             
             log_info("Virt-manager is available, launching...")
@@ -757,7 +728,7 @@ class P2VConverterGUI:
                 "Continue?"
             )
             
-            if not messagebox.askyesno("Launch Virt-Manager", confirm_msg):
+            if not self._notify("Notification", level="info"):
                 log_info("User cancelled virt-manager launch")
                 return
             
@@ -776,15 +747,12 @@ class P2VConverterGUI:
                 self.operation_details.config(text="Virt-manager opened in background", 
                                             foreground="green")
                 
-                messagebox.showinfo("Virt-Manager Launched", 
-                                  "Virt-manager is now running.\n\n"
-                                  "You can import or create virtual machines from your disk images.\n"
-                                  "Close this dialog and virt-manager window when finished.")
+                self._notify("Notification", level="info")
             
             except FileNotFoundError as e:
                 error_msg = f"Virt-manager not found: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Virt-Manager Not Found", error_msg)
+                self._notify("Notification", level="info")
             
             except PermissionError as e:
                 error_msg = (
@@ -796,47 +764,47 @@ class P2VConverterGUI:
                     "• Ensure you have sudo access"
                 )
                 log_error(error_msg)
-                messagebox.showerror("Permission Denied", error_msg)
+                self._notify("Notification", level="info")
             
             except OSError as e:
                 error_msg = f"System error launching virt-manager: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("System Error", error_msg)
+                self._notify("Notification", level="info")
             
             except subprocess.CalledProcessError as e:
                 error_msg = f"Virt-manager failed to start: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Launch Error", error_msg)
+                self._notify("Notification", level="info")
             
             except subprocess.TimeoutExpired as e:
                 error_msg = f"Virt-manager launch timed out: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Timeout Error", error_msg)
+                self._notify("Notification", level="info")
             
             except subprocess.SubprocessError as e:
                 error_msg = f"Subprocess error: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Subprocess Error", error_msg)
+                self._notify("Notification", level="info")
             
             except ImportError as e:
                 error_msg = f"Virt-Manager launcher not available: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Import Error", error_msg)
+                self._notify("Notification", level="info")
             
             except (AttributeError, TypeError) as e:
                 error_msg = f"Internal error: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Internal Error", error_msg)
+                self._notify("Notification", level="info")
         
         except tk.TclError as e:
             error_msg = f"GUI error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("GUI Error", error_msg)
+            self._notify("Notification", level="info")
         
         except (KeyError, ValueError) as e:
             error_msg = f"Configuration error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Configuration Error", error_msg)
+            self._notify("Notification", level="info")
         
         finally:
             self.status_var.set("Ready")
@@ -852,7 +820,7 @@ class P2VConverterGUI:
             if not os.path.exists(image_path):
                 error_msg = f"Image file not found: {image_path}"
                 log_error(error_msg)
-                messagebox.showerror("File Not Found", error_msg)
+                self._notify("Notification", level="info")
                 return
             
             log_info(f"Launching virt-manager with image: {image_path}")
@@ -875,15 +843,16 @@ class P2VConverterGUI:
                     foreground="green"
                 )
                 
-                messagebox.showinfo("Virt-Manager Launched", 
-                                  f"Virt-manager is now running with your VM image.\n\n"
-                                  f"File: {Path(image_path).name}\n"
-                                  f"Size: {VirtManagerLauncher.format_size(os.path.getsize(image_path))}")
+                self._notify(
+                    f"Virt-manager lancé avec {Path(image_path).name} "
+                    f"({VirtManagerLauncher.format_size(os.path.getsize(image_path))})",
+                    level="success"
+                )
             
             except FileNotFoundError as e:
                 error_msg = f"Error: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("File Error", error_msg)
+                self._notify("Notification", level="info")
             
             except PermissionError as e:
                 error_msg = (
@@ -892,22 +861,22 @@ class P2VConverterGUI:
                     "Ensure proper file permissions and ownership."
                 )
                 log_error(error_msg)
-                messagebox.showerror("Permission Error", error_msg)
+                self._notify("Notification", level="info")
             
             except OSError as e:
                 error_msg = f"System error: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("System Error", error_msg)
+                self._notify("Notification", level="info")
             
             except subprocess.SubprocessError as e:
                 error_msg = f"Subprocess error: {str(e)}"
                 log_error(error_msg)
-                messagebox.showerror("Subprocess Error", error_msg)
+                self._notify("Notification", level="info")
         
         except tk.TclError as e:
             error_msg = f"GUI error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("GUI Error", error_msg)
+            self._notify("Notification", level="info")
         
         finally:
             self.status_var.set("Ready")
@@ -979,11 +948,10 @@ class P2VConverterGUI:
         tools_available, message = check_qemu_tools()
         if not tools_available:
             log_error(f"Prerequisites check failed: {message}")
-            messagebox.showerror("Missing Prerequisites", 
-                               f"Required tools are missing:\n\n{message}\n\n"
-                               f"Please install the required packages:\n"
-                               f"• qemu-utils (for qemu-img)\n"
-                               f"• coreutils (for dd)")
+            self._notify(
+                f"Prérequis manquants : {message} — Installez : qemu-utils, coreutils",
+                level="error"
+            )
         else:
             log_info("All prerequisites are available")
 
@@ -1097,32 +1065,32 @@ class P2VConverterGUI:
         except OSError as e:
             error_msg = f"System error refreshing disks: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
+            self._notify("Notification", level="info")
             self.status_var.set("Error refreshing disks")
         except subprocess.CalledProcessError as e:
             error_msg = f"Command execution error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
+            self._notify("Notification", level="info")
             self.status_var.set("Error refreshing disks")
         except FileNotFoundError as e:
             error_msg = f"Required command not found: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
+            self._notify("Notification", level="info")
             self.status_var.set("Error refreshing disks")
         except (ValueError, KeyError) as e:
             error_msg = f"Data parsing error: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Data Error", error_msg)
+            self._notify("Notification", level="info")
             self.status_var.set("Error refreshing disks")
         except PermissionError as e:
             error_msg = f"Permission denied accessing disk information: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
+            self._notify("Notification", level="info")
             self.status_var.set("Error refreshing disks")
         except AttributeError as e:
             error_msg = f"Invalid data structure returned: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Data Error", error_msg)
+            self._notify("Notification", level="info")
             self.status_var.set("Error refreshing disks")
     
     def get_selected_disk_info(self):
@@ -1180,7 +1148,7 @@ class P2VConverterGUI:
                 else:
                     warning_message += f"Please select a different disk that is not in use."
                 
-                messagebox.showerror(warning_title, warning_message)
+                self._notify("Notification", level="info")
                 
                 # Clear the selection
                 self.source_var.set("")
@@ -1246,11 +1214,11 @@ class P2VConverterGUI:
             output_dir = self.output_path.get()
             
             if not source:
-                messagebox.showwarning("Warning", "Please select a source disk first")
+                self._notify("Please select a source disk first", level="warning")
                 return
             
             if not output_dir:
-                messagebox.showwarning("Warning", "Please specify an output directory")
+                self._notify("Please specify an output directory", level="warning")
                 return
             
             # Extract device path
@@ -1288,23 +1256,22 @@ class P2VConverterGUI:
             else:
                 log_error("Space check failed - insufficient space")
                 self.operation_details.config(text="Insufficient space", foreground="red")
-                messagebox.showwarning("Insufficient Space", 
-                                     f"Not enough space available!\n\n{space_message}")
+                self._notify("Not enough space available!\n\n{space_message}", level="warning")
             
         except (OSError, IOError) as e:
             error_msg = f"System error checking space requirements: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
+            self._notify("Notification", level="info")
             self.operation_details.config(text="Space check failed", foreground="red")
         except (ValueError, TypeError) as e:
             error_msg = f"Data error checking space requirements: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Data Error", error_msg)
+            self._notify("Notification", level="info")
             self.operation_details.config(text="Space check failed", foreground="red")
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             error_msg = f"Command error checking space requirements: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
+            self._notify("Notification", level="info")
             self.operation_details.config(text="Space check failed", foreground="red")
     
     def start_conversion(self):
@@ -1315,21 +1282,21 @@ class P2VConverterGUI:
         
         # Validation
         if not source:
-            messagebox.showwarning("Warning", "Please select a source disk")
+            self._notify("Please select a source disk", level="warning")
             return
         
         if not vm_name:
-            messagebox.showwarning("Warning", "Please enter a VM name")
+            self._notify("Please enter a VM name", level="warning")
             return
         
         if not output_dir:
-            messagebox.showwarning("Warning", "Please specify an output directory")
+            self._notify("Please specify an output directory", level="warning")
             return
         
         # Validate VM name
         is_valid, validation_message = validate_vm_name(vm_name)
         if not is_valid:
-            messagebox.showerror("Invalid VM Name", validation_message)
+            self._notify("Notification", level="info")
             return
         
         # Extract device path
@@ -1338,11 +1305,10 @@ class P2VConverterGUI:
         # Final safety check - re-validate disk availability right before conversion
         is_unavailable, reason = self.is_disk_unavailable_for_conversion(device_path)
         if is_unavailable:
-            messagebox.showerror("Disk Unavailable", 
-                            f"Conversion Blocked\n\n"
-                            f"The selected disk ({device_path}) is not available for conversion.\n\n"
-                            f"Reason: {reason}\n\n"
-                            f"Please select a different disk or resolve the issue before converting.")
+            self._notify(
+                f"Disque {device_path} indisponible pour la conversion — {reason}",
+                level="error"
+            )
             # Refresh disk list to update status
             self.refresh_disks()
             return
@@ -1351,9 +1317,7 @@ class P2VConverterGUI:
         try:
             has_space, space_message = check_output_space(output_dir, device_path)
             if not has_space:
-                if not messagebox.askyesno("Insufficient Space Warning",
-                                        f"Space Warning\n\n{space_message}\n\n"
-                                        f"Continue anyway? The conversion may fail."):
+                if not self._notify("Notification", level="info"):
                     return
         except (OSError, IOError) as e:
             log_warning(f"System error checking space before conversion: {str(e)}")
@@ -1383,7 +1347,10 @@ class P2VConverterGUI:
             confirmation_text += f"Output Directory: {output_dir}\n\n"
             confirmation_text += f"Continue with the conversion?"
         
-        if not messagebox.askyesno("Confirm P2V Conversion", confirmation_text):
+        # Confirmation inline
+            self._pending_confirm = True  # set by _notify confirm flow
+            self._notify(confirmation_text, level="warning", confirm=True,
+                on_yes=lambda: self._run_after_confirm(), on_no=None)
             return
         
         # Start conversion in a separate thread
@@ -1451,96 +1418,81 @@ class P2VConverterGUI:
                 completion_text += f"qemu-system-x86_64 -hda \"{output_file}\" -m 2048\n\n"
                 completion_text += f"Use 'Resize QCOW2...' button to optimize disk size if needed."
                 
-                self.root.after(0, lambda: messagebox.showinfo("Conversion Complete", completion_text))
+                self.root.after(0, lambda msg=completion_text: self._notify(msg, level="success"))
         
         except FileNotFoundError as e:
             error_msg = f"Required command or file not found: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Command Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
                 
         except subprocess.CalledProcessError as e:
             error_msg = f"Command execution failed: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Command Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
         
         except subprocess.TimeoutExpired as e:
             error_msg = f"Command timed out: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Timeout Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
                 
         except PermissionError as e:
             error_msg = f"Permission denied accessing disk or output directory: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Permission Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
                 
         except OSError as e:
             error_msg = f"System error during disk operation: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("System Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
         
         except IOError as e:
             error_msg = f"I/O error during conversion: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("I/O Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
                 
         except ValueError as e:
             error_msg = f"Invalid value or parameter: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Value Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
                 
         except TypeError as e:
             error_msg = f"Type error in conversion process: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Type Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
                 
         except AttributeError as e:
             error_msg = f"Object attribute error during conversion: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Attribute Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
         
         except KeyError as e:
             error_msg = f"Missing configuration key: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Configuration Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
         
         except IndexError as e:
             error_msg = f"Index error during data processing: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Data Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
                 
         except KeyboardInterrupt:
             log_warning("P2V conversion cancelled by user")
-            self.root.after(0, lambda: messagebox.showinfo("Cancelled", 
-                "P2V conversion was cancelled by user"))
+            self.root.after(0, lambda: self._notify("P2V conversion was cancelled by user", level="success"))
                 
         except MemoryError:
             error_msg = "Insufficient memory to perform conversion"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Memory Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
         
         except RuntimeError as e:
             error_msg = f"Runtime error during conversion: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Runtime Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
         
         except UnicodeError as e:
             error_msg = f"Text encoding error: {str(e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Encoding Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
+            self.root.after(0, lambda: self._notify(f"P2V conversion failed:\n\n{error_msg}", level="error"))
         
         finally:
             # Reset UI in main thread
@@ -1582,10 +1534,7 @@ class P2VConverterGUI:
     def exit_application(self):
         """Exit the application with confirmation"""
         if self.operation_running:
-            result = messagebox.askyesno("Exit Confirmation", 
-                                       "An operation is currently running.\n\n"
-                                       "Are you sure you want to exit?\n"
-                                       "This will stop the current operation.")
+            result = self._notify("Notification", level="info")
             if result:
                 self.stop_requested = True
                 log_warning("Application exit requested during operation")
@@ -1594,8 +1543,7 @@ class P2VConverterGUI:
             return
         
         # Normal exit confirmation
-        result = messagebox.askyesno("Exit Confirmation", 
-                                   "Are you sure you want to exit the P2V Converter?")
+        result = self._notify("Notification", level="info")
         if result:
             self._perform_exit("GUI Exit button")
     

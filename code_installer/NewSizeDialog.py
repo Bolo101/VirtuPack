@@ -1,6 +1,7 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 from QCow2CloneResizer import QCow2CloneResizer
+import theme
 
 class NewSizeDialog:
     """Dialog to enter new image size based on final partition layout"""
@@ -15,7 +16,8 @@ class NewSizeDialog:
         try:
             # Create dialog with better sizing
             self.dialog = tk.Toplevel(parent)
-            self.dialog.title("New Image Size - Based on Final Partition Layout")
+            self.dialog.title("Nouvelle taille d'image — Disposition finale des partitions")
+            theme.apply_theme(self.dialog)
             
             # Make dialog modal and ensure it stays on top
             self.dialog.transient(parent)
@@ -82,7 +84,7 @@ class NewSizeDialog:
             main_container.pack(fill="both", expand=True, padx=10, pady=10)
             
             # Create scrollable frame
-            canvas = tk.Canvas(main_container)
+            canvas = tk.Canvas(main_container, bg=theme.BG, highlightthickness=0)
             scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
             scrollable_frame = ttk.Frame(canvas)
             
@@ -92,6 +94,7 @@ class NewSizeDialog:
             )
             
             canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            theme.style_canvas(canvas)
             canvas.configure(yscrollcommand=scrollbar.set)
             
             canvas.pack(side="left", fill="both", expand=True)
@@ -110,12 +113,12 @@ class NewSizeDialog:
             content_frame.pack(fill="both", expand=True)
             
             # Title
-            title = ttk.Label(content_frame, text="Create New Image - Final Size Selection", 
-                            font=("Arial", 16, "bold"))
+            title = ttk.Label(content_frame, text="Créer une nouvelle image — sélection de la taille finale",
+                            font=theme.FONT_TITLE)
             title.pack(pady=(0, 15))
             
             # GParted Changes Summary
-            changes_frame = ttk.LabelFrame(content_frame, text="GParted Partition Changes", padding="10")
+            changes_frame = ttk.LabelFrame(content_frame, text="Modifications des partitions GParted", padding="10")
             changes_frame.pack(fill="x", pady=(0, 15))
             
             changes_info = "GParted operations completed successfully!\n\n"
@@ -130,7 +133,7 @@ class NewSizeDialog:
             changes_label.pack()
             
             # Size Requirements
-            status_frame = ttk.LabelFrame(content_frame, text="Size Requirements", padding="10")
+            status_frame = ttk.LabelFrame(content_frame, text="Exigences de taille", padding="10")
             status_frame.pack(fill="x", pady=(0, 15))
             
             last_partition_end = self.final_layout_info['last_partition_end_bytes']
@@ -154,7 +157,7 @@ class NewSizeDialog:
             status_label.pack()
             
             # Size Selection
-            size_frame = ttk.LabelFrame(content_frame, text="New Image Size Selection", padding="10")
+            size_frame = ttk.LabelFrame(content_frame, text="Sélection de la nouvelle taille", padding="10")
             size_frame.pack(fill="x", pady=(0, 15))
             
             self.choice = tk.StringVar(value="calculated")
@@ -165,7 +168,7 @@ class NewSizeDialog:
             calc_radio = ttk.Radiobutton(calc_frame, text=f"Use Calculated Size: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
                                         variable=self.choice, value="calculated")
             calc_radio.pack(side="left")
-            ttk.Label(calc_frame, text="(RECOMMENDED)", font=("Arial", 8, "bold"), foreground="green").pack(side="left", padx=(5, 0))
+            ttk.Label(calc_frame, text="(RECOMMANDÉ)", font=theme.FONT_SMALL, foreground=theme.SUCCESS).pack(side="left", padx=(5, 0))
             
             # Option 2: Same as original (if sufficient)
             if self.original_size >= min_size_with_buffer:
@@ -173,8 +176,8 @@ class NewSizeDialog:
                             variable=self.choice, value="original").pack(anchor="w", pady=2)
             else:
                 shortage = min_size_with_buffer - self.original_size
-                ttk.Label(size_frame, text=f"Original size insufficient - needs {QCow2CloneResizer.format_size(shortage)} more space", 
-                        foreground="red", font=("Arial", 8)).pack(anchor="w", pady=2)
+                ttk.Label(size_frame, text=f"Taille originale insuffisante — il manque {QCow2CloneResizer.format_size(shortage)}",
+                        foreground=theme.ERROR, font=theme.FONT_SMALL).pack(anchor="w", pady=2)
             
             # Option 3: Custom size
             custom_frame = ttk.Frame(size_frame)
@@ -193,11 +196,11 @@ class NewSizeDialog:
             # Show minimum size warning
             warning_frame = ttk.Frame(size_frame)
             warning_frame.pack(fill="x", pady=(8, 0))
-            ttk.Label(warning_frame, text=f"WARNING: Minimum size required: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
-                    font=("Arial", 8), foreground="orange").pack(anchor="w")
+            ttk.Label(warning_frame, text=f"⚠  Taille minimale requise : {QCow2CloneResizer.format_size(min_size_with_buffer)}",
+                    font=theme.FONT_SMALL, foreground=theme.WARNING).pack(anchor="w")
             
             # What Happens Next
-            exp_frame = ttk.LabelFrame(content_frame, text="What Happens Next", padding="10")
+            exp_frame = ttk.LabelFrame(content_frame, text="Prochaines étapes", padding="10")
             exp_frame.pack(fill="x", pady=(0, 20))
             
             explanation = ("1. Create new empty image with selected size (using preallocation=metadata)\n"
@@ -209,6 +212,12 @@ class NewSizeDialog:
             exp_label = ttk.Label(exp_frame, text=explanation, wraplength=500, justify="left", font=("Arial", 9))
             exp_label.pack()
             
+            # Label d'erreur inline (remplace messagebox)
+            self._error_lbl = tk.Label(main_container, text="", bg=theme.BG,
+                                       fg=theme.ERROR, font=theme.FONT_SMALL,
+                                       wraplength=500, justify="left")
+            self._error_lbl.pack(anchor="w", padx=4, pady=(0, 2))
+
             # Buttons outside scrollable area
             button_container = ttk.Frame(main_container)
             button_container.pack(fill="x", pady=(10, 0))
@@ -219,11 +228,12 @@ class NewSizeDialog:
             button_frame = ttk.Frame(button_container)
             button_frame.pack(fill="x")
             
-            create_btn = ttk.Button(button_frame, text="Create New Optimized Image", 
+            create_btn = ttk.Button(button_frame, text="Créer la nouvelle image optimisée",
+                                style="Primary.TButton",
                                 command=self.create_new)
             create_btn.pack(side="right", padx=(10, 0), pady=5)
             
-            cancel_btn = ttk.Button(button_frame, text="Skip Cloning", 
+            cancel_btn = ttk.Button(button_frame, text="Ignorer le clonage",
                                 command=self.skip_cloning)
             cancel_btn.pack(side="right", pady=5)
             
@@ -248,6 +258,13 @@ class NewSizeDialog:
             print(f"Value error during UI setup: {val_e}")
             self._create_fallback_ui()
     
+    def _show_error(self, message: str):
+        """Affiche un message d'erreur inline sans pop-up."""
+        try:
+            self._error_lbl.config(text=f"⚠  {message}")
+        except AttributeError:
+            print(f"Dialog error: {message}")
+
     def _create_fallback_ui(self):
         """Create minimal fallback UI if main UI setup fails"""
         try:
@@ -316,11 +333,10 @@ class NewSizeDialog:
             # Validate size
             if new_size < min_size:
                 shortage = min_size - new_size
-                messagebox.showerror("Size Too Small", 
-                    f"Size insufficient!\n\n"
-                    f"Minimum required: {QCow2CloneResizer.format_size(min_size)}\n"
-                    f"Your selection: {QCow2CloneResizer.format_size(new_size)}\n"
-                    f"Need {QCow2CloneResizer.format_size(shortage)} more space.")
+                self._show_error(
+                    f"Taille insuffisante — minimum : {QCow2CloneResizer.format_size(min_size)}, "
+                    f"sélection : {QCow2CloneResizer.format_size(new_size)}, "
+                    f"manque : {QCow2CloneResizer.format_size(shortage)}")
                 return
             
             self.result = new_size
@@ -330,9 +346,9 @@ class NewSizeDialog:
             
         except KeyError as key_e:
             print(f"Missing key in dialog data: {key_e}")
-            messagebox.showerror("Data Error", f"Missing configuration data: {key_e}")
+            self._show_error(f"Donnée de configuration manquante : {key_e}")
         except ValueError as val_e:
-            messagebox.showerror("Invalid Size", f"Error parsing size: {val_e}")
+            self._show_error(f"Taille invalide — {val_e}")
         except tk.TclError as tcl_e:
             print(f"Tkinter error during create: {tcl_e}")
             try:
@@ -342,7 +358,7 @@ class NewSizeDialog:
                 self.result = None
         except AttributeError as attr_e:
             print(f"Attribute error: {attr_e}")
-            messagebox.showerror("Error", f"Configuration attribute missing: {attr_e}")
+            self._show_error(f"Attribut de configuration manquant : {attr_e}")
     
     def skip_cloning(self):
         """Skip cloning - keep original image with changes"""
