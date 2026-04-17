@@ -1,10 +1,17 @@
 #!/bin/bash
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║ forgeIso64.sh – ISO dual-boot P2V Converter (64-bit)                         ║
+# ║                                                                              ║
+# ║ Entrée 1 : Live → OpenBox kiosque (code/)                                    ║
+# ║ Entrée 2 : Live Safe → Live + nomodeset                                      ║
+# ║                                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # Exit on any error
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/p2vConverter-v2.0-32bits.iso"
+ISO_NAME="$(pwd)/p2vConverter-v3.0-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../../code"
 
@@ -221,12 +228,9 @@ cat << 'EOF' > config/includes.chroot/etc/xdg/openbox/rc.xml
 <openbox_config xmlns="http://openbox.org/3.4/rc"
                 xmlns:xi="http://www.w3.org/2001/XInclude">
   <applications>
-    <application class="*">
-      <fullscreen>yes</fullscreen>
-      <decor>no</decor>
-      <maximized>yes</maximized>
-      <layer>above</layer>
-    </application>
+    <!-- Pas de fullscreen/maximized global : la fenetre principale gere
+         elle-meme son plein ecran ; les fenetres secondaires (pop-ups)
+         conservent ainsi leur taille naturelle. -->
   </applications>
 </openbox_config>
 EOF

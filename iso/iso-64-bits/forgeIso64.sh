@@ -1,17 +1,17 @@
 #!/bin/bash
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║ forgeIso64.sh – ISO dual-boot P2V Converter (64-bit)                        ║
+# ║ forgeIso64.sh – ISO dual-boot P2V Converter (64-bit)                         ║
 # ║                                                                              ║
 # ║ Entrée 1 : Live → OpenBox kiosque (code/)                                    ║
-# ║ Entrée 2 : Installer → copie sur disque + XFCE kiosque (code_installer/)    ║
-# ║ Entrée 3 : Live Safe → Live + nomodeset                                     ║
+# ║ Entrée 2 : Installer → copie sur disque + XFCE kiosque (code_installer/)     ║
+# ║ Entrée 3 : Live Safe → Live + nomodeset                                      ║
 # ║                                                                              ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 set -e
 
 # ── Variables ──────────────────────────────────────────────────────────────────
-ISO_NAME="$(pwd)/p2vConverter-v2.0-64bits.iso"
+ISO_NAME="$(pwd)/p2vConverter-v3.0-64bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../../code"
 CODE_INSTALLER_DIR="$(pwd)/../../code_installer"
@@ -290,12 +290,9 @@ cat << 'EOF' > config/includes.chroot/etc/xdg/openbox/rc.xml
                 xmlns:xi="http://www.w3.org/2001/XInclude">
 
   <applications>
-    <application class="*">
-      <fullscreen>yes</fullscreen>
-      <decor>no</decor>
-      <maximized>yes</maximized>
-      <layer>above</layer>
-    </application>
+    <!-- Pas de fullscreen/maximized global : la fenetre principale gere
+         elle-meme son plein ecran ; les fenetres secondaires (pop-ups)
+         conservent ainsi leur taille naturelle. -->
   </applications>
 
   <keyboard>
