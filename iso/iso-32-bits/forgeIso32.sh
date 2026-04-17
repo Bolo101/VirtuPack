@@ -1,6 +1,6 @@
 #!/bin/bash
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║ forgeIso64.sh – ISO dual-boot P2V Converter (64-bit)                         ║
+# ║ forgeIso32.sh – ISO dual-boot P2V Converter (32-bit)                         ║
 # ║                                                                              ║
 # ║ Entrée 1 : Live → OpenBox kiosque (code/)                                    ║
 # ║ Entrée 2 : Live Safe → Live + nomodeset                                      ║
@@ -31,17 +31,17 @@ sudo lb clean --purge || true
 
 echo "Configuring live-build for Debian Bullseye i386..."
 lb config \
-  --distribution=bullseye \
-  --architectures=i386 \
-  --linux-packages=linux-image \
-  --linux-flavours=686 \
-  --debian-installer=none \
-  --bootappend-live="boot=live components config hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
-  --bootloaders="syslinux" \
-  --binary-images=iso-hybrid
+--distribution=bullseye \
+--architectures=i386 \
+--linux-packages=linux-image \
+--linux-flavours=686 \
+--debian-installer=none \
+--bootappend-live="boot=live components config hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
+--bootloaders="syslinux" \
+--binary-images=iso-hybrid
 # NOTE: --debian-installer=none is intentional.
 # Using --debian-installer=live on bullseye i386 triggers:
-#   "flAbsPath on localArchive/aptdir/.../dpkg/status failed (realpath: No such file or directory)"
+# "flAbsPath on localArchive/aptdir/.../dpkg/status failed (realpath: No such file or directory)"
 # This is a live-build bug on 32-bit bullseye. Since Calamares is not needed
 # in this kiosk-only ISO, none is correct and avoids the error entirely.
 
@@ -142,8 +142,8 @@ AllowHybridSleep=no
 EOF
 
 for target in sleep suspend hibernate hybrid-sleep; do
-  mkdir -p "config/includes.chroot/etc/systemd/system/${target}.target.d/"
-  cat << EOF > "config/includes.chroot/etc/systemd/system/${target}.target.d/override.conf"
+mkdir -p "config/includes.chroot/etc/systemd/system/${target}.target.d/"
+cat << EOF > "config/includes.chroot/etc/systemd/system/${target}.target.d/override.conf"
 [Unit]
 ConditionPathExists=/dev/null
 EOF
@@ -153,10 +153,10 @@ echo "Disabling screen blanking..."
 mkdir -p config/includes.chroot/etc/X11/xorg.conf.d/
 cat << 'EOF' > config/includes.chroot/etc/X11/xorg.conf.d/10-monitor.conf
 Section "ServerFlags"
-  Option "BlankTime" "0"
-  Option "StandbyTime" "0"
-  Option "SuspendTime" "0"
-  Option "OffTime" "0"
+Option "BlankTime" "0"
+Option "StandbyTime" "0"
+Option "SuspendTime" "0"
+Option "OffTime" "0"
 EndSection
 EOF
 
@@ -168,6 +168,15 @@ group = "root"
 security_driver = "none"
 dynamic_ownership = 0
 vnc_listen = "0.0.0.0"
+
+cgroup_device_acl = [
+    "/dev/null", "/dev/full", "/dev/zero",
+    "/dev/random", "/dev/urandom",
+    "/dev/ptmx", "/dev/kvm",
+    "/dev/rtc", "/dev/hpet",
+    "/dev/sdb", "/dev/sdc", "/dev/sdd",
+    "/dev/disk/by-uuid/*"
+]
 EOF
 
 mkdir -p config/includes.chroot/etc/systemd/system/
@@ -184,6 +193,16 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+
+mkdir -p config/hooks/live/
+cat << 'EOF' > config/hooks/live/50-libvirt-user.chroot
+#!/bin/bash
+set -e
+usermod -a -G libvirt user || true
+systemctl enable libvirtd || true
+systemctl restart libvirtd || true
+EOF
+chmod +x config/hooks/live/50-libvirt-user.chroot
 
 echo "Copying application files..."
 mkdir -p config/includes.chroot/usr/local/bin/
@@ -215,9 +234,9 @@ EOF
 # rc.xml forces every window fullscreen + borderless the moment it maps.
 #
 # Boot flow:
-#   LightDM auto-login → p2v-kiosk XSession → p2v-session.sh
-#     → openbox (WM, background) + d2q (app, fullscreen, foreground)
-#   When the app exits the session ends and LightDM restarts it (Relogin).
+# LightDM auto-login → p2v-kiosk XSession → p2v-session.sh
+# → openbox (WM, background) + d2q (app, fullscreen, foreground)
+# When the app exits the session ends and LightDM restarts it (Relogin).
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo "Configuring openbox kiosk session..."
@@ -240,7 +259,7 @@ cat << 'EOF' > config/includes.chroot/usr/local/bin/p2v-session.sh
 # P2V Converter kiosk session — called by LightDM.
 
 xset s off -dpms 2>/dev/null || true
-xset s noblank   2>/dev/null || true
+xset s noblank 2>/dev/null || true
 
 openbox &
 WM_PID=$!
@@ -277,7 +296,7 @@ EOF
 
 cat << 'EOF' > config/includes.chroot/etc/skel/.bashrc
 if [ -f /etc/bashrc ]; then
-  . /etc/bashrc
+. /etc/bashrc
 fi
 echo "P2V Converter (32-bit)"
 echo "Type 'sudo d2q' to use the P2V Converter program"
@@ -307,27 +326,27 @@ TIMEOUT 50
 MENU TITLE P2V Converter (32-bit) - Boot Menu
 
 LABEL live
-  MENU LABEL Start P2V Converter
-  MENU DEFAULT
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img boot=live config components
+MENU LABEL Start P2V Converter
+MENU DEFAULT
+KERNEL /live/vmlinuz
+APPEND initrd=/live/initrd.img boot=live config components
 
 LABEL live-safe
-  MENU LABEL Start P2V Converter - Safe Mode (nomodeset)
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img boot=live config components nomodeset
+MENU LABEL Start P2V Converter - Safe Mode (nomodeset)
+KERNEL /live/vmlinuz
+APPEND initrd=/live/initrd.img boot=live config components nomodeset
 EOF
 
 echo "Building the ISO..."
 sudo lb build
 
 if [ -f live-image-i386.hybrid.iso ]; then
-  mv live-image-i386.hybrid.iso "$ISO_NAME"
+mv live-image-i386.hybrid.iso "$ISO_NAME"
 elif [ -f live-image-i386.iso ]; then
-  mv live-image-i386.iso "$ISO_NAME"
+mv live-image-i386.iso "$ISO_NAME"
 else
-  echo "ERROR: Could not find generated ISO file"
-  exit 1
+echo "ERROR: Could not find generated ISO file"
+exit 1
 fi
 
 sudo lb clean
