@@ -1,4 +1,4 @@
-# P2V Converter – Transformer des machines physiques en machines virtuelles
+# VirtuPack – Transformer des machines physiques en machines virtuelles
 
 Transformez des disques physiques en images de machine virtuelle **qcow2** prêtes à être utilisées sur n’importe quel hyperviseur. Outil axé sur la sécurité, avec une interface graphique intuitive, empêchant l’imagerie accidentelle de systèmes en cours d’exécution. Créez une **ISO amorçable** pour convertir hors ligne et en toute sécurité n’importe quelle machine physique.
 
@@ -11,7 +11,7 @@ Transformez des disques physiques en images de machine virtuelle **qcow2** prêt
 - Suivi de progression en temps réel avec possibilité d’annulation.
 - Bloque la conversion des disques système actifs et des partitions montées.
 - Analyse intelligente de l’espace basée sur l’utilisation réelle.
-- Journalisation complète dans `/var/log/disk2qcow2.log`.
+- Journalisation complète dans `/var/log/virtupack.log`.
 
 ### Outils avancés
 - **Redimensionnement QCOW2** : optimise la taille du disque virtuel.
@@ -76,11 +76,11 @@ Toutes les fonctionnalités sont disponibles pour l’utilisateur, à l’except
 ## Démarrage rapide
 
 ### Télécharger l’ISO précompilée (recommandé)
-**[Télécharger l’ISO P2V Converter](https://archive.org/details/p2vConverter-v2.0)**
+**[Télécharger l’ISO VirtuPack](https://archive.org/details/VirtuPack-v2.0)**
 
 ```txt
-- p2vConverter-v2.0-64bits.iso : e628273cbcf2d027e207a30f7f8c5cdac18b19595f37b23c738ff9b128f2583b
-- p2vConverter-v2.0-32bits.iso : ddf55049959ebfc19d778165c16efcc84cb7d0e74853672b6df8a60cdad7677d
+- VirtuPack-v2.0-64bits.iso : e628273cbcf2d027e207a30f7f8c5cdac18b19595f37b23c738ff9b128f2583b
+- VirtuPack-v2.0-32bits.iso : ddf55049959ebfc19d778165c16efcc84cb7d0e74853672b6df8a60cdad7677d
 ```
 
 Choisissez la version d’ISO souhaitée : 32 bits ou 64 bits, XFCE (plus léger) ou KDE.
@@ -144,7 +144,7 @@ sudo usermod -a -G libvirt $USER
 ## Flux d’utilisation
 
 ### 1. Démarrer depuis l’ISO
-- Écrire l’ISO sur une clé USB : `sudo dd if=p2v-converter.iso of=/dev/sdX bs=4M status=progress` (ou utiliser une [clé Ventoy](https://www.ventoy.net/en/)).
+- Écrire l’ISO sur une clé USB : `sudo dd if=virtupack*.iso of=/dev/sdX bs=4M status=progress` (ou utiliser une [clé Ventoy](https://www.ventoy.net/en/)).
 - Démarrer la machine cible sur la clé USB.
 
 ### 2. Connecter le stockage externe
@@ -186,9 +186,7 @@ sudo usermod -a -G libvirt $USER
 
 ```bash
 # Depuis l’ISO (auto-configuré) ou une installation native :
-virt-manager
-
-# Puis dans l’interface :
+virt-manager... # Puis dans l’interface :
 # 1. Nouvelle VM → Importer un disque existant
 # 2. Parcourir jusqu’au fichier .qcow2
 # 3. Choisir le type d’OS (Windows ou Linux)
@@ -279,14 +277,14 @@ Ou utilisez l’outil graphique **"Format Converter"**.
 
 ### Journaux
 
-Consultez `/var/log/disk2qcow2.log` pour obtenir des diagnostics détaillés, ou utilisez **"Print Session Log"** pour générer des rapports PDF.
+Consultez `/var/log/virtupack.log` pour obtenir des diagnostics détaillés, ou utilisez **"Print Session Log"** pour générer des rapports PDF.
 
 ***
 
 ## Structure du projet
 
 ```text
-disk2qcow2/
+virtupack/
 ├── code/                          # Application
 │   ├── main.py                    # Point d’entrée
 │   ├── p2v_dialog.py              # Interface graphique principale
@@ -321,7 +319,7 @@ disk2qcow2/
 
 - **Format** : QCOW2 avec compression zlib.
 - **Systèmes source pris en charge** : Windows et Linux, quel que soit le système de fichiers.
-- **Emplacement des journaux** : `/var/log/disk2qcow2.log`.
+- **Emplacement des journaux** : `/var/log/virtupack.log`.
 - **Interface graphique** : Python 3 + Tkinter.
 - **Outils** : qemu-img, cryptsetup, rsync, libvirt, virt-manager, qemu-utils.
 - **Plateformes cibles** : QEMU/KVM, VirtualBox, VMware, Hyper-V.
@@ -329,7 +327,7 @@ disk2qcow2/
 ## Exemple rapide
 
 ```bash
-# 1. Démarrer depuis l’ISO → lancer P2V Converter
+# 1. Démarrer depuis l’ISO → lancer VirtuPack
 # 2. Cliquer sur "Refresh Disks" → sélectionner /dev/sda (disque Windows)
 # 3. Cliquer sur "Mount Disk" → sélectionner le disque externe /dev/sdb1 → monter dans /mnt/external
 # 4. Cliquer sur "Check Space Requirements" → vérifier l’indicateur vert
@@ -350,5 +348,3 @@ Attribution-NonCommercial-ShareAlike 4.0 International. Voir le fichier LICENSE.
 ---
 
 **Transformez n’importe quelle machine physique Windows ou Linux en environnement virtuel portable.**
-
-**[Télécharger l’ISO P2V Converter](https://archive.org/details/p2vConverter-v0.1)** et commencez à virtualiser dès aujourd’hui !
