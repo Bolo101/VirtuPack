@@ -1,17 +1,17 @@
 #!/bin/bash
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║ forgeIso32.sh – ISO dual-boot P2V Converter (32-bit)                         ║
-# ║                                                                              ║
-# ║ Entrée 1 : Live → OpenBox kiosque (code/)                                    ║
-# ║ Entrée 2 : Live Safe → Live + nomodeset                                      ║
-# ║                                                                              ║
+# ║ forgeIso32.sh – ISO dual-boot VirtuPack (32-bit) ║
+# ║                                                                          ║
+# ║ Entrée 1 : Live → OpenBox kiosque (code/)                                ║
+# ║ Entrée 2 : Live Safe → Live + nomodeset                                  ║
+# ║                                                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # Exit on any error
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/p2vConverter-v3.0-32bits.iso"
+ISO_NAME="$(pwd)/VirtuPack-v3.0-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../../code"
 
@@ -36,7 +36,7 @@ lb config \
 --linux-packages=linux-image \
 --linux-flavours=686 \
 --debian-installer=none \
---bootappend-live="boot=live components config hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
+--bootappend-live="boot=live components config hostname=virtupack username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
 --bootloaders="syslinux" \
 --binary-images=iso-hybrid
 # NOTE: --debian-installer=none is intentional.
@@ -170,13 +170,13 @@ dynamic_ownership = 0
 vnc_listen = "0.0.0.0"
 
 cgroup_device_acl = [
-    "/dev/null", "/dev/full", "/dev/zero",
-    "/dev/random", "/dev/urandom",
-    "/dev/ptmx", "/dev/kvm",
-    "/dev/rtc", "/dev/hpet",
-    "/dev/sdb", "/dev/sdc", "/dev/sdd",
-    "/dev/disk/by-uuid/*"
-]
+"/dev/null", "/dev/full", "/dev/zero",
+"/dev/random", "/dev/urandom",
+"/dev/ptmx", "/dev/kvm",
+"/dev/rtc", "/dev/hpet",
+"/dev/sdb", "/dev/sdc", "/dev/sdd",
+"/dev/disk/by-uuid/*"
+
 EOF
 
 mkdir -p config/includes.chroot/etc/systemd/system/
@@ -208,11 +208,11 @@ echo "Copying application files..."
 mkdir -p config/includes.chroot/usr/local/bin/
 cp -r "${CODE_DIR}"/* config/includes.chroot/usr/local/bin/ 2>/dev/null || true
 chmod +x config/includes.chroot/usr/local/bin/* 2>/dev/null || true
-cat << 'WRAPPER' > config/includes.chroot/usr/local/bin/d2q
+cat << 'WRAPPER' > config/includes.chroot/usr/local/bin/vp
 #!/bin/bash
 exec python3 /usr/local/bin/main.py "$@"
 WRAPPER
-chmod +x config/includes.chroot/usr/local/bin/d2q
+chmod +x config/includes.chroot/usr/local/bin/vp
 
 mkdir -p config/includes.chroot/etc/sudoers.d/
 echo "user ALL=(ALL) NOPASSWD: ALL" > config/includes.chroot/etc/sudoers.d/passwordless
@@ -235,7 +235,7 @@ EOF
 #
 # Boot flow:
 # LightDM auto-login → p2v-kiosk XSession → p2v-session.sh
-# → openbox (WM, background) + d2q (app, fullscreen, foreground)
+# → openbox (WM, background) + vp (app, fullscreen, foreground)
 # When the app exits the session ends and LightDM restarts it (Relogin).
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -243,20 +243,12 @@ echo "Configuring openbox kiosk session..."
 
 mkdir -p config/includes.chroot/etc/xdg/openbox/
 cat << 'EOF' > config/includes.chroot/etc/xdg/openbox/rc.xml
-<?xml version="1.0" encoding="UTF-8"?>
-<openbox_config xmlns="http://openbox.org/3.4/rc"
-                xmlns:xi="http://www.w3.org/2001/XInclude">
-  <applications>
-    <!-- Pas de fullscreen/maximized global : la fenetre principale gere
-         elle-meme son plein ecran ; les fenetres secondaires (pop-ups)
-         conservent ainsi leur taille naturelle. -->
-  </applications>
-</openbox_config>
+
 EOF
 
 cat << 'EOF' > config/includes.chroot/usr/local/bin/p2v-session.sh
 #!/bin/bash
-# P2V Converter kiosk session — called by LightDM.
+# VirtuPack kiosk session — called by LightDM.
 
 xset s off -dpms 2>/dev/null || true
 xset s noblank 2>/dev/null || true
@@ -265,7 +257,7 @@ openbox &
 WM_PID=$!
 sleep 1
 
-sudo /usr/local/bin/d2q
+sudo /usr/local/bin/vp
 
 kill "$WM_PID" 2>/dev/null || true
 EOF
@@ -274,8 +266,8 @@ chmod +x config/includes.chroot/usr/local/bin/p2v-session.sh
 mkdir -p config/includes.chroot/usr/share/xsessions/
 cat << 'EOF' > config/includes.chroot/usr/share/xsessions/p2v-kiosk.desktop
 [Desktop Entry]
-Name=P2V Converter (Kiosk)
-Comment=Launch P2V Converter fullscreen, no desktop
+Name=VirtuPack (Kiosk)
+Comment=Launch VirtuPack fullscreen, no desktop
 Exec=/usr/local/bin/p2v-session.sh
 Type=Application
 EOF
@@ -298,8 +290,8 @@ cat << 'EOF' > config/includes.chroot/etc/skel/.bashrc
 if [ -f /etc/bashrc ]; then
 . /etc/bashrc
 fi
-echo "P2V Converter (32-bit)"
-echo "Type 'sudo d2q' to use the P2V Converter program"
+echo "VirtuPack (32-bit)"
+echo "Type 'sudo vp' to use the VirtuPack program"
 EOF
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,16 +315,16 @@ UI vesamenu.c32
 DEFAULT live
 TIMEOUT 50
 
-MENU TITLE P2V Converter (32-bit) - Boot Menu
+MENU TITLE VirtuPack (32-bit) - Boot Menu
 
 LABEL live
-MENU LABEL Start P2V Converter
+MENU LABEL Start VirtuPack
 MENU DEFAULT
 KERNEL /live/vmlinuz
 APPEND initrd=/live/initrd.img boot=live config components
 
 LABEL live-safe
-MENU LABEL Start P2V Converter - Safe Mode (nomodeset)
+MENU LABEL Start VirtuPack - Safe Mode (nomodeset)
 KERNEL /live/vmlinuz
 APPEND initrd=/live/initrd.img boot=live config components nomodeset
 EOF
