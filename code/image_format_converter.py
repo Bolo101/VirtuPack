@@ -65,8 +65,7 @@ class ImageFormatConverter:
         self.root.title("Virtual Disk Image Format Converter")
 
         # Window configuration
-        self.root.geometry("950x900")
-        self.root.minsize(850, 700)
+        self.root.attributes("-fullscreen", True)
         self.root.transient(parent)
 
         self.image_path = tk.StringVar()
@@ -743,48 +742,3 @@ class ImageFormatConverter:
         self.progress.stop()
         self.progress_label.config(text="Operation completed")
         self.status_label.config(text="Operation completed - Ready for next conversion")
-
-
-def main():
-    """Main entry point for standalone testing"""
-    print("=" * 75)
-    print("VIRTUAL DISK IMAGE FORMAT CONVERTER")
-    print("=" * 75)
-
-    try:
-        subprocess.run(
-            ['qemu-img', '--version'],
-            capture_output=True,
-            timeout=5,
-            check=True
-        )
-        print("✓ qemu-img is available")
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        print("ERROR: qemu-img is not installed")
-        print("\nINSTALL REQUIRED PACKAGE:")
-        print("Ubuntu/Debian: sudo apt install qemu-utils")
-        print("Fedora/RHEL: sudo dnf install qemu-img")
-        print("Arch Linux: sudo pacman -S qemu")
-        input("\nPress Enter to exit...")
-        return
-
-    print("Launching converter...")
-    print("=" * 75)
-
-    root = tk.Tk()
-    root.withdraw()
-
-    app = ImageFormatConverter(root)
-
-    try:
-        root.mainloop()
-    except KeyboardInterrupt:
-        print("\nApplication interrupted by user")
-    except Exception as e:
-        print(f"\nUnexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-if __name__ == "__main__":
-    main()
