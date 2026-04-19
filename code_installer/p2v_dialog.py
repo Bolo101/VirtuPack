@@ -1683,14 +1683,3 @@ class P2VConverterGUI:
                 os.rmdir(mount_dir)
             except OSError:
                 pass
-
-
-
-def main():
-    """Main entry point for the GUI application"""
-    root = tk.Tk()
-    app = P2VConverterGUI(root)
-    root.mainloop()
-
-if __name__ == "__main__":
-    main()

@@ -1478,14 +1478,3 @@ class P2VConverterGUI:
         finally:
             self.file_pdf_btn.config(state=tk.NORMAL)
             self.status_var.set("Prêt")
-
-
-def main():
-    """Main entry point for the GUI application"""
-    root = tk.Tk()
-    app  = P2VConverterGUI(root)
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
