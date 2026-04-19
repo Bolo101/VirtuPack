@@ -1,10 +1,10 @@
 #!/bin/bash
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║ forgeIso32.sh – ISO dual-boot VirtuPack (32-bit) ║
-# ║                                                                          ║
-# ║ Entrée 1 : Live → OpenBox kiosque (code/)                                ║
-# ║ Entrée 2 : Live Safe → Live + nomodeset                                  ║
-# ║                                                                          ║
+# ║ forgeIso32.sh – ISO dual-boot VirtuPack (32-bit)                           ║
+# ║                                                                             ║
+# ║ Entrée 1 : Live → OpenBox kiosque (code/)                                  ║
+# ║ Entrée 2 : Live Safe → Live + nomodeset                                    ║
+# ║                                                                             ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # Exit on any error
@@ -160,9 +160,18 @@ Option "OffTime" "0"
 EndSection
 EOF
 
-echo "Configuring libvirt..."
+# ════════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION LIBVIRT – accès supports amovibles depuis virt-manager
+# ════════════════════════════════════════════════════════════════════════════════
+echo "=== Configuration libvirt / qemu.conf (supports amovibles) ==="
 mkdir -p config/includes.chroot/etc/libvirt/
+
+# qemu.conf : exécution en root + ACL étendue aux blocs amovibles courants
+# Note : les wildcards ne sont pas supportés dans cgroup_device_acl ; ajouter /dev/sdX supplémentaires si nécessaire.
 cat << 'EOF' > config/includes.chroot/etc/libvirt/qemu.conf
+# VirtuPack – accès QEMU aux supports amovibles (virt-manager)
+# Modifiez cgroup_device_acl si votre clé USB apparaît sur /dev/sdg ou au-delà.
+
 user = "root"
 group = "root"
 security_driver = "none"
@@ -175,34 +184,45 @@ cgroup_device_acl = [
 "/dev/ptmx", "/dev/kvm",
 "/dev/rtc", "/dev/hpet",
 "/dev/sdb", "/dev/sdc", "/dev/sdd",
-"/dev/disk/by-uuid/*"
-
+"/dev/sde", "/dev/sdf"
+]
 EOF
 
+# Service one-shot : démarre libvirtd, attend le socket, ajoute l'utilisateur au groupe libvirt
 mkdir -p config/includes.chroot/etc/systemd/system/
-cat << 'EOF' > config/includes.chroot/etc/systemd/system/libvirtd-startup.service
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/vp-libvirt-setup.service
 [Unit]
-Description=Start libvirtd daemon on boot
+Description=VirtuPack – initialisation libvirt pour supports amovibles
 After=network.target
+Wants=libvirtd.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/systemctl start libvirtd
 RemainAfterExit=yes
+# Démarrage explicite de libvirtd (au cas où il ne serait pas encore actif)
+ExecStart=/usr/bin/systemctl start libvirtd.service
+# Attendre que le socket soit disponible
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do [ -S /var/run/libvirt/libvirt-sock ] && exit 0; sleep 0.5; done; exit 0'
+# Ajout de l'utilisateur live au groupe libvirt
+ExecStartPost=/usr/sbin/usermod -a -G libvirt user
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-mkdir -p config/hooks/live/
-cat << 'EOF' > config/hooks/live/50-libvirt-user.chroot
-#!/bin/bash
-set -e
-usermod -a -G libvirt user || true
-systemctl enable libvirtd || true
-systemctl restart libvirtd || true
-EOF
-chmod +x config/hooks/live/50-libvirt-user.chroot
+# Activation des services via liens symboliques dans le target (sans systemctl enable)
+mkdir -p config/includes.chroot/etc/systemd/system/multi-user.target.wants/
+
+# Activer libvirtd.service au boot
+# Sur Bullseye i386 le chemin est /lib/systemd/system (pas /usr/lib)
+ln -sf /lib/systemd/system/libvirtd.service \
+config/includes.chroot/etc/systemd/system/multi-user.target.wants/libvirtd.service
+
+# Activer notre service de setup libvirt
+ln -sf /etc/systemd/system/vp-libvirt-setup.service \
+config/includes.chroot/etc/systemd/system/multi-user.target.wants/vp-libvirt-setup.service
+
+echo " --> qemu.conf, libvirtd.service et vp-libvirt-setup.service ecrits"
 
 echo "Copying application files..."
 mkdir -p config/includes.chroot/usr/local/bin/
@@ -243,7 +263,57 @@ echo "Configuring openbox kiosk session..."
 
 mkdir -p config/includes.chroot/etc/xdg/openbox/
 cat << 'EOF' > config/includes.chroot/etc/xdg/openbox/rc.xml
-
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc"
+                xmlns:xi="http://www.w3.org/2001/XInclude">
+  <resistance>
+    <strength>10</strength>
+    <screen_edge_strength>20</screen_edge_strength>
+  </resistance>
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+    <focusLast>yes</focusLast>
+    <underMouse>no</underMouse>
+    <focusDelay>200</focusDelay>
+    <raiseOnFocus>no</raiseOnFocus>
+  </focus>
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout>NLIMC</titleLayout>
+  </theme>
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+    <names/>
+    <popupTime>875</popupTime>
+  </desktops>
+  <resize>
+    <drawContents>yes</drawContents>
+    <popupShow>NonPixel</popupShow>
+  </resize>
+  <mouse>
+    <dragThreshold>8</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <screenEdgeWarpTime>400</screenEdgeWarpTime>
+    <screenEdgeWarpMouse>false</screenEdgeWarpMouse>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+    </context>
+    <context name="Desktop">
+      <mousebind button="A-Left" action="Press">
+        <action name="Focus"/>
+      </mousebind>
+    </context>
+  </mouse>
+  <keyboard>
+    <chainQuitKey>C-g</chainQuitKey>
+  </keyboard>
+  <applications/>
+</openbox_config>
 EOF
 
 cat << 'EOF' > config/includes.chroot/usr/local/bin/p2v-session.sh
@@ -295,18 +365,6 @@ echo "Type 'sudo vp' to use the VirtuPack program"
 EOF
 
 # ─────────────────────────────────────────────────────────────────────────────
-
-mkdir -p config/includes.chroot/lib/live/boot
-cat << 'EOF' > config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
-#!/bin/sh
-echo "Initializing libvirt daemon..."
-mkdir -p /var/lib/libvirt/images /var/lib/libvirt/qemu /var/run/libvirt
-chmod 755 /var/lib/libvirt /var/lib/libvirt/images /var/lib/libvirt/qemu /var/run/libvirt
-/usr/sbin/libvirtd -d 2>/dev/null || true
-sleep 2
-echo "libvirt daemon initialized"
-EOF
-chmod +x config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
 
 echo "Configuring boot menu..."
 mkdir -p config/includes.binary/isolinux
