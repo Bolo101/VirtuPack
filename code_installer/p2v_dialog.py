@@ -187,8 +187,12 @@ class P2VConverterGUI:
         self.create_header_frame()
         self.create_main_frame()
         self.create_status_frame()
-        self.notif_bar = theme.NotificationBar(self.root)
-        self.notif_bar.grid(row=3, column=0, sticky="ew")
+        # NotificationBar est isolée dans un Frame intermédiaire pour éviter
+        # tout conflit pack/grid directement dans la fenêtre racine (.)
+        _notif_container = ttk.Frame(self.root)
+        _notif_container.grid(row=3, column=0, sticky="ew")
+        _notif_container.grid_columnconfigure(0, weight=1)
+        self.notif_bar = theme.NotificationBar(_notif_container)
     
     def create_header_frame(self):
         """Create the header frame with title and PDF generation buttons"""
@@ -323,9 +327,10 @@ class P2VConverterGUI:
             tools_frame = ttk.Frame(vm_config_frame)
             tools_frame.grid(row=current_row, column=current_col, sticky="ew", padx=(10, 5), pady=(0, 5))
             tools_frame.grid_columnconfigure(0, weight=1)
-            
+
+            # Utiliser grid() de manière cohérente avec grid_columnconfigure — pas pack()
             btn = ttk.Button(tools_frame, text=tool_name, command=tool_command)
-            btn.pack(fill="x", expand=True)
+            btn.grid(row=0, column=0, sticky="ew")
             
             current_col += 1
         
@@ -706,36 +711,15 @@ class P2VConverterGUI:
             missing_tools, available = VirtManagerLauncher.check_virt_manager()
             
             if not available:
-                error_msg = "Required virtualization tools are missing:\n\n"
-                error_msg += "\n".join(f"• {tool}" for tool in missing_tools)
-                error_msg += "\n\nPlease install the missing packages"
-                
+                error_msg = "Outils de virtualisation manquants : " + ", ".join(missing_tools)
                 log_error(f"Virt-manager check failed: {', '.join(missing_tools)}")
-                self._notify("Notification", level="info")
+                self._notify(error_msg, level="error")
                 return
             
             log_info("Virt-manager is available, launching...")
             
-            # Show confirmation dialog
-            confirm_msg = (
-                "Launch Virt-Manager\n\n"
-                "This will open virt-manager for virtual machine management.\n\n"
-                "You can:\n"
-                "• Create new VMs\n"
-                "• Import/manage existing VM images\n"
-                "• Configure VM hardware settings\n"
-                "• Install guest operating systems\n\n"
-                "Continue?"
-            )
-            
-            if not self._notify("Notification", level="info"):
-                log_info("User cancelled virt-manager launch")
-                return
-            
-            log_info("User confirmed virt-manager launch")
-            
             # Disable button during launch
-            self.status_var.set("Launching virt-manager...")
+            self.status_var.set("Lancement de virt-manager...")
             self.root.update_idletasks()
             
             # Launch virt-manager
@@ -743,71 +727,53 @@ class P2VConverterGUI:
                 VirtManagerLauncher.launch_virt_manager(log_callback=log_info)
                 
                 log_info("Virt-manager launched successfully")
-                self.status_var.set("Virt-manager is running")
-                self.operation_details.config(text="Virt-manager opened in background", 
+                self.status_var.set("Virt-manager est en cours d'exécution")
+                self.operation_details.config(text="Virt-manager ouvert en arrière-plan",
                                             foreground="green")
-                
-                self._notify("Notification", level="info")
+                self._notify("Virt-manager lancé avec succès", level="success")
             
             except FileNotFoundError as e:
-                error_msg = f"Virt-manager not found: {str(e)}"
+                error_msg = f"virt-manager introuvable : {str(e)}"
                 log_error(error_msg)
-                self._notify("Notification", level="info")
+                self._notify(error_msg, level="error")
             
             except PermissionError as e:
-                error_msg = (
-                    f"Permission denied: {str(e)}\n\n"
-                    "Virt-manager requires root privileges.\n\n"
-                    "Solutions:\n"
-                    "• Run the application with: sudo python3 p2v_dialog.py\n"
-                    "• Install and configure polkit for privilege escalation\n"
-                    "• Ensure you have sudo access"
-                )
+                error_msg = f"Permission refusée : {str(e)}"
                 log_error(error_msg)
-                self._notify("Notification", level="info")
+                self._notify(error_msg, level="error")
             
             except OSError as e:
-                error_msg = f"System error launching virt-manager: {str(e)}"
+                error_msg = f"Erreur système au lancement : {str(e)}"
                 log_error(error_msg)
-                self._notify("Notification", level="info")
+                self._notify(error_msg, level="error")
             
             except subprocess.CalledProcessError as e:
-                error_msg = f"Virt-manager failed to start: {str(e)}"
+                error_msg = f"virt-manager a échoué (code {e.returncode})"
                 log_error(error_msg)
-                self._notify("Notification", level="info")
-            
-            except subprocess.TimeoutExpired as e:
-                error_msg = f"Virt-manager launch timed out: {str(e)}"
-                log_error(error_msg)
-                self._notify("Notification", level="info")
+                self._notify(error_msg, level="error")
             
             except subprocess.SubprocessError as e:
-                error_msg = f"Subprocess error: {str(e)}"
+                error_msg = f"Erreur subprocess : {str(e)}"
                 log_error(error_msg)
-                self._notify("Notification", level="info")
-            
-            except ImportError as e:
-                error_msg = f"Virt-Manager launcher not available: {str(e)}"
-                log_error(error_msg)
-                self._notify("Notification", level="info")
+                self._notify(error_msg, level="error")
             
             except (AttributeError, TypeError) as e:
-                error_msg = f"Internal error: {str(e)}"
+                error_msg = f"Erreur interne : {str(e)}"
                 log_error(error_msg)
-                self._notify("Notification", level="info")
+                self._notify(error_msg, level="error")
         
         except tk.TclError as e:
-            error_msg = f"GUI error: {str(e)}"
+            error_msg = f"Erreur GUI : {str(e)}"
             log_error(error_msg)
-            self._notify("Notification", level="info")
+            self._notify(error_msg, level="error")
         
         except (KeyError, ValueError) as e:
-            error_msg = f"Configuration error: {str(e)}"
+            error_msg = f"Erreur de configuration : {str(e)}"
             log_error(error_msg)
-            self._notify("Notification", level="info")
+            self._notify(error_msg, level="error")
         
         finally:
-            self.status_var.set("Ready")
+            self.status_var.set("Prêt")
     
     def launch_virt_manager_with_image(self, image_path):
         """
