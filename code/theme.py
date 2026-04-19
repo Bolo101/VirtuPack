@@ -266,3 +266,153 @@ def style_listbox(widget: tk.Listbox):
 def style_canvas(widget: tk.Canvas):
     """Apply dark background to a tk.Canvas (used for scrollable frames)."""
     widget.configure(bg=BG_CARD, highlightthickness=0)
+
+
+# ── Notification bar ─────────────────────────────────────────────────────────
+
+# Couleurs de fond par niveau
+_NOTIF_BG = {
+    "info":    "#1e3a5f",
+    "success": "#14432a",
+    "warning": "#4a2e00",
+    "error":   "#4a1515",
+}
+_NOTIF_FG = {
+    "info":    INFO,
+    "success": SUCCESS,
+    "warning": WARNING,
+    "error":   ERROR,
+}
+_NOTIF_ICON = {
+    "info":    "ℹ",
+    "success": "✔",
+    "warning": "⚠",
+    "error":   "✖",
+}
+
+
+class NotificationBar(tk.Frame):
+    """
+    Barre de notification inline à placer en bas (ou haut) d'une fenêtre.
+    Utilisation :
+        bar = NotificationBar(parent)
+        bar.pack(side=tk.BOTTOM, fill=tk.X)
+        bar.show("Message d'erreur", level="error")
+        bar.show("Succès !", level="success")   # s'efface après 5 s
+        bar.show("Voulez-vous continuer ?", level="warning",
+                 confirm=True, on_yes=ma_fonction, on_no=autre_fonction)
+    """
+
+    AUTO_HIDE_MS = 6000  # 6 secondes avant disparition automatique
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, bg=BG, height=0, **kwargs)
+        self._after_id = None
+        self._visible = False
+
+        # Ligne de séparation
+        self._sep = tk.Frame(self, bg=BORDER, height=1)
+        self._sep.pack(fill=tk.X, side=tk.TOP)
+
+        # Contenu
+        self._inner = tk.Frame(self, bg=BG, padx=12, pady=6)
+        self._inner.pack(fill=tk.X)
+
+        self._icon_lbl = tk.Label(self._inner, text="", bg=BG,
+                                  font=("Segoe UI", 11), width=2)
+        self._icon_lbl.pack(side=tk.LEFT)
+
+        self._msg_lbl = tk.Label(self._inner, text="", bg=BG,
+                                 fg=TEXT_PRIMARY, font=FONT_NORMAL,
+                                 anchor="w", justify="left", wraplength=700)
+        self._msg_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 12))
+
+        # Boutons de confirmation (masqués par défaut)
+        self._btn_frame = tk.Frame(self._inner, bg=BG)
+        self._btn_yes = tk.Button(self._btn_frame, text="Oui",
+                                  bg=ACCENT, fg="#ffffff",
+                                  activebackground=ACCENT_DARK,
+                                  relief="flat", padx=14, pady=3,
+                                  font=("Segoe UI", 9, "bold"),
+                                  cursor="hand2", bd=0)
+        self._btn_yes.pack(side=tk.LEFT, padx=(0, 6))
+        self._btn_no = tk.Button(self._btn_frame, text="Non",
+                                 bg=BG_INPUT, fg=TEXT_PRIMARY,
+                                 activebackground=BORDER,
+                                 relief="flat", padx=14, pady=3,
+                                 font=("Segoe UI", 9),
+                                 cursor="hand2", bd=0)
+        self._btn_no.pack(side=tk.LEFT)
+
+        # Bouton fermer
+        self._close_btn = tk.Button(self._inner, text="✕",
+                                    bg=BG, fg=TEXT_MUTED,
+                                    activebackground=BG,
+                                    relief="flat", bd=0, padx=4,
+                                    font=("Segoe UI", 9),
+                                    cursor="hand2",
+                                    command=self.hide)
+        self._close_btn.pack(side=tk.RIGHT)
+
+        # Masquer au départ (grid_remove préserve la config, évite le conflit pack/grid)
+        self.grid(row=0, column=0, sticky="ew")
+        self.grid_remove()
+
+    def show(self, message: str, level: str = "info",
+             confirm: bool = False,
+             on_yes=None, on_no=None,
+             auto_hide: bool = True):
+        """
+        Affiche la notification.
+        - level    : "info" | "success" | "warning" | "error"
+        - confirm  : True → affiche les boutons Oui / Non
+        - on_yes   : callback si l'utilisateur clique Oui
+        - on_no    : callback si l'utilisateur clique Non
+        - auto_hide: False pour les confirmations (attend l'action)
+        """
+        # Annuler l'auto-masquage précédent
+        if self._after_id:
+            self.after_cancel(self._after_id)
+            self._after_id = None
+
+        bg  = _NOTIF_BG.get(level, BG_INPUT)
+        fg  = _NOTIF_FG.get(level, TEXT_PRIMARY)
+        icon = _NOTIF_ICON.get(level, "•")
+
+        self.configure(bg=bg)
+        self._sep.configure(bg=_NOTIF_FG.get(level, BORDER))
+        self._inner.configure(bg=bg)
+        self._icon_lbl.configure(text=icon, fg=fg, bg=bg)
+        self._msg_lbl.configure(text=message, fg=fg, bg=bg)
+        self._close_btn.configure(bg=bg, activebackground=bg)
+
+        if confirm:
+            self._btn_frame.configure(bg=bg)
+            self._btn_yes.configure(bg=ACCENT)
+            self._btn_no.configure(bg=BG_INPUT)
+            # Reconfigurer les callbacks
+            self._btn_yes.configure(command=lambda: self._on_confirm(on_yes))
+            self._btn_no.configure(command=lambda: self._on_confirm(on_no))
+            self._btn_frame.pack(side=tk.RIGHT, padx=(0, 8))
+        else:
+            self._btn_frame.pack_forget()
+
+        # Afficher la barre (grid_restore, compatible avec le conteneur géré en grid)
+        self.grid()
+        self._visible = True
+
+        if auto_hide and not confirm:
+            self._after_id = self.after(self.AUTO_HIDE_MS, self.hide)
+
+    def hide(self):
+        """Masque la barre de notification."""
+        if self._after_id:
+            self.after_cancel(self._after_id)
+            self._after_id = None
+        self.grid_remove()
+        self._visible = False
+
+    def _on_confirm(self, callback):
+        self.hide()
+        if callable(callback):
+            callback()

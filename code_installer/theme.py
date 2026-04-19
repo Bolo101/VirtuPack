@@ -354,8 +354,9 @@ class NotificationBar(tk.Frame):
                                     command=self.hide)
         self._close_btn.pack(side=tk.RIGHT)
 
-        # Masquer au départ
-        self.pack_forget()
+        # Masquer au départ (grid_remove préserve la config, évite le conflit pack/grid)
+        self.grid(row=0, column=0, sticky="ew")
+        self.grid_remove()
 
     def show(self, message: str, level: str = "info",
              confirm: bool = False,
@@ -396,8 +397,8 @@ class NotificationBar(tk.Frame):
         else:
             self._btn_frame.pack_forget()
 
-        # Afficher la barre
-        self.pack(side=tk.BOTTOM, fill=tk.X)
+        # Afficher la barre (grid_restore, compatible avec le conteneur géré en grid)
+        self.grid()
         self._visible = True
 
         if auto_hide and not confirm:
@@ -408,7 +409,7 @@ class NotificationBar(tk.Frame):
         if self._after_id:
             self.after_cancel(self._after_id)
             self._after_id = None
-        self.pack_forget()
+        self.grid_remove()
         self._visible = False
 
     def _on_confirm(self, callback):
