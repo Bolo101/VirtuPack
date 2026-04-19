@@ -646,10 +646,14 @@ class AdminInterface(tk.Toplevel):
         ttk.Label(status_bar, text="Status:").pack(side=tk.LEFT)
         ttk.Label(status_bar, textvariable=self._status_var,
                   foreground=theme.SUCCESS).pack(side=tk.LEFT, padx=6)
-        self.notif_bar = theme.NotificationBar(self)
-        self.notif_bar.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Button(self, text="Fermer le panneau",
                    command=self.destroy, width=20).pack(pady=(0, 12))
+        # NotificationBar isolée dans un Frame intermédiaire pour éviter
+        # tout conflit pack/grid dans le Toplevel parent
+        _notif_container = ttk.Frame(self)
+        _notif_container.pack(side=tk.BOTTOM, fill=tk.X)
+        _notif_container.grid_columnconfigure(0, weight=1)
+        self.notif_bar = theme.NotificationBar(_notif_container)
 
     # ── Centering ──────────────────────────────────────────────────────────────
     def _center(self) -> None:
