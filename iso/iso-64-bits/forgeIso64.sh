@@ -103,7 +103,7 @@ keyboard-configuration
 systemd
 evince
 network-manager
-# Paquets P2V / virtualisation
+# Paquets VP / virtualisation
 qemu-utils
 qemu-system-x86
 virt-manager
@@ -247,35 +247,44 @@ cgroup_device_acl = [
 "/dev/rtc", "/dev/hpet",
 "/dev/sdb", "/dev/sdc", "/dev/sdd",
 "/dev/sde", "/dev/sdf"
-
+]
 EOF
 
 # Service one-shot : ajoute l'utilisateur au groupe libvirt + redémarre libvirtd
 mkdir -p config/includes.chroot/etc/systemd/system/
-cat << 'EOF' > config/includes.chroot/etc/systemd/system/p2v-libvirt-setup.service
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/vp-libvirt-setup.service
 [Unit]
 Description=VirtuPack – initialisation libvirt pour supports amovibles
-After=libvirtd.service
-Requires=libvirtd.service
+After=network.target
+Wants=libvirtd.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Démarrage explicite de libvirtd (au cas où il ne serait pas encore actif)
+ExecStart=/usr/bin/systemctl start libvirtd.service
+# Attendre que le socket soit disponible
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do [ -S /var/run/libvirt/libvirt-sock ] && exit 0; sleep 0.5; done; exit 0'
 # Ajout de l'utilisateur live au groupe libvirt
-ExecStart=/usr/sbin/usermod -a -G libvirt user
-# Rechargement de libvirtd pour prendre en compte qemu.conf
-ExecStartPost=/usr/bin/systemctl restart libvirtd
+ExecStartPost=/usr/sbin/usermod -a -G libvirt user
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Activation du service via un lien symbolique dans le target (sans systemctl enable)
+# Activation des services via liens symboliques dans le target (sans systemctl enable)
 mkdir -p config/includes.chroot/etc/systemd/system/multi-user.target.wants/
-ln -sf /etc/systemd/system/p2v-libvirt-setup.service \
-config/includes.chroot/etc/systemd/system/multi-user.target.wants/p2v-libvirt-setup.service
 
-echo " --> qemu.conf et p2v-libvirt-setup.service ecrits"
+# Activer libvirtd.service au boot
+# Cherche dans /usr/lib (Debian Trixie) puis /lib (compat) – on cible le vrai chemin
+ln -sf /usr/lib/systemd/system/libvirtd.service \
+config/includes.chroot/etc/systemd/system/multi-user.target.wants/libvirtd.service
+
+# Activer notre service de setup libvirt
+ln -sf /etc/systemd/system/vp-libvirt-setup.service \
+config/includes.chroot/etc/systemd/system/multi-user.target.wants/vp-libvirt-setup.service
+
+echo " --> qemu.conf, libvirtd.service et vp-libvirt-setup.service ecrits"
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SESSION OPENBOX – dispatcher live / installer
@@ -287,7 +296,7 @@ cat << 'EOF' > config/includes.chroot/etc/xdg/openbox/rc.xml
 
 EOF
 
-cat << 'EOF' > config/includes.chroot/usr/local/bin/p2v-session-live.sh
+cat << 'EOF' > config/includes.chroot/usr/local/bin/vp-session-live.sh
 #!/bin/bash
 xset s off -dpms 2>/dev/null || true
 xset s noblank 2>/dev/null || true
@@ -304,14 +313,14 @@ fi
 
 kill "$WM_PID" 2>/dev/null || true
 EOF
-chmod +x config/includes.chroot/usr/local/bin/p2v-session-live.sh
+chmod +x config/includes.chroot/usr/local/bin/vp-session-live.sh
 
 mkdir -p config/includes.chroot/usr/share/xsessions/
-cat << 'EOF' > config/includes.chroot/usr/share/xsessions/p2v-live.desktop
+cat << 'EOF' > config/includes.chroot/usr/share/xsessions/vp-live.desktop
 [Desktop Entry]
 Name=VirtuPack - Live
 Comment=VirtuPack (mode live)
-Exec=/usr/local/bin/p2v-session-live.sh
+Exec=/usr/local/bin/vp-session-live.sh
 Type=Application
 EOF
 
@@ -320,7 +329,7 @@ EOF
 # ════════════════════════════════════════════════════════════════════════════════
 echo "=== Configuration XFCE kiosque (installer) ==="
 
-cat << 'EOF' > config/includes.chroot/usr/local/bin/p2v-session-installer.sh
+cat << 'EOF' > config/includes.chroot/usr/local/bin/vp-session-installer.sh
 #!/bin/bash
 xset s off -dpms 2>/dev/null || true
 xset s noblank 2>/dev/null || true
@@ -331,13 +340,13 @@ sudo /usr/local/bin_installer/vp-installer
 xterm -title "Session administrateur" -fa "Monospace" -fs 12 &
 kill "$WM_PID" 2>/dev/null || true
 EOF
-chmod +x config/includes.chroot/usr/local/bin/p2v-session-installer.sh
+chmod +x config/includes.chroot/usr/local/bin/vp-session-installer.sh
 
-cat << 'EOF' > config/includes.chroot/usr/share/xsessions/p2v-installer.desktop
+cat << 'EOF' > config/includes.chroot/usr/share/xsessions/vp-installer.desktop
 [Desktop Entry]
 Name=VirtuPack - Installé
 Comment=VirtuPack (mode installé, kiosque XFCE)
-Exec=/usr/local/bin/p2v-session-installer.sh
+Exec=/usr/local/bin/vp-session-installer.sh
 Type=Application
 EOF
 
@@ -346,14 +355,14 @@ mkdir -p config/includes.chroot/etc/lightdm/lightdm.conf.d/
 cat << 'EOF' > config/includes.chroot/etc/lightdm/lightdm.conf.d/50-autologin.conf
 [Seat:*]
 autologin-user=user
-autologin-session=p2v-live
+autologin-session=vp-live
 autologin-user-timeout=0
 EOF
 
 mkdir -p config/includes.chroot/etc/skel/
 cat << 'EOF' > config/includes.chroot/etc/skel/.dmrc
 [Desktop]
-Session=p2v-live
+Session=vp-live
 EOF
 
 cat << 'EOF' > config/includes.chroot/etc/skel/.bashrc
@@ -474,19 +483,19 @@ rm -f "$TARGET_MNT/etc/live/boot.conf" 2>/dev/null || true
 cat > "$TARGET_MNT/etc/lightdm/lightdm.conf.d/50-autologin.conf" << 'LIGHTDM_EOF'
 [Seat:*]
 autologin-user=user
-autologin-session=p2v-installer
+autologin-session=vp-installer
 autologin-user-timeout=0
 LIGHTDM_EOF
 
 cat > "$TARGET_MNT/etc/skel/.dmrc" << 'DMRC_EOF'
 [Desktop]
-Session=p2v-installer
+Session=vp-installer
 DMRC_EOF
 
 [ -f "$TARGET_MNT/home/user/.dmrc" ] && \
 cat > "$TARGET_MNT/home/user/.dmrc" << 'DMRC_EOF'
 [Desktop]
-Session=p2v-installer
+Session=vp-installer
 DMRC_EOF
 
 mkdir -p "$TARGET_MNT/var/log/virtupack/"
