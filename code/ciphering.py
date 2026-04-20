@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import fcntl
 from log_handler import log_info, log_error, log_warning
+import theme
 
 
 class LUKSCiphering:
@@ -25,12 +26,12 @@ class LUKSCiphering:
     
     MODES = {
         'encrypt': {
-            'name': 'Encrypt Image',
-            'description': 'Encrypt a virtual disk image with LUKS'
+            'name': 'Chiffrer l\'image',
+            'description': 'Chiffrer une image de disque virtuel avec LUKS'
         },
         'decrypt': {
-            'name': 'Decrypt Image',
-            'description': 'Decrypt a LUKS-encrypted virtual disk image'
+            'name': 'Déchiffrer l\'image',
+            'description': 'Déchiffrer une image de disque virtuel chiffrée par LUKS'
         }
     }
     
@@ -38,9 +39,8 @@ class LUKSCiphering:
         self.parent = parent
         
         self.root = tk.Toplevel(parent)
-        self.root.title("LUKS Image Encryption")
-        self.root.geometry("950x900")
-        self.root.minsize(850, 700)
+        self.root.title("Chiffrement LUKS d'images")
+        self.root.attributes("-fullscreen", True)
         self.root.transient(parent)
         
         self.image_path = tk.StringVar()
@@ -49,7 +49,7 @@ class LUKSCiphering:
         self.password_confirm = tk.StringVar()
         self.operation_active = False
         
-        log_info("LUKS Encryption dialog opened")
+        log_info("Dialogue Chiffrement LUKS ouvert")
         
         self.setup_ui()
         self.check_prerequisites()
@@ -57,53 +57,208 @@ class LUKSCiphering:
         self.root.protocol("WM_DELETE_WINDOW", self.close_window)
     
     def close_window(self):
-        """Handle window close event"""
+        """Gestion de la fermeture de fenêtre"""
         if self.operation_active:
             result = messagebox.askyesno(
-                "Operation in Progress",
-                "An encryption/decryption operation is currently running. Stop and close?"
+                "Opération en cours",
+                "Une opération de chiffrement/déchiffrement est en cours. Arrêter et fermer ?"
             )
             if not result:
                 return
             
-            log_warning("LUKS operation interrupted by user")
+            log_warning("Opération LUKS interrompue par l'utilisateur")
         
-        log_info("LUKS Encryption dialog closed")
+        log_info("Dialogue Chiffrement LUKS fermé")
         self.root.destroy()
     
     
-    def setup_styles(self):
-        """Setup custom styles"""
-        style = ttk.Style()
-        style.configure(
-            "Accent.TButton",
-            font=("Arial", 10, "bold")
+    def setup_ui(self):
+        """Setup de l'interface utilisateur"""
+        C = theme
+
+        # Appliquer le thème sombre à cette Toplevel
+        theme.apply_theme(self.root)
+        self.root.configure(bg=C.BG)
+
+        # Conteneur principal
+        main_frame = ttk.Frame(self.root, style="TFrame", padding=(20, 16))
+        main_frame.pack(fill="both", expand=True)
+
+        # ── Zone basse ancrée en premier (toujours visible) ───────────────
+        bottom_frame = ttk.Frame(main_frame, style="TFrame")
+        bottom_frame.pack(side="bottom", fill="x")
+
+        self.status_label = ttk.Label(
+            bottom_frame,
+            text="Prêt — Sélectionnez un fichier image et saisissez le mot de passe",
+            font=C.FONT_NORMAL, style="Card.TLabel"
         )
-    
+        self.status_label.pack(anchor="center", pady=(0, 4))
+
+        ttk.Separator(bottom_frame, orient="horizontal").pack(fill="x", pady=(0, 8))
+
+        button_frame = ttk.Frame(bottom_frame, style="TFrame")
+        button_frame.pack(fill="x", pady=(0, 6))
+
+        self.action_btn = ttk.Button(
+            button_frame,
+            text="DÉMARRER L'OPÉRATION",
+            command=self.start_operation,
+            state="disabled",
+            style="Primary.TButton"
+        )
+        self.action_btn.pack(fill="x", pady=(0, 8), ipady=6)
+
+        secondary_frame = ttk.Frame(button_frame, style="TFrame")
+        secondary_frame.pack(fill="x")
+
+        ttk.Button(secondary_frame, text="Rafraîchir",
+                   command=self.analyze_image, width=12).pack(side="left")
+        ttk.Button(secondary_frame, text="Effacer le mot de passe",
+                   command=self.clear_password, width=20).pack(side="left", padx=(6, 0))
+        ttk.Button(secondary_frame, text="Fermer",
+                   command=self.close_window, width=12).pack(side="right")
+
+        # ── En-tête ───────────────────────────────────────────────────────
+        header_frame = ttk.Frame(main_frame, style="TFrame")
+        header_frame.pack(fill="x", pady=(0, 18))
+
+        ttk.Label(header_frame, text="Chiffrement LUKS d'images",
+                  style="Title.TLabel").pack(anchor="center")
+        ttk.Label(header_frame,
+                  text="Chiffrer ou déchiffrer des images de disques virtuels",
+                  style="Subtitle.TLabel").pack(anchor="center", pady=(2, 0))
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill="x", pady=(0, 16))
+
+        # ── Mode opération ────────────────────────────────────────────────
+        mode_frame = ttk.LabelFrame(main_frame, text="Mode d'opération",
+                                    style="TLabelframe")
+        mode_frame.pack(fill="x", pady=(0, 12))
+
+        for mode_key, mode_info in self.MODES.items():
+            ttk.Radiobutton(
+                mode_frame,
+                text=f"{mode_info['name']} — {mode_info['description']}",
+                variable=self.mode,
+                value=mode_key,
+                command=self.on_mode_changed
+            ).pack(anchor="w", pady=2)
+
+        # ── Fichier image source ──────────────────────────────────────────
+        file_frame = ttk.LabelFrame(main_frame, text="Fichier image source",
+                                    style="TLabelframe")
+        file_frame.pack(fill="x", pady=(0, 12))
+
+        path_frame = ttk.Frame(file_frame, style="Card.TFrame")
+        path_frame.pack(fill="x", pady=(0, 6))
+
+        self.path_entry = ttk.Entry(path_frame, textvariable=self.image_path,
+                                    font=C.FONT_NORMAL, style="TEntry")
+        self.path_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        ttk.Button(path_frame, text="Parcourir",
+                   command=self.browse_file).pack(side="right", padx=(0, 5))
+        ttk.Button(path_frame, text="Analyser",
+                   command=self.analyze_image).pack(side="right")
+
+        # ── Informations sur l'image ──────────────────────────────────────
+        info_frame = ttk.LabelFrame(main_frame, text="Informations sur l'image",
+                                    style="TLabelframe")
+        info_frame.pack(fill="x", pady=(0, 12))
+
+        self.info_text = tk.Text(info_frame, height=3, state="disabled", wrap="word")
+        theme.style_text_widget(self.info_text)
+        info_scrollbar = ttk.Scrollbar(info_frame, orient="vertical",
+                                       command=self.info_text.yview)
+        self.info_text.configure(yscrollcommand=info_scrollbar.set)
+        self.info_text.pack(side="left", fill="both", expand=True)
+        info_scrollbar.pack(side="right", fill="y")
+
+        # ── Mot de passe ──────────────────────────────────────────────────
+        password_frame = ttk.LabelFrame(main_frame, text="Mot de passe",
+                                        style="TLabelframe")
+        password_frame.pack(fill="x", pady=(0, 12))
+
+        pwd_row1 = ttk.Frame(password_frame, style="TFrame")
+        pwd_row1.pack(fill="x", pady=(0, 6))
+        ttk.Label(pwd_row1, text="Mot de passe :", font=C.FONT_NORMAL,
+                  style="Card.TLabel").pack(side="left", padx=(0, 8))
+        self.password_entry = ttk.Entry(pwd_row1, textvariable=self.password,
+                                        show="•", font=C.FONT_NORMAL, style="TEntry")
+        self.password_entry.pack(side="left", fill="x", expand=True)
+        self.password_entry.bind("<KeyRelease>", self.update_password_strength)
+
+        pwd_row2 = ttk.Frame(password_frame, style="TFrame")
+        pwd_row2.pack(fill="x", pady=(0, 8))
+        ttk.Label(pwd_row2, text="Confirmation :", font=C.FONT_NORMAL,
+                  style="Card.TLabel").pack(side="left", padx=(0, 8))
+        self.password_confirm_entry = ttk.Entry(pwd_row2,
+                                                textvariable=self.password_confirm,
+                                                show="•", font=C.FONT_NORMAL,
+                                                style="TEntry")
+        self.password_confirm_entry.pack(side="left", fill="x", expand=True)
+
+        strength_frame = ttk.Frame(password_frame, style="TFrame")
+        strength_frame.pack(fill="x")
+        ttk.Label(strength_frame, text="Robustesse :", font=C.FONT_NORMAL,
+                  style="Card.TLabel").pack(side="left", padx=(0, 8))
+        self.strength_bar = ttk.Progressbar(strength_frame, length=120,
+                                            mode='determinate', maximum=100)
+        self.strength_bar.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.strength_label = ttk.Label(strength_frame, text="Faible",
+                                        font=C.FONT_NORMAL, style="Card.TLabel",
+                                        width=10)
+        self.strength_label.pack(side="left")
+
+        # ── État du système ───────────────────────────────────────────────
+        self.prereq_frame = ttk.LabelFrame(main_frame, text="État du système",
+                                           style="TLabelframe")
+        self.prereq_frame.pack(fill="x", pady=(0, 12))
+
+        self.prereq_label = ttk.Label(self.prereq_frame,
+                                      text="Vérification des outils requis...",
+                                      font=C.FONT_NORMAL, style="Card.TLabel")
+        self.prereq_label.pack(anchor="w")
+
+        # ── Progression ───────────────────────────────────────────────────
+        progress_frame = ttk.LabelFrame(main_frame, text="Progression de l'opération",
+                                        style="TLabelframe")
+        progress_frame.pack(fill="x", pady=(0, 12))
+
+        self.progress = ttk.Progressbar(progress_frame, mode='determinate',
+                                        maximum=100, length=400)
+        self.progress.pack(fill="x", pady=(0, 8))
+
+        self.progress_label = ttk.Label(progress_frame, text="Prêt à démarrer",
+                                        font=("Segoe UI", 10, "bold"),
+                                        style="Card.TLabel")
+        self.progress_label.pack(anchor="center")
+
     def check_prerequisites(self):
-        """Check if required tools are installed"""
+        """Vérifier si les outils requis sont installés"""
         cryptsetup_available = self._check_command('cryptsetup')
         
         if not cryptsetup_available:
-            text = "Missing required tool: cryptsetup\n\n"
-            text += "Install cryptsetup:\n"
-            text += "Ubuntu/Debian: sudo apt install cryptsetup\n"
-            text += "Fedora/RHEL: sudo dnf install cryptsetup\n"
-            text += "Arch Linux: sudo pacman -S cryptsetup\n"
+            text = "Outil requis manquant : cryptsetup\n\n"
+            text += "Installation de cryptsetup :\n"
+            text += "Ubuntu/Debian : sudo apt install cryptsetup\n"
+            text += "Fedora/RHEL : sudo dnf install cryptsetup\n"
+            text += "Arch Linux : sudo pacman -S cryptsetup\n"
             
             self.prereq_label.config(text=text, foreground="red")
             
-            log_error("cryptsetup not found - required for LUKS encryption")
+            log_error("cryptsetup introuvable — requis pour le chiffrement LUKS")
             
             messagebox.showerror(
-                "Missing Required Tool",
-                "cryptsetup is required for LUKS encryption.\n\n"
-                "Please install the cryptsetup package."
+                "Outil requis manquant",
+                "cryptsetup est nécessaire pour le chiffrement LUKS.\n\n"
+                "Veuillez installer le paquet cryptsetup."
             )
         else:
-            text = "✓ cryptsetup available - Ready for LUKS encryption"
+            text = "✓ cryptsetup disponible — Prêt pour le chiffrement LUKS"
             self.prereq_label.config(text=text, foreground="green")
-            log_info("cryptsetup available - prerequisites met")
+            log_info("cryptsetup disponible — prérequis satisfaits")
     
     def _check_command(self, command):
         """Check if a command is available"""
@@ -121,16 +276,16 @@ class LUKSCiphering:
     def browse_file(self):
         """Browse for image file"""
         file_path = filedialog.askopenfilename(
-            title="Select Virtual Disk Image File",
+            title="Sélectionner un fichier image de disque virtuel",
             filetypes=[
-                ("All images", "*.qcow2 *.vdi *.vhd *.vhdx *.vmdk *.img *.raw"),
-                ("QCOW2 files", "*.qcow2"),
-                ("VDI files", "*.vdi"),
-                ("VHD files", "*.vhd"),
-                ("VHDX files", "*.vhdx"),
-                ("VMDK files", "*.vmdk"),
-                ("RAW images", "*.img *.raw"),
-                ("All files", "*.*")
+                ("Toutes les images", "*.qcow2 *.vdi *.vhd *.vhdx *.vmdk *.img *.raw"),
+                ("Fichiers QCOW2", "*.qcow2"),
+                ("Fichiers VDI", "*.vdi"),
+                ("Fichiers VHD", "*.vhd"),
+                ("Fichiers VHDX", "*.vhdx"),
+                ("Fichiers VMDK", "*.vmdk"),
+                ("Images RAW", "*.img *.raw"),
+                ("Tous les fichiers", "*.*")
             ]
         )
         if file_path:
@@ -138,55 +293,55 @@ class LUKSCiphering:
             self.analyze_image()
 
     def analyze_image(self):
-        """Analyze selected image"""
+        """Analyser l'image sélectionnée"""
         path = self.image_path.get().strip()
         if not path:
-            messagebox.showwarning("No File Selected", "Please select an image file first")
-            log_warning("Image analysis attempted but no file selected")
+            messagebox.showwarning("Aucun fichier sélectionné", "Veuillez d'abord sélectionner un fichier image")
+            log_warning("Analyse tentée sans fichier sélectionné")
             return
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", "The selected file does not exist")
-            log_error(f"Image file not found: {path}")
+            messagebox.showerror("Fichier introuvable", "Le fichier sélectionné n'existe pas")
+            log_error(f"Fichier image introuvable : {path}")
             return
         
         try:
-            self.update_progress(True, "Analyzing image file...")
+            self.update_progress(True, "Analyse du fichier image...")
             
             file_size = os.path.getsize(path)
             file_stat = os.stat(path)
             
-            log_info(f"Analyzing image: {os.path.basename(path)} - Size: {self._format_size(file_size)}")
+            log_info(f"Analyse de l'image : {os.path.basename(path)} — Taille : {self._format_size(file_size)}")
             
             self.display_image_info(path, file_size, file_stat)
             
             self.action_btn.config(state="normal")
             
-            self.update_progress(False, "Analysis complete - Ready for operation")
-            self.status_label.config(text="Image analyzed - Ready")
+            self.update_progress(False, "Analyse terminée — Prêt pour l'opération")
+            self.status_label.config(text="Image analysée — Prêt")
             
-            log_info(f"Image analysis completed successfully for {os.path.basename(path)}")
+            log_info(f"Analyse terminée avec succès pour {os.path.basename(path)}")
             
         except FileNotFoundError:
-            messagebox.showerror("File Not Found", f"Image file not found: {path}")
-            log_error(f"FileNotFoundError during image analysis: {path}")
-            self.update_progress(False, "Analysis failed")
+            messagebox.showerror("Fichier introuvable", f"Fichier image introuvable : {path}")
+            log_error(f"FileNotFoundError pendant l'analyse : {path}")
+            self.update_progress(False, "Échec de l'analyse")
         except PermissionError:
-            messagebox.showerror("Permission Denied", f"Permission denied: {path}")
-            log_error(f"PermissionError during image analysis: {path}")
-            self.update_progress(False, "Analysis failed")
+            messagebox.showerror("Permission refusée", f"Permission refusée : {path}")
+            log_error(f"PermissionError pendant l'analyse : {path}")
+            self.update_progress(False, "Échec de l'analyse")
         except OSError as e:
-            messagebox.showerror("System Error", f"System error: {e}")
-            log_error(f"OSError during image analysis: {e}")
-            self.update_progress(False, "Analysis failed")
+            messagebox.showerror("Erreur système", f"Erreur système : {e}")
+            log_error(f"OSError pendant l'analyse : {e}")
+            self.update_progress(False, "Échec de l'analyse")
     
     def display_image_info(self, path, file_size, file_stat):
-        """Display image information"""
+        """Afficher les informations de l'image"""
         self.info_text.config(state="normal")
         self.info_text.delete(1.0, "end")
         
-        mode_text = "ENCRYPT" if self.mode.get() == 'encrypt' else "DECRYPT"
-        info = f"{os.path.basename(path)} | {self._format_size(file_size)} | Op: {mode_text}\nOriginal file NOT modified"
+        mode_text = "CHIFFREMENT" if self.mode.get() == 'encrypt' else "DÉCHIFFREMENT"
+        info = f"{os.path.basename(path)} | {self._format_size(file_size)} | Opération : {mode_text}\nFichier original NON modifié"
         
         self.info_text.insert(1.0, info)
         self.info_text.config(state="disabled")
@@ -196,23 +351,23 @@ class LUKSCiphering:
         """Update password strength indicator"""
         password = self.password.get()
         strength = 0
-        feedback = "Very Weak"
+        feedback = "Très faible"
         
         if len(password) >= 8:
             strength += 25
-            feedback = "Weak"
+            feedback = "Faible"
         
         if len(password) >= 12:
             strength += 25
-            feedback = "Fair"
+            feedback = "Correct"
         
         if any(c.isupper() for c in password) and any(c.islower() for c in password):
             strength += 25
-            feedback = "Good"
+            feedback = "Bon"
         
         if any(c.isdigit() for c in password) and any(not c.isalnum() for c in password):
             strength += 25
-            feedback = "Strong"
+            feedback = "Fort"
         
         self.strength_bar.config(value=strength)
         self.strength_label.config(text=feedback)
@@ -222,45 +377,45 @@ class LUKSCiphering:
         self.password.set("")
         self.password_confirm.set("")
         self.strength_bar.config(value=0)
-        self.strength_label.config(text="Weak")
-        log_info("Password fields cleared")
+        self.strength_label.config(text="Faible")
+        log_info("Champs mot de passe effacés")
     
     def validate_inputs(self):
         """Validate user inputs"""
         path = self.image_path.get().strip()
         
         if not path:
-            messagebox.showwarning("No File Selected", "Please select an image file")
-            log_warning("Validation failed: no image file selected")
+            messagebox.showwarning("Aucun fichier sélectionné", "Veuillez sélectionner un fichier image")
+            log_warning("Validation échouée : aucun fichier image sélectionné")
             return False
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", "The selected file does not exist")
-            log_error(f"Validation failed: image file not found - {path}")
+            messagebox.showerror("Fichier introuvable", "Le fichier sélectionné n'existe pas")
+            log_error(f"Validation échouée : fichier image introuvable — {path}")
             return False
         
         password = self.password.get()
         mode = self.mode.get()
         
         if not password:
-            messagebox.showwarning("No Password", "Please enter a password")
-            log_warning("Validation failed: no password entered")
+            messagebox.showwarning("Aucun mot de passe", "Veuillez saisir un mot de passe")
+            log_warning("Validation échouée : aucun mot de passe saisi")
             return False
         
         if len(password) < 8:
-            messagebox.showwarning("Weak Password", "Password must be at least 8 characters")
-            log_warning("Validation failed: password too weak (less than 8 characters)")
+            messagebox.showwarning("Mot de passe trop court", "Le mot de passe doit comporter au moins 8 caractères")
+            log_warning("Validation échouée : mot de passe trop court (moins de 8 caractères)")
             return False
         
-        # En mode encryption, vérifier la confirmation
+        # En mode chiffrement, vérifier la confirmation
         if mode == 'encrypt':
             password_confirm = self.password_confirm.get()
             if password != password_confirm:
-                messagebox.showerror("Password Mismatch", "Passwords do not match")
-                log_error("Validation failed: password mismatch")
+                messagebox.showerror("Mots de passe différents", "Les mots de passe ne correspondent pas")
+                log_error("Validation échouée : mots de passe différents")
                 return False
         
-        log_info("All inputs validated successfully")
+        log_info("Toutes les entrées sont valides")
         return True
     
     def start_operation(self):
@@ -276,42 +431,42 @@ class LUKSCiphering:
         source_file = Path(image_path)
         if mode == 'encrypt':
             output_path = source_file.parent / f"{source_file.stem}_encrypted{source_file.suffix}"
-            operation_name = "Encryption"
+            operation_name = "Chiffrement"
         else:
             output_path = source_file.parent / f"{source_file.stem}_decrypted{source_file.suffix}"
-            operation_name = "Decryption"
+            operation_name = "Déchiffrement"
         
-        # Check if target exists
+        # Vérifier si la cible existe
         if output_path.exists():
             result = messagebox.askyesno(
-                "File Exists",
-                f"Target file already exists:\n{output_path}\n\nOverwrite?"
+                "Fichier existant",
+                f"Le fichier cible existe déjà :\n{output_path}\n\nÉcraser ?"
             )
             if not result:
-                log_warning(f"Operation cancelled - target file already exists: {output_path}")
+                log_warning(f"Opération annulée — fichier cible déjà existant : {output_path}")
                 return
         
-        # Confirmation dialog
-        msg = f"LUKS IMAGE {operation_name.upper()}\n\n"
-        msg += f"Source: {os.path.basename(image_path)} ({self._format_size(os.path.getsize(image_path))})\n"
-        msg += f"Target: {output_path.name}\n\n"
-        msg += f"⚠ VM must be shut down\n"
-        msg += f"⚠ Operation may take several minutes\n"
-        msg += f"⚠ Original file will NOT be modified\n\n"
-        msg += f"Continue?"
+        # Dialogue de confirmation
+        msg = f"CHIFFREMENT/DÉCHIFFREMENT LUKS\n\n"
+        msg += f"Source : {os.path.basename(image_path)} ({self._format_size(os.path.getsize(image_path))})\n"
+        msg += f"Cible : {output_path.name}\n\n"
+        msg += f"⚠ La machine virtuelle doit être arrêtée\n"
+        msg += f"⚠ L'opération peut prendre plusieurs minutes\n"
+        msg += f"⚠ Le fichier d'origine ne sera PAS modifié\n\n"
+        msg += f"Continuer ?"
         
-        if not messagebox.askyesno("Confirm Operation", msg):
-            log_warning(f"User cancelled {operation_name.lower()} operation")
+        if not messagebox.askyesno("Confirmer l'opération", msg):
+            log_warning(f"Opération {operation_name.lower()} annulée par l'utilisateur")
             return
         
-        log_info(f"Starting {operation_name.lower()} operation")
-        log_info(f"Source file: {image_path}")
-        log_info(f"Target file: {output_path}")
-        log_info(f"Source size: {self._format_size(os.path.getsize(image_path))}")
+        log_info(f"Démarrage de l'opération {operation_name.lower()}")
+        log_info(f"Fichier source : {image_path}")
+        log_info(f"Fichier cible : {output_path}")
+        log_info(f"Taille source : {self._format_size(os.path.getsize(image_path))}")
         
         self.operation_active = True
         self.action_btn.config(state="disabled")
-        self.status_label.config(text=f"{operation_name} in progress...")
+        self.status_label.config(text=f"{operation_name} en cours...")
         
         thread = threading.Thread(
             target=self._operation_worker,
@@ -330,264 +485,47 @@ class LUKSCiphering:
             
             target_size = os.path.getsize(target_path)
             
-            msg = f"{'ENCRYPTION' if mode == 'encrypt' else 'DECRYPTION'} COMPLETED!\n\n"
-            msg += f"Source: {os.path.basename(source_path)}\n"
-            msg += f"Target: {os.path.basename(target_path)}\n"
-            msg += f"Size: {self._format_size(target_size)}\n\n"
-            msg += f"✓ File successfully {'encrypted' if mode == 'encrypt' else 'decrypted'}\n"
-            msg += f"✓ Original file untouched\n"
-            msg += f"✓ Ready for use\n\n"
-            msg += f"Location: {target_path}"
+            msg = f"{'CHIFFREMENT' if mode == 'encrypt' else 'DÉCHIFFREMENT'} TERMINÉ !\n\n"
+            msg += f"Source : {os.path.basename(source_path)}\n"
+            msg += f"Cible : {os.path.basename(target_path)}\n"
+            msg += f"Taille : {self._format_size(target_size)}\n\n"
+            msg += f"✓ Fichier {'chiffré' if mode == 'encrypt' else 'déchiffré'} avec succès\n"
+            msg += f"✓ Fichier d'origine intact\n"
+            msg += f"✓ Prêt à l'emploi\n\n"
+            msg += f"Emplacement : {target_path}"
             
-            log_info(f"{'ENCRYPTION' if mode == 'encrypt' else 'DECRYPTION'} completed successfully")
-            log_info(f"Output file size: {self._format_size(target_size)}")
+            log_info(f"{'CHIFFREMENT' if mode == 'encrypt' else 'DÉCHIFFREMENT'} terminé avec succès")
+            log_info(f"Taille du fichier de sortie : {self._format_size(target_size)}")
             
-            self.root.after(0, lambda: messagebox.showinfo("Operation Complete", msg))
+            self.root.after(0, lambda: messagebox.showinfo("Opération terminée", msg))
             
         except subprocess.CalledProcessError as e:
-            error_msg = f"Operation failed: {e}"
-            log_error(f"CalledProcessError during operation: {error_msg}")
-            self.root.after(0, lambda: messagebox.showerror("Operation Failed", error_msg))
+            error_msg = f"Opération échouée : {e}"
+            log_error(f"CalledProcessError pendant l'opération : {error_msg}")
+            self.root.after(0, lambda: messagebox.showerror("Opération échouée", error_msg))
         except OSError as e:
-            error_msg = f"System error: {e}"
-            log_error(f"OSError during operation: {error_msg}")
-            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+            error_msg = f"Erreur système : {e}"
+            log_error(f"OSError pendant l'opération : {error_msg}")
+            self.root.after(0, lambda: messagebox.showerror("Erreur système", error_msg))
         finally:
             self.root.after(0, self.reset_ui)
     
     def on_mode_changed(self):
-        """Handle mode selection change"""
+        """Gestion du changement de mode"""
         mode = self.mode.get()
-        log_info(f"Operation mode changed to: {'ENCRYPTION' if mode == 'encrypt' else 'DECRYPTION'}")
+        log_info(f"Mode d'opération changé en : {'CHIFFREMENT' if mode == 'encrypt' else 'DÉCHIFFREMENT'}")
         
         self.clear_password()
-        self.progress_label.config(text="Ready to start")
-        self.status_label.config(text="Mode changed - Ready to analyze image")
+        self.progress_label.config(text="Prêt à démarrer")
+        self.status_label.config(text="Mode modifié — Prêt à analyser l'image")
         
-        # Disable password confirm field for decryption mode
+        # Désactiver la confirmation en mode déchiffrement
         if mode == 'decrypt':
             self.password_confirm_entry.config(state="disabled")
         else:
             self.password_confirm_entry.config(state="normal")
 
 
-    def setup_ui(self):
-        """Setup user interface without scrollbar"""
-        main_frame = ttk.Frame(self.root, padding="12")
-        main_frame.pack(fill="both", expand=True)
-        
-        # Configure grid for responsiveness
-        main_frame.grid_rowconfigure(7, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
-        
-        # Header section
-        header_frame = ttk.Frame(main_frame)
-        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        
-        title = ttk.Label(
-            header_frame,
-            text="LUKS Image Encryption",
-            font=("Arial", 14, "bold")
-        )
-        title.pack(anchor="w")
-        
-        subtitle = ttk.Label(
-            header_frame,
-            text="Encrypt or decrypt virtual machine disk images",
-            font=("Arial", 9)
-        )
-        subtitle.pack(anchor="w")
-        
-        # Mode selection section (compact)
-        mode_frame = ttk.LabelFrame(main_frame, text="Operation Mode", padding="8")
-        mode_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        
-        for idx, (mode_key, mode_info) in enumerate(self.MODES.items()):
-            radio = ttk.Radiobutton(
-                mode_frame,
-                text=f"{mode_info['name']} - {mode_info['description']}",
-                variable=self.mode,
-                value=mode_key,
-                command=self.on_mode_changed
-            )
-            radio.pack(anchor="w", pady=1)
-        
-        # File selection section
-        file_frame = ttk.LabelFrame(main_frame, text="Source Image File", padding="8")
-        file_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        file_frame.columnconfigure(0, weight=1)
-        
-        path_frame = ttk.Frame(file_frame)
-        path_frame.grid(row=0, column=0, sticky="ew")
-        path_frame.columnconfigure(0, weight=1)
-        
-        self.path_entry = ttk.Entry(
-            path_frame,
-            textvariable=self.image_path,
-            font=("Arial", 9)
-        )
-        self.path_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        
-        button_frame = ttk.Frame(path_frame)
-        button_frame.grid(row=0, column=1)
-        
-        ttk.Button(
-            button_frame,
-            text="Browse",
-            command=self.browse_file,
-            width=10
-        ).pack(side="left", padx=(0, 3))
-        
-        ttk.Button(
-            button_frame,
-            text="Analyze",
-            command=self.analyze_image,
-            width=10
-        ).pack(side="left")
-        
-        # Image information display (compact)
-        info_frame = ttk.LabelFrame(main_frame, text="Image Info", padding="8")
-        info_frame.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        info_frame.columnconfigure(0, weight=1)
-        
-        self.info_text = tk.Text(
-            info_frame,
-            height=3,
-            state="disabled",
-            wrap="word",
-            font=("Consolas", 8),
-            bg="white"
-        )
-        self.info_text.pack(fill="both", expand=True)
-        
-        # Password section (compact)
-        password_frame = ttk.LabelFrame(main_frame, text="Password", padding="8")
-        password_frame.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-        password_frame.columnconfigure(1, weight=1)
-        
-        ttk.Label(password_frame, text="Password:", font=("Arial", 9)).grid(
-            row=0, column=0, sticky="w", pady=(0, 4)
-        )
-        
-        self.password_entry = ttk.Entry(
-            password_frame,
-            textvariable=self.password,
-            show="•",
-            font=("Arial", 9)
-        )
-        self.password_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=(0, 4))
-        self.password_entry.bind("<KeyRelease>", self.update_password_strength)
-        
-        ttk.Label(password_frame, text="Confirm:", font=("Arial", 9)).grid(
-            row=1, column=0, sticky="w", pady=(0, 4)
-        )
-        
-        self.password_confirm_entry = ttk.Entry(
-            password_frame,
-            textvariable=self.password_confirm,
-            show="•",
-            font=("Arial", 9)
-        )
-        self.password_confirm_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 4))
-        
-        # Password strength indicator (compact)
-        strength_frame = ttk.Frame(password_frame)
-        strength_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
-        
-        ttk.Label(strength_frame, text="Strength:", font=("Arial", 8)).pack(side="left", padx=(0, 8))
-        
-        self.strength_bar = ttk.Progressbar(
-            strength_frame,
-            length=120,
-            mode='determinate',
-            maximum=100
-        )
-        self.strength_bar.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        
-        self.strength_label = ttk.Label(strength_frame, text="Weak", font=("Arial", 8), width=7)
-        self.strength_label.pack(side="left")
-        
-        # System requirements check
-        self.prereq_frame = ttk.LabelFrame(main_frame, text="System Status", padding="8")
-        self.prereq_frame.grid(row=5, column=0, sticky="ew", pady=(0, 8))
-        
-        self.prereq_label = ttk.Label(
-            self.prereq_frame,
-            text="Checking required tools...",
-            font=("Arial", 8)
-        )
-        self.prereq_label.pack()
-        
-        # Progress section - Changed to show percentage instead of indeterminate
-        progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding="8")
-        progress_frame.grid(row=6, column=0, sticky="ew", pady=(0, 8))
-        progress_frame.columnconfigure(0, weight=1)
-        
-        self.progress = ttk.Progressbar(progress_frame, mode='determinate', maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        
-        self.progress_label = ttk.Label(
-            progress_frame,
-            text="Ready to start",
-            font=("Arial", 9, "bold")
-        )
-        self.progress_label.grid(row=1, column=0, sticky="w")
-        
-        # Action buttons section
-        button_container = ttk.Frame(main_frame)
-        button_container.grid(row=7, column=0, sticky="ew", pady=(0, 8))
-        button_container.columnconfigure(0, weight=1)
-        
-        # Primary action button
-        self.action_btn = ttk.Button(
-            button_container,
-            text="START OPERATION",
-            command=self.start_operation,
-            state="disabled"
-        )
-        self.action_btn.grid(row=0, column=0, sticky="ew", pady=(0, 6), ipady=5)
-        
-        # Secondary buttons
-        secondary_frame = ttk.Frame(button_container)
-        secondary_frame.grid(row=1, column=0, sticky="ew")
-        secondary_frame.columnconfigure(1, weight=1)
-        
-        ttk.Button(
-            secondary_frame,
-            text="Refresh",
-            command=self.analyze_image,
-            width=12
-        ).grid(row=0, column=0, padx=(0, 6))
-        
-        ttk.Button(
-            secondary_frame,
-            text="Clear Password",
-            command=self.clear_password,
-            width=14
-        ).grid(row=0, column=1, padx=(0, 6), sticky="w")
-        
-        ttk.Button(
-            secondary_frame,
-            text="Close",
-            command=self.close_window,
-            width=12
-        ).grid(row=0, column=2, sticky="e")
-        
-        # Status bar
-        status_frame = ttk.Frame(main_frame)
-        status_frame.grid(row=8, column=0, sticky="ew")
-        
-        separator = ttk.Separator(status_frame, orient="horizontal")
-        separator.pack(fill="x", pady=(6, 4))
-        
-        self.status_label = ttk.Label(
-            status_frame,
-            text="Ready - Select image file and enter password",
-            font=("Arial", 8)
-        )
-        self.status_label.pack()
-        
-        self.setup_styles()
 
 
     def update_progress(self, percentage, status):
@@ -1103,13 +1041,13 @@ class LUKSCiphering:
             pass
     
     def reset_ui(self):
-        """Reset UI after operation"""
+        """Réinitialiser l'interface après l'opération"""
         self.operation_active = False
         self.action_btn.config(state="normal")
         self.progress.stop()
-        self.progress_label.config(text="Operation completed")
-        self.status_label.config(text="Operation completed - Ready for next operation")
-        log_info("UI reset after operation")
+        self.progress_label.config(text="Opération terminée")
+        self.status_label.config(text="Opération terminée — Prêt pour une nouvelle opération")
+        log_info("Interface réinitialisée après l'opération")
     
     @staticmethod
     def _format_size(bytes_size):
