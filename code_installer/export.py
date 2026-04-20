@@ -13,6 +13,7 @@ import threading
 import re
 from pathlib import Path
 from log_handler import log_info, log_error, log_warning
+import theme
 
 
 class VirtualImageExporter:
@@ -22,16 +23,15 @@ class VirtualImageExporter:
         self.parent = parent
         
         self.root = tk.Toplevel(parent)
-        self.root.title("Virtual Image Export")
-        self.root.geometry("950x900")
-        self.root.minsize(850, 700)
+        self.root.title("Export d'images virtuelles")
+        self.root.attributes("-fullscreen", True)
         self.root.transient(parent)
         
         self.source_path = tk.StringVar()
         self.dest_path = tk.StringVar()
         self.operation_active = False
         
-        log_info("Virtual Image Export dialog opened")
+        log_info("Dialogue Export d'images ouvert")
         
         self.setup_ui()
         self.check_prerequisites()
@@ -42,15 +42,15 @@ class VirtualImageExporter:
         """Handle window close event"""
         if self.operation_active:
             result = messagebox.askyesno(
-                "Operation in Progress",
-                "An export operation is currently running. Stop and close?"
+                "Opération en cours",
+                "Un export est actuellement en cours. Arrêter et fermer ?"
             )
             if not result:
                 return
             
-            log_warning("Export operation interrupted by user")
+            log_warning("Export interrompu par l'utilisateur")
         
-        log_info("Virtual Image Export dialog closed")
+        log_info("Dialogue Export d'images fermé")
         self.root.destroy()
     
     def check_prerequisites(self):
@@ -58,25 +58,25 @@ class VirtualImageExporter:
         rsync_available = self._check_command('rsync')
         
         if not rsync_available:
-            text = "Missing required tool: rsync\n\n"
-            text += "Install rsync:\n"
-            text += "Ubuntu/Debian: sudo apt install rsync\n"
-            text += "Fedora/RHEL: sudo dnf install rsync\n"
-            text += "Arch Linux: sudo pacman -S rsync\n"
+            text = "Outil requis manquant : rsync\n\n"
+            text += "Installation de rsync :\n"
+            text += "Ubuntu/Debian : sudo apt install rsync\n"
+            text += "Fedora/RHEL : sudo dnf install rsync\n"
+            text += "Arch Linux : sudo pacman -S rsync\n"
             
             self.prereq_label.config(text=text, foreground="red")
             
-            log_error("rsync not found - required for image export")
+            log_error("rsync introuvable — requis pour l'export d'images")
             
             messagebox.showerror(
-                "Missing Required Tool",
-                "rsync is required for image export.\n\n"
-                "Please install the rsync package."
+                "Outil requis manquant",
+                "rsync est nécessaire pour l'export d'images.\n\n"
+                "Veuillez installer le paquet rsync."
             )
         else:
-            text = "✓ rsync available - Ready for image export"
+            text = "✓ rsync disponible — Prêt pour l'export d'images"
             self.prereq_label.config(text=text, foreground="green")
-            log_info("rsync available - prerequisites met")
+            log_info("rsync disponible — prérequis satisfaits")
     
     def _check_command(self, command):
         """Check if a command is available"""
@@ -94,15 +94,15 @@ class VirtualImageExporter:
     def browse_source_file(self):
         """Browse for source image file"""
         file_path = filedialog.askopenfilename(
-            title="Select Virtual Image File",
+            title="Sélectionner un fichier image virtuel",
             filetypes=[
-                ("Virtual Images", "*.qcow2 *.img *.iso *.vdi *.vmdk"),
-                ("QCOW2 Images", "*.qcow2"),
-                ("Raw Images", "*.img"),
-                ("ISO Images", "*.iso"),
-                ("VDI Images", "*.vdi"),
-                ("VMDK Images", "*.vmdk"),
-                ("All Files", "*.*")
+                ("Images virtuelles", "*.qcow2 *.img *.iso *.vdi *.vmdk"),
+                ("Images QCOW2", "*.qcow2"),
+                ("Images RAW", "*.img"),
+                ("Images ISO", "*.iso"),
+                ("Images VDI", "*.vdi"),
+                ("Images VMDK", "*.vmdk"),
+                ("Tous les fichiers", "*.*")
             ]
         )
         if file_path:
@@ -112,7 +112,7 @@ class VirtualImageExporter:
     def browse_destination_dir(self):
         """Browse for destination directory"""
         directory = filedialog.askdirectory(
-            title="Select Destination Directory"
+            title="Sélectionner un répertoire de destination"
         )
         if directory:
             self.dest_path.set(directory)
@@ -127,23 +127,23 @@ class VirtualImageExporter:
             log_info(f"Selected home directory as destination: {home_dir}")
         except RuntimeError as e:
             log_error(f"Could not determine home directory: {e}")
-            messagebox.showerror("Error", f"Could not access home directory:\n{e}")
+            messagebox.showerror("Erreur", f"Impossible d'accéder au dossier personnel :\n{e}")
     
     def analyze_source(self):
         """Analyze selected source image"""
         path = self.source_path.get().strip()
         if not path:
-            messagebox.showwarning("No File Selected", "Please select a source image file first")
-            log_warning("Source analysis attempted but no file selected")
+            messagebox.showwarning("Aucun fichier sélectionné", "Veuillez d'abord sélectionner un fichier image source")
+            log_warning("Analyse source tentée sans fichier sélectionné")
             return
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", "The selected file does not exist")
+            messagebox.showerror("Fichier introuvable", "Le fichier sélectionné n'existe pas")
             log_error(f"Source file not found: {path}")
             return
         
         try:
-            self.update_progress(1, "Analyzing source file...")
+            self.update_progress(1, "Analyse du fichier source...")
             
             file_size = os.path.getsize(path)
             file_name = os.path.basename(path)
@@ -151,39 +151,39 @@ class VirtualImageExporter:
             log_info(f"Analyzing source: {file_name} - Size: {self._format_size(file_size)}")
             
             self.display_source_info(path, file_size)
-            self.update_progress(0, "Analysis complete - Ready")
-            self.status_label.config(text="Source analyzed - Select destination")
+            self.update_progress(0, "Analyse terminée — Prêt")
+            self.status_label.config(text="Source analysée — Sélectionnez la destination")
             
             log_info(f"Source analysis completed successfully for {file_name}")
             
         except FileNotFoundError:
-            messagebox.showerror("File Not Found", f"Source file not found: {path}")
+            messagebox.showerror("Fichier introuvable", f"Fichier source introuvable : {path}")
             log_error(f"FileNotFoundError during source analysis: {path}")
-            self.update_progress(0, "Analysis failed")
+            self.update_progress(0, "Échec de l'analyse")
         except PermissionError:
-            messagebox.showerror("Permission Denied", f"Permission denied: {path}")
+            messagebox.showerror("Permission refusée", f"Permission refusée : {path}")
             log_error(f"PermissionError during source analysis: {path}")
-            self.update_progress(0, "Analysis failed")
+            self.update_progress(0, "Échec de l'analyse")
         except OSError as e:
-            messagebox.showerror("System Error", f"System error: {e}")
+            messagebox.showerror("Erreur système", f"Erreur système : {e}")
             log_error(f"OSError during source analysis: {e}")
-            self.update_progress(0, "Analysis failed")
+            self.update_progress(0, "Échec de l'analyse")
     
     def analyze_destination(self):
         """Analyze destination directory"""
         path = self.dest_path.get().strip()
         if not path:
-            messagebox.showwarning("No Directory Selected", "Please select a destination directory first")
-            log_warning("Destination analysis attempted but no directory selected")
+            messagebox.showwarning("Aucun répertoire sélectionné", "Veuillez d'abord sélectionner un répertoire de destination")
+            log_warning("Analyse destination tentée sans répertoire sélectionné")
             return
         
         if not os.path.isdir(path):
-            messagebox.showerror("Directory Not Found", "The selected directory does not exist")
+            messagebox.showerror("Répertoire introuvable", "Le répertoire sélectionné n'existe pas")
             log_error(f"Destination directory not found: {path}")
             return
         
         try:
-            self.update_progress(1, "Analyzing destination...")
+            self.update_progress(1, "Analyse de la destination...")
             
             stat = os.statvfs(path)
             available_space = stat.f_bavail * stat.f_frsize
@@ -195,21 +195,21 @@ class VirtualImageExporter:
                 source_size = os.path.getsize(self.source_path.get())
                 if source_size > available_space:
                     messagebox.showwarning(
-                        "Insufficient Space",
-                        f"Source size: {self._format_size(source_size)}\n"
-                        f"Available space: {self._format_size(available_space)}"
+                        "Espace insuffisant",
+                        f"Taille source : {self._format_size(source_size)}\n"
+                        f"Espace disponible : {self._format_size(available_space)}"
                     )
                     log_warning(f"Insufficient space for export: need {source_size}, have {available_space}")
             
-            self.update_progress(0, "Analysis complete - Ready")
-            self.status_label.config(text="Destination ready - Ready to export")
+            self.update_progress(0, "Analyse terminée — Prêt")
+            self.status_label.config(text="Destination prête — Prêt à exporter")
             
             log_info(f"Destination analysis completed - Available: {self._format_size(available_space)}")
             
         except OSError as e:
-            messagebox.showerror("System Error", f"System error: {e}")
+            messagebox.showerror("Erreur système", f"Erreur système : {e}")
             log_error(f"OSError during destination analysis: {e}")
-            self.update_progress(0, "Analysis failed")
+            self.update_progress(0, "Échec de l'analyse")
     
     def display_source_info(self, path, file_size):
         """Display source image information"""
@@ -237,22 +237,22 @@ class VirtualImageExporter:
         dest_path = self.dest_path.get().strip()
         
         if not source_path:
-            messagebox.showwarning("No Source", "Please select a source image file")
+            messagebox.showwarning("Aucune source", "Veuillez sélectionner un fichier image source")
             log_warning("Validation failed: no source file selected")
             return False
         
         if not os.path.isfile(source_path):
-            messagebox.showerror("Invalid Source", f"Source file not found: {source_path}")
+            messagebox.showerror("Source invalide", f"Fichier source introuvable : {source_path}")
             log_error(f"Validation failed: source file not found - {source_path}")
             return False
         
         if not dest_path:
-            messagebox.showwarning("No Destination", "Please select a destination directory")
+            messagebox.showwarning("Aucune destination", "Veuillez sélectionner un répertoire de destination")
             log_warning("Validation failed: no destination directory selected")
             return False
         
         if not os.path.isdir(dest_path):
-            messagebox.showerror("Invalid Destination", f"Destination directory not found: {dest_path}")
+            messagebox.showerror("Destination invalide", f"Répertoire de destination introuvable : {dest_path}")
             log_error(f"Validation failed: destination directory not found - {dest_path}")
             return False
         
@@ -264,17 +264,17 @@ class VirtualImageExporter:
             
             if source_size > available:
                 messagebox.showerror(
-                    "Insufficient Space",
-                    f"Not enough space in destination.\n\n"
-                    f"Required: {self._format_size(source_size)}\n"
-                    f"Available: {self._format_size(available)}"
+                    "Espace insuffisant",
+                    f"Espace insuffisant dans la destination.\n\n"
+                    f"Requis : {self._format_size(source_size)}\n"
+                    f"Disponible : {self._format_size(available)}"
                 )
                 log_error(f"Validation failed: insufficient space - need {source_size}, have {available}")
                 return False
         except (OSError, ValueError) as e:
             log_warning(f"Could not check space: {e}")
         
-        log_info("All inputs validated successfully")
+        log_info("Toutes les entrées sont valides")
         return True
     
     def start_export(self):
@@ -290,24 +290,24 @@ class VirtualImageExporter:
         # Check if destination file exists
         if os.path.exists(dest_file):
             result = messagebox.askyesno(
-                "File Exists",
-                f"Destination file already exists:\n{dest_file}\n\nOverwrite?"
+                "Fichier existant",
+                f"Le fichier de destination existe déjà :\n{dest_file}\n\nÉcraser ?"
             )
             if not result:
-                log_warning(f"Export cancelled - destination file already exists: {dest_file}")
+                log_warning(f"Export annulé — fichier de destination déjà existant : {dest_file}")
                 return
         
         # Confirmation dialog
         source_size = os.path.getsize(source_file)
-        msg = f"IMAGE EXPORT CONFIRMATION\n\n"
-        msg += f"Source: {file_name} ({self._format_size(source_size)})\n"
-        msg += f"Destination: {dest_dir}\n\n"
-        msg += f"⚠ Operation may take several minutes\n"
-        msg += f"⚠ Destination file will be created/overwritten\n"
-        msg += f"⚠ Source file will NOT be modified\n\n"
-        msg += f"Continue?"
+        msg = f"CONFIRMATION D'EXPORT D'IMAGE\n\n"
+        msg += f"Source : {file_name} ({self._format_size(source_size)})\n"
+        msg += f"Destination : {dest_dir}\n\n"
+        msg += f"⚠ L'opération peut prendre plusieurs minutes\n"
+        msg += f"⚠ Le fichier de destination sera créé ou écrasé\n"
+        msg += f"⚠ Le fichier source ne sera PAS modifié\n\n"
+        msg += f"Continuer ?"
         
-        if not messagebox.askyesno("Confirm Export", msg):
+        if not messagebox.askyesno("Confirmer l'export", msg):
             log_warning("User cancelled export operation")
             return
         
@@ -318,7 +318,7 @@ class VirtualImageExporter:
         
         self.operation_active = True
         self.export_btn.config(state="disabled")
-        self.status_label.config(text="Export in progress...")
+        self.status_label.config(text="Export en cours...")
         
         thread = threading.Thread(
             target=self._export_worker,
@@ -335,37 +335,37 @@ class VirtualImageExporter:
             dest_file = os.path.join(dest_dir, os.path.basename(source_file))
             dest_size = os.path.getsize(dest_file)
             
-            msg = f"EXPORT COMPLETED!\n\n"
-            msg += f"Source: {os.path.basename(source_file)}\n"
-            msg += f"Destination: {dest_file}\n"
-            msg += f"Size: {self._format_size(dest_size)}\n\n"
-            msg += f"✓ Image successfully exported\n"
-            msg += f"✓ Source file untouched\n"
-            msg += f"✓ Ready for use\n"
+            msg = f"EXPORT TERMINÉ !\n\n"
+            msg += f"Source : {os.path.basename(source_file)}\n"
+            msg += f"Destination : {dest_file}\n"
+            msg += f"Taille : {self._format_size(dest_size)}\n\n"
+            msg += f"✓ Image exportée avec succès\n"
+            msg += f"✓ Fichier source intact\n"
+            msg += f"✓ Prêt à l'emploi\n"
             
             log_info(f"Export completed successfully")
             log_info(f"Output file size: {self._format_size(dest_size)}")
             
-            self.root.after(0, lambda: messagebox.showinfo("Export Complete", msg))
+            self.root.after(0, lambda: messagebox.showinfo("Export terminé", msg))
             
         except subprocess.CalledProcessError as e:
-            error_msg = f"Export failed: {e}"
+            error_msg = f"Export échoué : {e}"
             log_error(f"CalledProcessError during export: {error_msg}")
-            self.root.after(0, lambda: messagebox.showerror("Export Failed", error_msg))
+            self.root.after(0, lambda: messagebox.showerror("Export échoué", error_msg))
         except OSError as e:
-            error_msg = f"System error: {e}"
+            error_msg = f"Erreur système : {e}"
             log_error(f"OSError during export: {error_msg}")
-            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+            self.root.after(0, lambda: messagebox.showerror("Erreur système", error_msg))
         except FileNotFoundError as e:
-            error_msg = f"rsync command not found. Please install rsync."
+            error_msg = f"Commande rsync introuvable. Veuillez installer rsync."
             log_error(f"FileNotFoundError during export: {error_msg}")
-            self.root.after(0, lambda: messagebox.showerror("Command Error", error_msg))
+            self.root.after(0, lambda: messagebox.showerror("Erreur de commande", error_msg))
         finally:
             self.root.after(0, self.reset_ui)
     
     def _export_image_rsync(self, source_file, dest_dir):
         """Export image using rsync with progress tracking"""
-        self.update_progress(1, "Starting rsync export...")
+        self.update_progress(1, "Démarrage de l'export rsync...")
         
         source_size = os.path.getsize(source_file)
         file_name = os.path.basename(source_file)
@@ -412,7 +412,7 @@ class VirtualImageExporter:
                             time_match = re.search(r'(\d+:\d+:\d+)', line)
                             time_left = time_match.group(1) if time_match else "calculating..."
                             
-                            status = f"Exporting: {percent}% | Speed: {speed} | Time remaining: {time_left}"
+                            status = f"Export : {percent}% | Vitesse : {speed} | Temps restant : {time_left}"
                             
                             if percent != last_progress_percent:
                                 last_progress_percent = percent
@@ -423,12 +423,12 @@ class VirtualImageExporter:
                 
                 # Log other output
                 elif line and not line.startswith('sending'):
-                    log_info(f"rsync: {line}")
+                    log_info(f"rsync : {line}")
             
             returncode = process.wait()
             
             if returncode == 0:
-                self.update_progress(100, "Export completed successfully")
+                self.update_progress(100, "Export terminé avec succès")
                 log_info(f"Export completed successfully")
             else:
                 error_msg = f"rsync failed with return code {returncode}"
@@ -436,230 +436,167 @@ class VirtualImageExporter:
                 raise subprocess.CalledProcessError(returncode, 'rsync', error_msg)
         
         except FileNotFoundError:
-            error_msg = "rsync command not found. Please install rsync: sudo apt install rsync"
+            error_msg = "Commande rsync introuvable. Installez-la : sudo apt install rsync"
             log_error(error_msg)
             self.update_progress(0, error_msg)
             raise FileNotFoundError(error_msg)
         except subprocess.TimeoutExpired:
-            error_msg = "rsync command timed out"
+            error_msg = "Délai de la commande rsync dépassé"
             log_error(error_msg)
             self.update_progress(0, error_msg)
             raise subprocess.TimeoutExpired('rsync', 300, error_msg)
         except OSError as e:
-            error_msg = f"System error during export: {e}"
+            error_msg = f"Erreur système pendant l'export : {e}"
             log_error(error_msg)
             self.update_progress(0, error_msg)
             raise OSError(error_msg)
     
     def setup_ui(self):
-        """Setup user interface"""
-        main_frame = ttk.Frame(self.root, padding="12")
+        """Setup de l'interface utilisateur"""
+        C = theme
+
+        # Appliquer le thème sombre à cette Toplevel
+        theme.apply_theme(self.root)
+        self.root.configure(bg=C.BG)
+
+        # Conteneur principal
+        main_frame = ttk.Frame(self.root, style="TFrame", padding=(20, 16))
         main_frame.pack(fill="both", expand=True)
-        
-        # Configure grid for responsiveness
-        main_frame.grid_rowconfigure(7, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
-        
-        # Header section
-        header_frame = ttk.Frame(main_frame)
-        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        
-        title = ttk.Label(
-            header_frame,
-            text="Virtual Image Export",
-            font=("Arial", 14, "bold")
-        )
-        title.pack(anchor="w")
-        
-        subtitle = ttk.Label(
-            header_frame,
-            text="Export virtual machine disk images using rsync with progress tracking",
-            font=("Arial", 9)
-        )
-        subtitle.pack(anchor="w")
-        
-        # Source file selection section
-        source_frame = ttk.LabelFrame(main_frame, text="Source Image File", padding="8")
-        source_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        source_frame.columnconfigure(0, weight=1)
-        
-        path_frame = ttk.Frame(source_frame)
-        path_frame.grid(row=0, column=0, sticky="ew")
-        path_frame.columnconfigure(0, weight=1)
-        
-        self.source_entry = ttk.Entry(
-            path_frame,
-            textvariable=self.source_path,
-            font=("Arial", 9)
-        )
-        self.source_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        
-        button_frame = ttk.Frame(path_frame)
-        button_frame.grid(row=0, column=1)
-        
-        ttk.Button(
-            button_frame,
-            text="Browse",
-            command=self.browse_source_file,
-            width=10
-        ).pack(side="left", padx=(0, 3))
-        
-        ttk.Button(
-            button_frame,
-            text="Analyze",
-            command=self.analyze_source,
-            width=10
-        ).pack(side="left")
-        
-        # Source information display
-        source_info_frame = ttk.LabelFrame(main_frame, text="Source Info", padding="8")
-        source_info_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        source_info_frame.columnconfigure(0, weight=1)
-        
-        self.source_info_text = tk.Text(
-            source_info_frame,
-            height=3,
-            state="disabled",
-            wrap="word",
-            font=("Consolas", 8),
-            bg="white"
-        )
-        self.source_info_text.pack(fill="both", expand=True)
-        
-        # Destination directory selection section
-        dest_frame = ttk.LabelFrame(main_frame, text="Destination Directory", padding="8")
-        dest_frame.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        dest_frame.columnconfigure(0, weight=1)
-        
-        dest_path_frame = ttk.Frame(dest_frame)
-        dest_path_frame.grid(row=0, column=0, sticky="ew")
-        dest_path_frame.columnconfigure(0, weight=1)
-        
-        self.dest_entry = ttk.Entry(
-            dest_path_frame,
-            textvariable=self.dest_path,
-            font=("Arial", 9)
-        )
-        self.dest_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        
-        dest_button_frame = ttk.Frame(dest_path_frame)
-        dest_button_frame.grid(row=0, column=1)
-        
-        ttk.Button(
-            dest_button_frame,
-            text="Browse",
-            command=self.browse_destination_dir,
-            width=10
-        ).pack(side="left", padx=(0, 3))
-        
-        ttk.Button(
-            dest_button_frame,
-            text="Home",
-            command=self.browse_home_dest,
-            width=10
-        ).pack(side="left", padx=(0, 3))
-        
-        ttk.Button(
-            dest_button_frame,
-            text="Analyze",
-            command=self.analyze_destination,
-            width=10
-        ).pack(side="left")
-        
-        # Destination information display
-        dest_info_frame = ttk.LabelFrame(main_frame, text="Destination Info", padding="8")
-        dest_info_frame.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-        dest_info_frame.columnconfigure(0, weight=1)
-        
-        self.dest_info_text = tk.Text(
-            dest_info_frame,
-            height=3,
-            state="disabled",
-            wrap="word",
-            font=("Consolas", 8),
-            bg="white"
-        )
-        self.dest_info_text.pack(fill="both", expand=True)
-        
-        # System requirements check
-        self.prereq_frame = ttk.LabelFrame(main_frame, text="System Status", padding="8")
-        self.prereq_frame.grid(row=5, column=0, sticky="ew", pady=(0, 8))
-        
-        self.prereq_label = ttk.Label(
-            self.prereq_frame,
-            text="Checking required tools...",
-            font=("Arial", 8)
-        )
-        self.prereq_label.pack()
-        
-        # Progress section
-        progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding="8")
-        progress_frame.grid(row=6, column=0, sticky="ew", pady=(0, 8))
-        progress_frame.columnconfigure(0, weight=1)
-        
-        self.progress = ttk.Progressbar(progress_frame, mode='determinate', maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        
-        self.progress_label = ttk.Label(
-            progress_frame,
-            text="Ready to start",
-            font=("Arial", 9, "bold")
-        )
-        self.progress_label.grid(row=1, column=0, sticky="w")
-        
-        # Action buttons section
-        button_container = ttk.Frame(main_frame)
-        button_container.grid(row=7, column=0, sticky="ew", pady=(0, 8))
-        button_container.columnconfigure(0, weight=1)
-        
-        # Primary action button
-        self.export_btn = ttk.Button(
-            button_container,
-            text="START EXPORT",
-            command=self.start_export,
-            state="normal"
-        )
-        self.export_btn.grid(row=0, column=0, sticky="ew", pady=(0, 6), ipady=5)
-        
-        # Secondary buttons
-        secondary_frame = ttk.Frame(button_container)
-        secondary_frame.grid(row=1, column=0, sticky="ew")
-        secondary_frame.columnconfigure(1, weight=1)
-        
-        ttk.Button(
-            secondary_frame,
-            text="Refresh",
-            command=self.analyze_source,
-            width=12
-        ).grid(row=0, column=0, padx=(0, 6))
-        
-        ttk.Button(
-            secondary_frame,
-            text="Clear",
-            command=self.clear_fields,
-            width=14
-        ).grid(row=0, column=1, padx=(0, 6), sticky="w")
-        
-        ttk.Button(
-            secondary_frame,
-            text="Close",
-            command=self.close_window,
-            width=12
-        ).grid(row=0, column=2, sticky="e")
-        
-        # Status bar
-        status_frame = ttk.Frame(main_frame)
-        status_frame.grid(row=8, column=0, sticky="ew")
-        
-        separator = ttk.Separator(status_frame, orient="horizontal")
-        separator.pack(fill="x", pady=(6, 4))
-        
+
+        # ── Zone basse ancrée en premier (toujours visible) ───────────────
+        bottom_frame = ttk.Frame(main_frame, style="TFrame")
+        bottom_frame.pack(side="bottom", fill="x")
+
         self.status_label = ttk.Label(
-            status_frame,
-            text="Ready - Select source image and destination directory",
-            font=("Arial", 8)
+            bottom_frame,
+            text="Prêt — Sélectionnez une image source et un répertoire de destination",
+            font=C.FONT_NORMAL, style="Card.TLabel"
         )
-        self.status_label.pack()
+        self.status_label.pack(anchor="center", pady=(0, 4))
+
+        ttk.Separator(bottom_frame, orient="horizontal").pack(fill="x", pady=(0, 8))
+
+        button_frame = ttk.Frame(bottom_frame, style="TFrame")
+        button_frame.pack(fill="x", pady=(0, 6))
+
+        self.export_btn = ttk.Button(
+            button_frame,
+            text="DÉMARRER L'EXPORT",
+            command=self.start_export,
+            state="normal",
+            style="Primary.TButton"
+        )
+        self.export_btn.pack(fill="x", pady=(0, 8), ipady=6)
+
+        secondary_frame = ttk.Frame(button_frame, style="TFrame")
+        secondary_frame.pack(fill="x")
+
+        ttk.Button(secondary_frame, text="Rafraîchir",
+                   command=self.analyze_source, width=12).pack(side="left")
+        ttk.Button(secondary_frame, text="Effacer",
+                   command=self.clear_fields, width=14).pack(side="left", padx=(6, 0))
+        ttk.Button(secondary_frame, text="Fermer",
+                   command=self.close_window, width=12).pack(side="right")
+
+        # ── En-tête ───────────────────────────────────────────────────────
+        header_frame = ttk.Frame(main_frame, style="TFrame")
+        header_frame.pack(fill="x", pady=(0, 18))
+
+        ttk.Label(header_frame, text="Export d'images virtuelles",
+                  style="Title.TLabel").pack(anchor="center")
+        ttk.Label(header_frame,
+                  text="Exporter des images de disques virtuels avec rsync et suivi de progression",
+                  style="Subtitle.TLabel").pack(anchor="center", pady=(2, 0))
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill="x", pady=(0, 16))
+
+        # ── Fichier image source ──────────────────────────────────────────
+        source_frame = ttk.LabelFrame(main_frame, text="Fichier image source",
+                                      style="TLabelframe")
+        source_frame.pack(fill="x", pady=(0, 12))
+
+        path_frame = ttk.Frame(source_frame, style="Card.TFrame")
+        path_frame.pack(fill="x", pady=(0, 6))
+
+        self.source_entry = ttk.Entry(path_frame, textvariable=self.source_path,
+                                      font=C.FONT_NORMAL, style="TEntry")
+        self.source_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        ttk.Button(path_frame, text="Parcourir",
+                   command=self.browse_source_file).pack(side="right", padx=(0, 5))
+        ttk.Button(path_frame, text="Analyser",
+                   command=self.analyze_source).pack(side="right")
+
+        # ── Informations source ───────────────────────────────────────────
+        source_info_frame = ttk.LabelFrame(main_frame, text="Informations source",
+                                           style="TLabelframe")
+        source_info_frame.pack(fill="x", pady=(0, 12))
+
+        self.source_info_text = tk.Text(source_info_frame, height=3,
+                                        state="disabled", wrap="word")
+        theme.style_text_widget(self.source_info_text)
+        src_scrollbar = ttk.Scrollbar(source_info_frame, orient="vertical",
+                                      command=self.source_info_text.yview)
+        self.source_info_text.configure(yscrollcommand=src_scrollbar.set)
+        self.source_info_text.pack(side="left", fill="both", expand=True)
+        src_scrollbar.pack(side="right", fill="y")
+
+        # ── Répertoire de destination ─────────────────────────────────────
+        dest_frame = ttk.LabelFrame(main_frame, text="Répertoire de destination",
+                                    style="TLabelframe")
+        dest_frame.pack(fill="x", pady=(0, 12))
+
+        dest_path_frame = ttk.Frame(dest_frame, style="Card.TFrame")
+        dest_path_frame.pack(fill="x", pady=(0, 6))
+
+        self.dest_entry = ttk.Entry(dest_path_frame, textvariable=self.dest_path,
+                                    font=C.FONT_NORMAL, style="TEntry")
+        self.dest_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        ttk.Button(dest_path_frame, text="Parcourir",
+                   command=self.browse_destination_dir).pack(side="right", padx=(0, 5))
+        ttk.Button(dest_path_frame, text="Dossier personnel",
+                   command=self.browse_home_dest).pack(side="right", padx=(0, 5))
+        ttk.Button(dest_path_frame, text="Analyser",
+                   command=self.analyze_destination).pack(side="right")
+
+        # ── Informations destination ──────────────────────────────────────
+        dest_info_frame = ttk.LabelFrame(main_frame, text="Informations destination",
+                                         style="TLabelframe")
+        dest_info_frame.pack(fill="x", pady=(0, 12))
+
+        self.dest_info_text = tk.Text(dest_info_frame, height=3,
+                                      state="disabled", wrap="word")
+        theme.style_text_widget(self.dest_info_text)
+        dst_scrollbar = ttk.Scrollbar(dest_info_frame, orient="vertical",
+                                      command=self.dest_info_text.yview)
+        self.dest_info_text.configure(yscrollcommand=dst_scrollbar.set)
+        self.dest_info_text.pack(side="left", fill="both", expand=True)
+        dst_scrollbar.pack(side="right", fill="y")
+
+        # ── État du système ───────────────────────────────────────────────
+        self.prereq_frame = ttk.LabelFrame(main_frame, text="État du système",
+                                           style="TLabelframe")
+        self.prereq_frame.pack(fill="x", pady=(0, 12))
+
+        self.prereq_label = ttk.Label(self.prereq_frame,
+                                      text="Vérification des outils requis...",
+                                      font=C.FONT_NORMAL, style="Card.TLabel")
+        self.prereq_label.pack(anchor="w")
+
+        # ── Progression ───────────────────────────────────────────────────
+        progress_frame = ttk.LabelFrame(main_frame, text="Progression de l'export",
+                                        style="TLabelframe")
+        progress_frame.pack(fill="x", pady=(0, 12))
+
+        self.progress = ttk.Progressbar(progress_frame, mode='determinate',
+                                        maximum=100, length=400)
+        self.progress.pack(fill="x", pady=(0, 8))
+
+        self.progress_label = ttk.Label(progress_frame, text="Prêt à démarrer",
+                                        font=("Segoe UI", 10, "bold"),
+                                        style="Card.TLabel")
+        self.progress_label.pack(anchor="center")
     
     def clear_fields(self):
         """Clear all fields"""
@@ -672,9 +609,9 @@ class VirtualImageExporter:
         self.dest_info_text.delete(1.0, tk.END)
         self.dest_info_text.config(state="disabled")
         self.progress.config(value=0)
-        self.progress_label.config(text="Ready to start")
-        self.status_label.config(text="Ready - Select source image and destination directory")
-        log_info("Export fields cleared")
+        self.progress_label.config(text="Prêt à démarrer")
+        self.status_label.config(text="Prêt — Sélectionnez une image source et un répertoire de destination")
+        log_info("Champs export effacés")
     
     def update_progress(self, percentage, status):
         """Update progress bar with percentage value"""
@@ -688,8 +625,8 @@ class VirtualImageExporter:
         """Reset UI after operation"""
         self.operation_active = False
         self.export_btn.config(state="normal")
-        self.status_label.config(text="Export completed - Ready for next operation")
-        log_info("UI reset after export operation")
+        self.status_label.config(text="Export terminé — Prêt pour un nouvel export")
+        log_info("Interface réinitialisée après l'export")
     
     @staticmethod
     def _format_size(bytes_size):
