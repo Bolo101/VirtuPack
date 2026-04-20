@@ -14,6 +14,7 @@ import json
 import time
 from pathlib import Path
 from QCow2CloneResizer import QCow2CloneResizer
+import theme
 
 
 class ImageFormatConverter:
@@ -63,8 +64,7 @@ class ImageFormatConverter:
 
         self.root = tk.Toplevel(parent)
         self.root.title("Convertisseur de formats d'images de disque virtuel")
-        self.root.geometry("950x900")
-        self.root.minsize(850, 700)
+        self.root.attributes("-fullscreen", True)
         self.root.transient(parent)
 
         self.image_path = tk.StringVar()
@@ -116,99 +116,85 @@ class ImageFormatConverter:
         self.dialog_result_event.wait()
 
     def setup_ui(self):
-        main_frame = ttk.Frame(self.root, padding="12")
+        C = theme
+
+        # Appliquer le thème sombre à cette Toplevel
+        theme.apply_theme(self.root)
+        self.root.configure(bg=C.BG)
+
+        # Conteneur principal
+        main_frame = ttk.Frame(self.root, style="TFrame", padding=(20, 16))
         main_frame.pack(fill="both", expand=True)
 
-        main_frame.grid_rowconfigure(6, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
+        # ── En-tête ───────────────────────────────────────────────────────
+        header_frame = ttk.Frame(main_frame, style="TFrame")
+        header_frame.pack(fill="x", pady=(0, 18))
 
-        header_frame = ttk.Frame(main_frame)
-        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(header_frame, text="Convertisseur de formats d'images",
+                  style="Title.TLabel").pack(anchor="center")
+        ttk.Label(header_frame,
+                  text="Convertir entre les formats QCOW2, VHD, VHDX, VMDK, VDI et RAW",
+                  style="Subtitle.TLabel").pack(anchor="center", pady=(2, 0))
 
-        title = ttk.Label(
-            header_frame,
-            text="Convertisseur de formats d'images de disque virtuel",
-            font=("Arial", 14, "bold")
-        )
-        title.pack(anchor="w")
+        ttk.Separator(main_frame, orient="horizontal").pack(fill="x", pady=(0, 16))
 
-        subtitle = ttk.Label(
-            header_frame,
-            text="Convertir entre les formats QCOW2, VHD, VHDX, VMDK, VDI et RAW",
-            font=("Arial", 9)
-        )
-        subtitle.pack(anchor="w")
+        # ── Sélection du fichier ──────────────────────────────────────────
+        file_frame = ttk.LabelFrame(main_frame, text="Fichier image source",
+                                    style="TLabelframe")
+        file_frame.pack(fill="x", pady=(0, 12))
 
-        file_frame = ttk.LabelFrame(main_frame, text="Fichier image source", padding="8")
-        file_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        file_frame.columnconfigure(0, weight=1)
+        path_frame = ttk.Frame(file_frame, style="Card.TFrame")
+        path_frame.pack(fill="x", pady=(0, 6))
 
-        path_frame = ttk.Frame(file_frame)
-        path_frame.grid(row=0, column=0, sticky="ew")
-        path_frame.columnconfigure(0, weight=1)
+        self.path_entry = ttk.Entry(path_frame, textvariable=self.image_path,
+                                    font=C.FONT_NORMAL, style="TEntry")
+        self.path_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
 
-        self.path_entry = ttk.Entry(
-            path_frame,
-            textvariable=self.image_path,
-            font=("Arial", 9)
-        )
-        self.path_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(path_frame, text="Parcourir",
+                   command=self.browse_file).pack(side="right", padx=(0, 5))
+        ttk.Button(path_frame, text="Analyser",
+                   command=self.analyze_image).pack(side="right")
 
-        button_frame = ttk.Frame(path_frame)
-        button_frame.grid(row=0, column=1)
+        # ── Informations sur l'image ──────────────────────────────────────
+        info_frame = ttk.LabelFrame(main_frame, text="Informations sur l'image",
+                                    style="TLabelframe")
+        info_frame.pack(fill="x", pady=(0, 12))
 
-        ttk.Button(
-            button_frame,
-            text="Parcourir",
-            command=self.browse_file,
-            width=10
-        ).pack(side="left", padx=(0, 3))
+        self.info_text = tk.Text(info_frame, height=5, state="disabled", wrap="word")
+        theme.style_text_widget(self.info_text)
+        info_scrollbar = ttk.Scrollbar(info_frame, orient="vertical",
+                                       command=self.info_text.yview)
+        self.info_text.configure(yscrollcommand=info_scrollbar.set)
+        self.info_text.pack(side="left", fill="both", expand=True)
+        info_scrollbar.pack(side="right", fill="y")
 
-        ttk.Button(
-            button_frame,
-            text="Analyser",
-            command=self.analyze_image,
-            width=10
-        ).pack(side="left")
-
-        info_frame = ttk.LabelFrame(main_frame, text="Informations sur l'image", padding="8")
-        info_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        info_frame.columnconfigure(0, weight=1)
-
-        self.info_text = tk.Text(
-            info_frame,
-            height=4,
-            state="disabled",
-            wrap="word",
-            font=("Consolas", 8),
-            bg="white"
-        )
-        self.info_text.pack(fill="both", expand=True)
-
-        format_frame = ttk.LabelFrame(main_frame, text="Format cible", padding="8")
-        format_frame.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        format_frame.columnconfigure(0, weight=1)
-        format_frame.columnconfigure(1, weight=1)
+        # ── Format cible ──────────────────────────────────────────────────
+        format_frame = ttk.LabelFrame(main_frame, text="Format cible",
+                                      style="TLabelframe")
+        format_frame.pack(fill="x", pady=(0, 12))
 
         self.format_radios = {}
         formats_list = list(self.FORMATS.items())
         mid_point = (len(formats_list) + 1) // 2
 
-        left_col = ttk.Frame(format_frame)
-        left_col.grid(row=0, column=0, sticky="nw", padx=(0, 12))
-        right_col = ttk.Frame(format_frame)
-        right_col.grid(row=0, column=1, sticky="nw")
+        cols_frame = ttk.Frame(format_frame, style="TFrame")
+        cols_frame.pack(fill="x")
+
+        left_col = ttk.Frame(cols_frame, style="TFrame")
+        left_col.pack(side="left", anchor="nw", padx=(0, 20))
+        right_col = ttk.Frame(cols_frame, style="TFrame")
+        right_col.pack(side="left", anchor="nw")
 
         for idx, (fmt_key, fmt_info) in enumerate(formats_list):
             parent_col = left_col if idx < mid_point else right_col
             radio = ttk.Radiobutton(
                 parent_col,
-                text=f"{fmt_info['name']} - {fmt_info['description']}",
+                text=f"{fmt_info['name']} — {fmt_info['description']}",
                 variable=self.target_format,
                 value=fmt_key,
                 command=self.on_format_changed
             )
-            radio.pack(anchor="w", pady=1)
+            radio.pack(anchor="w", pady=2)
             self.format_radios[fmt_key] = radio
 
         self.compress_check = ttk.Checkbutton(
@@ -217,80 +203,61 @@ class ImageFormatConverter:
             variable=self.compress_option,
             state="disabled"
         )
-        self.compress_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.compress_check.pack(anchor="w", pady=(8, 0))
 
-        self.prereq_frame = ttk.LabelFrame(main_frame, text="État du système", padding="8")
-        self.prereq_frame.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        # ── État du système ───────────────────────────────────────────────
+        self.prereq_frame = ttk.LabelFrame(main_frame, text="État du système",
+                                           style="TLabelframe")
+        self.prereq_frame.pack(fill="x", pady=(0, 12))
 
-        self.prereq_label = ttk.Label(
-            self.prereq_frame,
-            text="Vérification des outils requis...",
-            font=("Arial", 8)
-        )
-        self.prereq_label.pack()
+        self.prereq_label = ttk.Label(self.prereq_frame,
+                                      text="Vérification des outils requis...",
+                                      font=C.FONT_NORMAL, style="Card.TLabel")
+        self.prereq_label.pack(anchor="w")
 
-        progress_frame = ttk.LabelFrame(main_frame, text="Progression de la conversion", padding="8")
-        progress_frame.grid(row=5, column=0, sticky="ew", pady=(0, 8))
-        progress_frame.columnconfigure(0, weight=1)
+        # ── Progression ───────────────────────────────────────────────────
+        progress_frame = ttk.LabelFrame(main_frame, text="Progression de la conversion",
+                                        style="TLabelframe")
+        progress_frame.pack(fill="x", pady=(0, 16))
 
-        self.progress = ttk.Progressbar(progress_frame, mode='indeterminate')
-        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self.progress = ttk.Progressbar(progress_frame, mode='indeterminate', length=400)
+        self.progress.pack(fill="x", pady=(0, 8))
 
-        self.progress_label = ttk.Label(
-            progress_frame,
-            text="Prêt à convertir",
-            font=("Arial", 9, "bold")
-        )
-        self.progress_label.grid(row=1, column=0, sticky="w")
+        self.progress_label = ttk.Label(progress_frame, text="Prêt à convertir",
+                                        font=("Segoe UI", 10, "bold"),
+                                        style="Card.TLabel")
+        self.progress_label.pack(anchor="center")
 
-        button_container = ttk.Frame(main_frame)
-        button_container.grid(row=6, column=0, sticky="ew", pady=(0, 8))
-        button_container.columnconfigure(0, weight=1)
+        # ── Boutons d'action ──────────────────────────────────────────────
+        button_frame = ttk.Frame(main_frame, style="TFrame")
+        button_frame.pack(fill="x", pady=(0, 10))
 
         self.convert_btn = ttk.Button(
-            button_container,
+            button_frame,
             text="LANCER LA CONVERSION",
             command=self.start_conversion,
-            state="disabled"
+            state="disabled",
+            style="Primary.TButton"
         )
-        self.convert_btn.grid(row=0, column=0, sticky="ew", pady=(0, 6), ipady=5)
+        self.convert_btn.pack(fill="x", pady=(0, 8), ipady=6)
 
-        secondary_frame = ttk.Frame(button_container)
-        secondary_frame.grid(row=1, column=0, sticky="ew")
-        secondary_frame.columnconfigure(1, weight=1)
+        secondary_frame = ttk.Frame(button_frame, style="TFrame")
+        secondary_frame.pack(fill="x")
 
-        ttk.Button(
-            secondary_frame,
-            text="Rafraîchir",
-            command=self.analyze_image,
-            width=12
-        ).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(secondary_frame, text="Rafraîchir",
+                   command=self.analyze_image, width=12).pack(side="left")
+        ttk.Button(secondary_frame, text="Fermer",
+                   command=self.close_window, width=12).pack(side="right")
 
-        ttk.Button(
-            secondary_frame,
-            text="Fermer",
-            command=self.close_window,
-            width=12
-        ).grid(row=0, column=2, sticky="e")
-
-        status_frame = ttk.Frame(main_frame)
-        status_frame.grid(row=7, column=0, sticky="ew")
-
-        separator = ttk.Separator(status_frame, orient="horizontal")
-        separator.pack(fill="x", pady=(6, 4))
+        # ── Barre de statut ───────────────────────────────────────────────
+        ttk.Separator(main_frame, orient="horizontal").pack(fill="x", pady=(10, 4))
 
         self.status_label = ttk.Label(
-            status_frame,
-            text="Prêt - Sélectionnez un fichier image source pour commencer",
-            font=("Arial", 8)
+            main_frame,
+            text="Prêt — Sélectionnez un fichier image source pour commencer",
+            font=C.FONT_NORMAL, style="Card.TLabel"
         )
-        self.status_label.pack()
-
-        self.setup_styles()
-
-    def setup_styles(self):
-        style = ttk.Style()
-        style.configure("Accent.TButton", font=("Arial", 10, "bold"))
+        self.status_label.pack(anchor="center")
 
     def check_prerequisites(self):
         qemu_img_available = self._check_command('qemu-img')
