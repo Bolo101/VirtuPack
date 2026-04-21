@@ -1,126 +1,128 @@
-# P2V Converter – Turn Physical Machines into Virtual Ones
+# VirtuPack – Transformer des machines physiques en machines virtuelles
 
-Transform physical disks into **qcow2 virtual machine images** ready for any hypervisor. Safety-focused tool with intuitive GUI, preventing accidental imaging of running systems. Build a **bootable ISO** for safe offline conversion of any physical machine.
-
-***
-
-## Features
-
-### Core Conversion
-- Converts physical disks to **compressed qcow2** images
-- Real-time progress tracking with cancel capability
-- Blocks conversion of active system disks and mounted partitions
-- Intelligent space analysis based on actual usage
-- Comprehensive logging to `/var/log/disk2qcow2.log`
-
-### Advanced Tools
-- **QCOW2 Resizer**: Optimize virtual disk size
-- **Format Converter**: Convert between qcow2, vmdk, vdi, vpc, vhdx, raw
-- **LUKS Encryption**: Secure VMs with password-protected containers
-- **Export Manager**: Transfer images via RSYNC
-- **File Manager**: Workspace cleanup
-- **Virt-Manager Integration**: Direct VM management
-- **External Storage Support**: Mount and use external drives
-
-### Supported Operating Systems
-- **Windows** (all versions - XP through 11, Server editions)
-- **Linux** (all distributions - Ubuntu, Debian, Fedora, CentOS, Arch, etc.)
+Transformez des disques physiques en images de machine virtuelle **qcow2** prêtes à être utilisées sur n’importe quel hyperviseur. Outil axé sur la sécurité, avec une interface graphique intuitive, empêchant l’imagerie accidentelle de systèmes en cours d’exécution. Créez une **ISO amorçable** pour convertir hors ligne et en toute sécurité n’importe quelle machine physique.
 
 ***
 
-## Live vs Installer mode
-Pre-built 64 bits ISO comes with two boot modes integrated.
+## Fonctionnalités
 
-### Live mode
-Live mode is advised when virtualizing a machine by directly booting on the target system via a bootable USB key containing the ISO. The virtualization process runs entirely from the live environment without any installation required on the host machine.
+### Conversion principale
+- Convertit des disques physiques en images **qcow2 compressées**.
+- Suivi de progression en temps réel avec possibilité d’annulation.
+- Bloque la conversion des disques système actifs et des partitions montées.
+- Analyse intelligente de l’espace basée sur l’utilisation réelle.
+- Journalisation complète dans `/var/log/virtupack.log`.
 
-Users have access to all features, including the ability to export logs to an external storage device before shutting down the session.
+### Outils avancés
+- **Redimensionnement QCOW2** : optimise la taille du disque virtuel.
+- **Convertisseur de format** : conversion entre qcow2, vmdk, vdi, vpc, vhdx et raw.
+- **Chiffrement LUKS** : sécurise les VM avec des conteneurs protégés par mot de passe.
+- **Gestionnaire d’export** : transfert des images via RSYNC.
+- **Gestionnaire de fichiers** : nettoyage de l’espace de travail.
+- **Intégration avec Virt-Manager** : gestion directe des VM.
+- **Prise en charge du stockage externe** : montage et utilisation de disques externes.
+
+### Systèmes d’exploitation pris en charge
+- **Windows** (toutes les versions, de XP à 11, éditions serveur).
+- **Linux** (toutes les distributions : Ubuntu, Debian, Fedora, CentOS, Arch, etc.).
+
+***
+
+## Mode Live vs mode Installateur
+
+L’ISO 64 bits précompilée intègre deux modes de démarrage.
+
+### Mode Live
+Le mode Live est conseillé lorsqu’on virtualise une machine en démarrant directement sur le système cible via une clé USB bootable contenant l’ISO. Le processus de virtualisation s’exécute entièrement depuis l’environnement Live, sans aucune installation requise sur la machine hôte.
+
+Les utilisateurs ont accès à toutes les fonctionnalités, y compris la possibilité d’exporter les journaux vers un support de stockage externe avant d’éteindre la session.
 
 <div style="display: flex; align-items: center;">
   <img src="./img/gui.png" alt="GUI" width="600" style="margin-right: 20px;">
 </div>
 
-### Installer mode
-Installer mode is designed for use as a **fixed virtualization workstation**, where physical drives removed from their original machines are connected directly to the station for virtualization. This mode is intended for a permanent, dedicated setup rather than on-site interventions.
+### Mode Installateur
+Le mode Installateur est conçu pour une **station fixe de virtualisation**, où les disques physiques retirés de leurs machines d’origine sont directement connectés à la station pour être virtualisés. Ce mode vise une configuration permanente et dédiée, plutôt qu’une intervention sur site.
 
-All features are available to the user, with the exception of the following operations which are **restricted to administrator access (password protected)**:
+Toutes les fonctionnalités sont disponibles pour l’utilisateur, à l’exception des opérations suivantes, qui sont **réservées à l’accès administrateur (protégé par mot de passe)** :
 
-| Protected action | Reason |
+| Action protégée | Raison |
 |---|---|
-| Log export from the station | Prevent unauthorized data extraction |
-| Log purge | Preserve audit trail integrity |
-| System restart & shutdown | Ensure workstation availability |
-| Exiting kiosk mode | Maintain controlled environment |
+| Export des journaux depuis la station | Empêcher l’extraction non autorisée de données |
+| Purge des journaux | Préserver l’intégrité de la trace d’audit |
+| Redémarrage et arrêt du système | Garantir la disponibilité de la station |
+| Quitter le mode kiosque | Maintenir un environnement contrôlé |
 
 <div style="display: flex; align-items: center;">
   <img src="./img/gui_installer.png" alt="GUI_installer" width="600" style="margin-right: 20px;">
 </div>
 
-### Quick comparison
+### Comparaison rapide
 
-| | Live mode | Installer mode |
+| | Mode Live | Mode Installateur |
 |---|---|---|
-| **Use case** | On-site, boot on target machine | Fixed workstation, attach external drives |
-| **Installation required** | No | Yes |
-| **Log export** | ✅ User | 🔒 Admin only |
-| **Log purge** | ✅ User | 🔒 Admin only |
-| **Restart / Shutdown** | ✅ User | 🔒 Admin only |
-| **Exit kiosk mode** | ✅ User | 🔒 Admin only |
-| **Virtualize disk** | ✅ User | ✅ User |
-| **Resize VM filesystem** | ✅ User | ✅ User |
-| **Convert VM image format** | ✅ User | ✅ User |
-| **Cipher VM image** | ✅ User | ✅ User |
-| **Start VM on Qemu** | ✅ User | ✅ User |
+| **Cas d’usage** | Intervention sur site, démarrage sur la machine cible | Station fixe, connexion de disques externes |
+| **Installation requise** | Non | Oui |
+| **Export des journaux** | ✅ Utilisateur | 🔒 Administrateur uniquement |
+| **Purge des journaux** | ✅ Utilisateur | 🔒 Administrateur uniquement |
+| **Redémarrage / arrêt** | ✅ Utilisateur | 🔒 Administrateur uniquement |
+| **Quitter le mode kiosque** | ✅ Utilisateur | 🔒 Administrateur uniquement |
+| **Virtualiser un disque** | ✅ Utilisateur | ✅ Utilisateur |
+| **Redimensionner le système de fichiers de la VM** | ✅ Utilisateur | ✅ Utilisateur |
+| **Convertir le format de l’image VM** | ✅ Utilisateur | ✅ Utilisateur |
+| **Chiffrer l’image VM** | ✅ Utilisateur | ✅ Utilisateur |
+| **Démarrer la VM sur Qemu** | ✅ Utilisateur | ✅ Utilisateur |
 
-## Quick Start
+## Démarrage rapide
 
-### Download Pre-built ISO (Recommended)
-**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v2.0)**
+### Télécharger l’ISO précompilée (recommandé)
+**[Télécharger l’ISO VirtuPack](https://archive.org/details/VirtuPack-v2.0)**
 
-  ```txt
-  - p2vConverter-v2.0-64bits.iso : e628273cbcf2d027e207a30f7f8c5cdac18b19595f37b23c738ff9b128f2583b
-  - p2vConverter-v2.0-32bits.iso : ddf55049959ebfc19d778165c16efcc84cb7d0e74853672b6df8a60cdad7677d
-  ```
+```txt
+- VirtuPack-v2.0-64bits.iso : e628273cbcf2d027e207a30f7f8c5cdac18b19595f37b23c738ff9b128f2583b
+- VirtuPack-v2.0-32bits.iso : ddf55049959ebfc19d778165c16efcc84cb7d0e74853672b6df8a60cdad7677d
+```
 
-Select ISO version you need, 32 bits or 64 bits, XFCE (lighter) or KDE. 
-### Or Build Your Own
+Choisissez la version d’ISO souhaitée : 32 bits ou 64 bits, XFCE (plus léger) ou KDE.
+
+### Ou créer votre propre ISO
 
 ```bash
 cd iso/
 make
-make 32  # 32 bits XFCE environment (lighter)
-make all-iso # All 2 ISOs generated
-make clean   # Clean build files
-make help    # Display helper message
+make 32  # environnement XFCE 32 bits (plus léger)
+make all-iso # génère les 2 ISO
+make clean   # nettoie les fichiers de build
+make help    # affiche le message d’aide
 ```
 
 ***
 
-## Requirements
+## Prérequis
 
-### ISO Method (Recommended - No Configuration)
-- USB drive (8GB+) or DVD
-- External storage drive for output
-- No additional setup needed
+### Méthode ISO (recommandée - sans configuration)
+- Clé USB (8 Go ou plus) ou DVD.
+- Disque de stockage externe pour la sortie.
+- Aucune configuration supplémentaire nécessaire.
 
-### Native Installation
+### Installation native
 
-**Ubuntu/Debian:**
+**Ubuntu/Debian :**
 ```bash
 sudo apt install qemu-utils python3-tk gparted rsync cryptsetup virt-manager libvirt-daemon-system
 ```
 
-**Fedora/CentOS/RHEL:**
+**Fedora/CentOS/RHEL :**
 ```bash
 sudo dnf install qemu-img python3-tkinter gparted rsync cryptsetup virt-manager libvirt
 ```
 
-**⚠️ Critical for External Storage:** Configure libvirt to access external drives:
+**⚠️ Critique pour le stockage externe :** configurez libvirt pour accéder aux disques externes :
 
 ```bash
 sudo nano /etc/libvirt/qemu.conf
 
-# Add/modify these lines:
+# Ajouter/modifier ces lignes :
 user = "root"
 group = "root"
 
@@ -129,81 +131,80 @@ cgroup_device_acl = [
     "/dev/random", "/dev/urandom",
     "/dev/ptmx", "/dev/kvm",
     "/dev/rtc", "/dev/hpet",
-    "/dev/sdb", "/dev/sdc", "/dev/sdd",  # Your external drives
+    "/dev/sdb", "/dev/sdc", "/dev/sdd",  # Vos disques externes
     "/dev/disk/by-uuid/*"
 ]
-````
+```
+
 ```bash
 sudo systemctl restart libvirtd
 sudo usermod -a -G libvirt $USER
 ```
 
-## Usage Workflow
+## Flux d’utilisation
 
-### 1. Boot from ISO
-- Write ISO to USB: `sudo dd if=p2v-converter.iso of=/dev/sdX bs=4M status=progress` (or use [Ventoy key](https://www.ventoy.net/en/))
-- Boot target machine from USB
+### 1. Démarrer depuis l’ISO
+- Écrire l’ISO sur une clé USB : `sudo dd if=virtupack*.iso of=/dev/sdX bs=4M status=progress` (ou utiliser une [clé Ventoy](https://www.ventoy.net/en/)).
+- Démarrer la machine cible sur la clé USB.
 
-### 2. Connect External Storage
-- Plug in external USB drive (don't mount manually)
+### 2. Connecter le stockage externe
+- Brancher un disque USB externe (ne pas le monter manuellement).
 
-**Mount External Storage:**
-- Click **"Mount Disk"** button
-- Select your external drive
-- Click "Mount Selected Disk"
-- Output directory updates automatically
+**Monter le stockage externe :**
+- Cliquer sur le bouton **"Mount Disk"**.
+- Sélectionner votre disque externe.
+- Cliquer sur **"Mount Selected Disk"**.
+- Le dossier de sortie se met à jour automatiquement.
 
-### 3. Configure Conversion
+### 3. Configurer la conversion
 
-**Select Source:**
-- Click **"Refresh Disks"**
-- Select disk to convert (system disks blocked for safety)
+**Sélectionner la source :**
+- Cliquer sur **"Refresh Disks"**.
+- Sélectionner le disque à convertir (les disques système sont bloqués pour des raisons de sécurité).
 
-**Verify Space:**
-- Click **"Check Space Requirements"**
-- Green indicator = sufficient space
+**Vérifier l’espace :**
+- Cliquer sur **"Check Space Requirements"**.
+- Indicateur vert = espace suffisant.
 
-### 4. Convert
-- Click **"Start P2V Conversion"**
-- Monitor progress (cancel anytime if needed)
-- Typical time: 30-120 minutes depending on size and system
+### 4. Convertir
+- Cliquer sur **"Start P2V Conversion"**.
+- Suivre la progression (annulation possible à tout moment si besoin).
+- Durée typique : 30 à 120 minutes selon la taille et le système.
 
-### 5. Optional Post-Processing
-- **"QCOW2 Resize"**: Optimize disk size (change filesystem size, reduce virtual size and compress virtual image)
-- **"LUKS Encryption"**: Secure with password
-- **"Format Converter"**: Convert to VMDK/VDI/VHD
-- **"Export Image"**: Transfer via RSYNC
-- **"Print Session Log"**: Generate PDF report
+### 5. Post-traitement optionnel
+- **"QCOW2 Resize"** : optimise la taille du disque (modifie la taille du système de fichiers, réduit la taille virtuelle et compresse l’image virtuelle).
+- **"LUKS Encryption"** : sécurise avec un mot de passe.
+- **"Format Converter"** : convertit en VMDK/VDI/VHD.
+- **"Export Image"** : transfert via RSYNC.
+- **"Print Session Log"** : génère un rapport PDF.
 
 ***
 
-## Running Converted VMs
+## Exécution des VM converties
 
-### Using virt-manager
+### Avec virt-manager
 
 ```bash
-# From ISO (auto-configured) or native installation:
-virt-manager
-
-# Then in GUI:
-# 1. New VM → Import existing disk image
-# 2. Browse to .qcow2 file
-# 3. Select OS type (Windows or Linux)
-# 4. Choose firmware:
-#    - UEFI for modern systems (2010+)
-#    - BIOS for legacy systems
-# 5. DISABLE Secure Boot
-# 6. Start VM
+# Depuis l’ISO (auto-configuré) ou une installation native :
+virt-manager... # Puis dans l’interface :
+# 1. Nouvelle VM → Importer un disque existant
+# 2. Parcourir jusqu’au fichier .qcow2
+# 3. Choisir le type d’OS (Windows ou Linux)
+# 4. Choisir le firmware :
+#    - UEFI pour les systèmes modernes (2010+)
+#    - BIOS pour les systèmes plus anciens
+# 5. DÉSACTIVER Secure Boot
+# 6. Démarrer la VM
 ```
 
-### Using QEMU CLI
+### Avec la CLI QEMU
 
-**BIOS boot:**
+**Démarrage BIOS :**
 ```bash
 qemu-system-x86_64 -m 4096 -drive file=vm.qcow2,format=qcow2 -enable-kvm
 ```
 
-**UEFI boot:**
+**Démarrage UEFI :**
 ```bash
 qemu-system-x86_64 -m 4096 \
   -drive file=vm.qcow2,format=qcow2 \
@@ -211,7 +212,7 @@ qemu-system-x86_64 -m 4096 \
   -enable-kvm
 ```
 
-**From external drive:**
+**Depuis un disque externe :**
 ```bash
 sudo mount /dev/sdb1 /mnt/external
 qemu-system-x86_64 -m 4096 -drive file=/mnt/external/vm.qcow2,format=qcow2 -enable-kvm
@@ -219,139 +220,131 @@ qemu-system-x86_64 -m 4096 -drive file=/mnt/external/vm.qcow2,format=qcow2 -enab
 
 ***
 
-## Format Conversion
+## Conversion de format
 
-| Platform | Format | Command |
+| Plateforme | Format | Commande |
 |----------|--------|---------|
 | VMware | vmdk | `qemu-img convert -f qcow2 -O vmdk src.qcow2 output.vmdk` |
 | VirtualBox | vdi | `qemu-img convert -f qcow2 -O vdi src.qcow2 output.vdi` |
 | Hyper-V | vhdx | `qemu-img convert -f qcow2 -O vhdx src.qcow2 output.vhdx` |
-| Generic | raw | `qemu-img convert -f qcow2 -O raw src.qcow2 output.img` |
+| Générique | raw | `qemu-img convert -f qcow2 -O raw src.qcow2 output.img` |
 
-Or use the GUI **"Format Converter"** tool.
+Ou utilisez l’outil graphique **"Format Converter"**.
 
 ***
 
-## Troubleshooting
+## Dépannage
 
-### Common Issues
-
+### Problèmes courants
 **"Disk Unavailable"**
-- Boot from ISO to convert system disks
-- Unmount partitions: `sudo umount /dev/sdX1`
+- Démarrez depuis l’ISO pour convertir les disques système.
+- Démontez les partitions : `sudo umount /dev/sdX1`
 
 **"Insufficient Space"**
-- Use "Mount Disk" for larger external drive
-- Check available space matches requirement
+- Utilisez **"Mount Disk"** avec un disque externe plus grand.
+- Vérifiez que l’espace disponible correspond à l’espace requis.
 
 **"Cannot Mount External Drive"**
-- Verify detection: `lsblk`
-- Unmount if already mounted: `sudo umount /dev/sdX1`
+- Vérifiez la détection : `lsblk`
+- Démontez si le disque est déjà monté : `sudo umount /dev/sdX1`
 
 **"VM Won't Boot"**
-- Try both UEFI and BIOS modes
-- Disable Secure Boot
-- Windows may need reactivation after conversion
+- Essayez les modes UEFI et BIOS.
+- Désactivez Secure Boot.
+- Windows peut nécessiter une réactivation après conversion.
 
-**"Permission Denied" (native installation)**
-- Configure libvirt as shown in Requirements
-- Or run with: `sudo python3 code/main.py`
+**"Permission Denied" (installation native)**
+- Configurez libvirt comme indiqué dans les prérequis.
+- Ou lancez avec : `sudo python3 code/main.py`
 
 **"External Drive VM Fails to Start"**
-- Native installation: Configure libvirt `cgroup_device_acl`
-- ISO method: No configuration needed
+- Installation native : configurez `cgroup_device_acl` de libvirt.
+- Méthode ISO : aucune configuration requise.
 
-### Windows-Specific Issues
+### Problèmes spécifiques à Windows
 
 **"Windows requires activation"**
-- Normal after hardware change
-- Use original product key to reactivate or **slmgr /rearm** command
+- Comportement normal après un changement matériel.
+- Utilisez la clé produit d’origine pour réactiver ou la commande **slmgr /rearm**.
 
 **"Missing drivers after boot"**
-- Install virtio drivers in guest
-- Or use IDE disk mode in VM settings
+- Installez les pilotes virtio dans la machine invitée.
+- Ou utilisez le mode disque IDE dans les paramètres de la VM.
 
 **"BSOD on first boot"**
-- Use BIOS mode instead of UEFI
-- Disable virtio, use IDE initially
+- Utilisez le mode BIOS au lieu de l’UEFI.
+- Désactivez virtio et utilisez d’abord IDE.
 
-### Logs
+### Journaux
 
-Check `/var/log/disk2qcow2.log` for detailed diagnostics or use "Print Session Log" for PDF reports.
+Consultez `/var/log/virtupack.log` pour obtenir des diagnostics détaillés, ou utilisez **"Print Session Log"** pour générer des rapports PDF.
 
 ***
 
-## Project Structure
+## Structure du projet
 
-```
-disk2qcow2/
+```text
+virtupack/
 ├── code/                          # Application
-│   ├── main.py                    # Entry point
-│   ├── p2v_dialog.py              # Main GUI
-│   ├── vm.py                      # Conversion engine
-│   ├── utils.py                   # Disk utilities
-│   ├── log_handler.py             # Logging & PDF
-│   ├── disk_mount_dialog.py       # Mount manager
-│   ├── qcow2_resize_dialog.py     # Resize tool
-│   ├── image_format_converter.py  # Format converter
-│   ├── ciphering.py               # LUKS encryption
-│   ├── export.py                  # RSYNC export
-│   └── virt_launcher.py           # VM management
-├── iso/                           # ISO builders
-│   ├── forgeIsoKde.sh             # KDE ISO 64 bits
-│   ├── forgeIsoXfce.sh            # XFCE ISO 64 bits
-│   ├── forgeIsoKde32.sh           # KDE ISO 32 bits
-│   ├── forgeIsoXfc32e.sh          # XFCE ISO 32 bits
-│   └── makefile                   # Build automation
+│   ├── main.py                    # Point d’entrée
+│   ├── p2v_dialog.py              # Interface graphique principale
+│   ├── vm.py                      # Moteur de conversion
+│   ├── utils.py                   # Utilitaires disque
+│   ├── log_handler.py             # Journalisation et PDF
+│   ├── disk_mount_dialog.py       # Gestionnaire de montage
+│   ├── qcow2_resize_dialog.py     # Outil de redimensionnement
+│   ├── image_format_converter.py  # Convertisseur de format
+│   ├── ciphering.py               # Chiffrement LUKS
+│   ├── export.py                  # Export RSYNC
+│   └── virt_launcher.py           # Gestion des VM
+├── iso/                           # Générateurs d’ISO
+│   ├── forgeIsoKde.sh             # ISO KDE 64 bits
+│   ├── forgeIsoXfce.sh            # ISO XFCE 64 bits
+│   ├── forgeIsoKde32.sh           # ISO KDE 32 bits
+│   ├── forgeIsoXfc32e.sh          # ISO XFCE 32 bits
+│   └── makefile                   # Automatisation du build
 └── README.md
 ```
 
+## Bonnes pratiques
 
-## Best Practices
+✅ Utilisez la méthode ISO pour des conversions sûres.  
+✅ Utilisez des disques externes USB 3.0 ou plus pour de meilleures performances.  
+✅ Créez une sauvegarde avant de redimensionner les partitions à l’aide du bouton **Backup**.  
+✅ Conservez le disque source intact jusqu’à validation complète de la VM.  
+✅ Utilisez le chiffrement LUKS pour les systèmes sensibles.  
+✅ Générez des journaux PDF pour la documentation.  
 
-✅ Use ISO method for safe conversions  
-✅ Use USB 3.0+ external drives for performance  
-✅ Create a backup before resizing partitions using **Backup** button
-✅ Keep source disk intact until VM validated  
-✅ Use LUKS encryption for sensitive systems  
-✅ Generate PDF logs for documentation  
+## Détails techniques
 
+- **Format** : QCOW2 avec compression zlib.
+- **Systèmes source pris en charge** : Windows et Linux, quel que soit le système de fichiers.
+- **Emplacement des journaux** : `/var/log/virtupack.log`.
+- **Interface graphique** : Python 3 + Tkinter.
+- **Outils** : qemu-img, cryptsetup, rsync, libvirt, virt-manager, qemu-utils.
+- **Plateformes cibles** : QEMU/KVM, VirtualBox, VMware, Hyper-V.
 
-## Technical Details
-
-- **Format**: QCOW2 with zlib compression
-- **Source Support**: Windows & Linux, any filesystem
-- **Log Location**: `/var/log/disk2qcow2.log`
-- **GUI**: Python 3 + Tkinter
-- **Tools**: qemu-img, cryptsetup, rsync, libvirt, virt-manager, qemu-utils
-- **Target Platforms**: QEMU/KVM, VirtualBox, VMware, Hyper-V
-
-
-## Quick Example
+## Exemple rapide
 
 ```bash
-# 1. Boot from ISO → Launch P2V Converter
-# 2. Click "Refresh Disks" → Select /dev/sda (Windows disk)
-# 3. Click "Mount Disk" → Select external /dev/sdb1 → Mount at /mnt/external
-# 4. Click "Check Space Requirements" → Verify green indicator
-# 5. Click "Start P2V Conversion" → Wait ~45 min for 250GB disk
-# 6. Click "Print Session Log" → Save PDF report
-# 7. Transfer external drive to host system
-# 8. Run: qemu-system-x86_64 -m 4096 -drive file=/mnt/external/sda_vm.qcow2 -enable-kvm
+# 1. Démarrer depuis l’ISO → lancer VirtuPack
+# 2. Cliquer sur "Refresh Disks" → sélectionner /dev/sda (disque Windows)
+# 3. Cliquer sur "Mount Disk" → sélectionner le disque externe /dev/sdb1 → monter dans /mnt/external
+# 4. Cliquer sur "Check Space Requirements" → vérifier l’indicateur vert
+# 5. Cliquer sur "Start P2V Conversion" → attendre environ 45 min pour un disque de 250 Go
+# 6. Cliquer sur "Print Session Log" → enregistrer le rapport PDF
+# 7. Transférer le disque externe vers le système hôte
+# 8. Exécuter : qemu-system-x86_64 -m 4096 -drive file=/mnt/external/sda_vm.qcow2 -enable-kvm
 ```
 
-
-**Supported Systems:**
+**Systèmes pris en charge :**
 - Windows (XP, Vista, 7, 8, 10, 11, Server 2003-2022)
 - Linux (Ubuntu, Debian, Fedora, CentOS, RHEL, Arch, openSUSE, etc.)
 
+## Licence
 
-## License
-
-Attribution-NonCommercial-ShareAlike 4.0 International. See LICENSE file
+Attribution-NonCommercial-ShareAlike 4.0 International. Voir le fichier LICENSE.
 
 ---
 
-**Transform any Windows or Linux physical machine into a portable virtual environment.**
-
-**[Download P2V Converter ISO](https://archive.org/details/p2vConverter-v0.1)** and start virtualizing today!
+**Transformez n’importe quelle machine physique Windows ou Linux en environnement virtuel portable.**

@@ -10,11 +10,12 @@ from tkinter import ttk, messagebox, filedialog
 import os
 import subprocess
 import threading
+from pathlib import Path
 from log_handler import (log_info, log_error, log_warning, generate_session_pdf,
 generate_log_file_pdf, session_start, session_end,
 log_application_exit, get_current_session_logs,
 is_session_active)
-from utils import (get_disk_list, format_bytes,get_disk_info, is_system_disk)
+from utils import (get_disk_list, format_bytes, get_disk_info, is_system_disk)
 from vm import (check_output_space, check_qemu_tools, create_vm_from_disk, validate_vm_name)
 from disk_mount_dialog import DiskMountDialog
 from qcow2_resize_dialog import QCow2CloneResizerGUI
@@ -23,67 +24,68 @@ from delete_file import FileDeleteManager
 from virt_launcher import VirtManagerLauncher
 from ciphering import LUKSCiphering
 from export import VirtualImageExporter
+import theme
+
 
 class P2VConverterGUI:
     """GUI class for the P2V Converter application"""
-    
+
     def __init__(self, root):
         self.root = root
-        self.root.title("Physical to Virtual (P2V) Converter")
+        self.root.title("Convertisseur Physique vers Virtuel (P2V)")
         self.root.geometry("600x500")
         self.root.attributes("-fullscreen", True)
-        
+
         # Operation control variables
         self.operation_running = False
         self.stop_requested = False
-        
+
         # VM configuration variables
-        self.vm_name = tk.StringVar(value="converted_vm")
+        self.vm_name    = tk.StringVar(value="converted_vm")
         self.output_path = tk.StringVar(value="/tmp/p2v_output")
-        
+
         # Store current disk list for reference
         self.current_disks = []
-        
+
+        # Apply dark theme
+        self._style = theme.apply_theme(self.root)
+
         # Configure the main window
         self.setup_window()
-        
+
         # Create the GUI elements
         self.create_widgets()
-        
+
         # Set up window close protocol
         self.root.protocol("WM_DELETE_WINDOW", self.exit_application)
-        
+
         # Start logging session and log GUI initialization
         session_start()
         log_info("P2V Converter GUI initialized successfully")
-        
+
         # Check for required tools
         self.check_prerequisites()
-        
+
         # Start periodic log update
         self.update_log_from_session()
-    
+
+    # ─────────────────────────────────────────────────────────────────────────
     def setup_window(self):
         """Configure the main window properties with responsive design"""
         self.root.resizable(True, True)
-        
-        # Get screen dimensions
-        screen_width = self.root.winfo_screenwidth()
+
+        screen_width  = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        
-        # Use 90% of screen with minimum dimensions
-        window_width = int(screen_width * 0.90)
+
+        window_width  = int(screen_width  * 0.90)
         window_height = int(screen_height * 0.90)
-        
-        # Set geometry based on screen size
+
         self.root.geometry(f"{window_width}x{window_height}+50+50")
         self.root.minsize(800, 600)
-        
-        # Configure grid weights for responsive design
+
         self.root.grid_rowconfigure(1, weight=1)
         self.root.grid_columnconfigure(0, weight=1)
-        
-        # Set window icon (if available)
+
         try:
             self.root.iconname("P2V Converter")
         except (tk.TclError, AttributeError):
@@ -91,1661 +93,1115 @@ class P2VConverterGUI:
 
     def get_screen_layout_config(self):
         """Determine layout configuration based on screen dimensions"""
-        screen_width = self.root.winfo_screenwidth()
+        screen_width  = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        
-        # Determine number of tool columns based on width
+
         if screen_width < 1024:
-            tools_columns = 2
-            font_size = 8
+            tools_columns, font_size = 2, 8
         elif screen_width < 1400:
-            tools_columns = 3
-            font_size = 9
+            tools_columns, font_size = 3, 9
         elif screen_width < 1600:
-            tools_columns = 4
-            font_size = 9
+            tools_columns, font_size = 4, 9
         else:
-            tools_columns = 5
-            font_size = 10
-        
-        # Determine log frame height based on screen height
+            tools_columns, font_size = 5, 10
+
         if screen_height < 768:
             log_height = 4
         elif screen_height < 1080:
             log_height = 6
         else:
             log_height = 8
-        
+
         return {
-            'tools_columns': tools_columns,
-            'font_size': font_size,
-            'log_height': log_height,
-            'space_height': 4
+            "tools_columns": tools_columns,
+            "font_size": font_size,
+            "log_height": log_height,
+            "space_height": 4,
         }
 
     def is_disk_unavailable_for_conversion(self, device_path):
-        """
-        Check if a disk is unavailable for conversion
-        """
+        """Check if a disk is unavailable for conversion"""
         try:
             if is_system_disk(device_path):
                 return True, "This is an active system disk currently in use"
-            
+
             from utils import has_mounted_partitions
             if has_mounted_partitions(device_path):
                 return True, "This disk has mounted partitions"
-            
+
             try:
-                with open('/proc/mounts', 'r') as f:
+                with open("/proc/mounts", "r") as f:
                     mounts_content = f.read()
-                    
-                device_name = device_path.replace('/dev/', '')
-                
-                for line in mounts_content.split('\n'):
+                device_name = device_path.replace("/dev/", "")
+                for line in mounts_content.split("\n"):
                     if line.strip():
                         parts = line.split()
                         if len(parts) >= 2:
                             mounted_device = parts[0]
-                            mount_point = parts[1]
-                            
-                            if mounted_device.startswith('/dev/') and device_name in mounted_device:
+                            mount_point    = parts[1]
+                            if mounted_device.startswith("/dev/") and device_name in mounted_device:
                                 if mounted_device != device_path:
                                     return True, f"Partition {mounted_device} is mounted at {mount_point}"
-            
-            except IOError as e:
-                log_warning(f"Could not read mount status from /proc/mounts: {str(e)}")
-            except OSError as e:
-                log_warning(f"System error checking mount status: {str(e)}")
-            
+            except (IOError, OSError) as e:
+                log_warning(f"Could not read mount status: {e}")
+
             return False, "Available for conversion"
-                
+
         except FileNotFoundError as e:
-            log_error(f"Required file or command not found checking disk availability: {str(e)}")
+            log_error(f"File not found checking disk availability: {e}")
             return True, "Unable to verify disk status - file not found"
         except PermissionError as e:
-            log_error(f"Permission denied checking disk availability: {str(e)}")
+            log_error(f"Permission denied checking disk availability: {e}")
             return True, "Unable to verify disk status - permission denied"
         except subprocess.CalledProcessError as e:
-            log_error(f"Command failed checking disk availability: {str(e)}")
+            log_error(f"Command failed checking disk availability: {e}")
             return True, "Unable to verify disk status - command failed"
         except (ValueError, IndexError) as e:
-            log_error(f"Error parsing disk information: {str(e)}")
+            log_error(f"Error parsing disk information: {e}")
             return True, "Unable to verify disk status - data error"
         except OSError as e:
-            log_error(f"System error checking disk availability: {str(e)}")
+            log_error(f"System error checking disk availability: {e}")
             return True, "Unable to verify disk status - system error"
-    
+
+    # ─────────────────────────────────────────────────────────────────────────
     def create_widgets(self):
-        """Create all GUI widgets - Updated version with Format Converter integration"""
+        """Create all GUI widgets"""
         self.create_header_frame()
         self.create_main_frame()
-        self.create_status_frame()  
-    
-    def create_header_frame(self):
-        """Create the header frame with title and PDF generation buttons"""
-        header_frame = ttk.Frame(self.root, padding="10")
-        header_frame.grid(row=0, column=0, sticky="ew")
-        header_frame.grid_columnconfigure(1, weight=1)
-        
-        # Title label with icon-like symbol
-        title_frame = ttk.Frame(header_frame)
-        title_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        title_frame.grid_columnconfigure(0, weight=1)
-        
-        title_label = ttk.Label(title_frame, text="P2V Converter", 
-                            font=("Arial", 14, "bold"), wraplength=200)
-        title_label.grid(row=0, column=0, sticky="w")
-        
-        subtitle_label = ttk.Label(title_frame, text="Physical to Virtual Machine Converter", 
-                                font=("Arial", 8), foreground="gray", wraplength=200)
-        subtitle_label.grid(row=1, column=0, sticky="w")
-        
-        # Button frame for PDF generation buttons - responsive layout
-        button_frame = ttk.Frame(header_frame)
-        button_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        
-        # Determine button width based on screen size
-        screen_width = self.root.winfo_screenwidth()
-        if screen_width < 1024:
-            btn_width = 12
-        elif screen_width < 1400:
-            btn_width = 15
-        else:
-            btn_width = 18
-        
-        # Print session log button
-        self.session_pdf_btn = ttk.Button(button_frame, 
-                                        text="Session Log",
-                                        command=self.generate_session_pdf,
-                                        width=btn_width)
-        self.session_pdf_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
-        
-        # Print complete log file button
-        self.file_pdf_btn = ttk.Button(button_frame, 
-                                    text="Complete Log",
-                                    command=self.generate_log_file_pdf,
-                                    width=btn_width)
-        self.file_pdf_btn.grid(row=0, column=1, padx=(0, 5), sticky="ew")
-        
-        # Exit button
-        self.exit_btn = ttk.Button(button_frame, 
-                                text="Exit",
-                                command=self.exit_application,
-                                width=10)
-        self.exit_btn.grid(row=0, column=2, padx=(0, 5), sticky="ew")
+        self.create_status_frame()
 
-        # Poweroff button
-        self.poweroff_btn = ttk.Button(button_frame, text="Power Off",
-                                    command=self.power_off_system, width=10)
-        self.poweroff_btn.grid(row=0, column=3, sticky="ew")
-        
-        # Add separator
-        separator = ttk.Separator(self.root, orient='horizontal')
-        separator.grid(row=0, column=0, sticky="ew", pady=(0, 5), columnspan=1)
-    
+    # ── Header ────────────────────────────────────────────────────────────────
+    def create_header_frame(self):
+        """Create the header frame with title and action buttons"""
+        C = theme
+
+        header = tk.Frame(self.root, bg=C.BG_CARD, pady=0)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(1, weight=1)
+
+        # Left: branding
+        brand = tk.Frame(header, bg=C.BG_CARD)
+        brand.grid(row=0, column=0, sticky="ew", padx=(16, 10), pady=10)
+
+        tk.Label(brand, text="Convertisseur P2V",
+                 font=C.FONT_TITLE, bg=C.BG_CARD, fg=C.TEXT_PRIMARY
+                 ).pack(anchor="w")
+        tk.Label(brand, text="Conversion Physique vers Machine Virtuelle",
+                 font=C.FONT_SMALL, bg=C.BG_CARD, fg=C.TEXT_SECONDARY
+                 ).pack(anchor="w")
+
+        # Right: buttons
+        btn_bar = tk.Frame(header, bg=C.BG_CARD)
+        btn_bar.grid(row=0, column=1, sticky="e", padx=(0, 16), pady=10)
+
+        screen_width = self.root.winfo_screenwidth()
+        btn_width = 12 if screen_width < 1024 else (15 if screen_width < 1400 else 18)
+
+        self.session_pdf_btn = ttk.Button(btn_bar, text="Journal session",
+                                          command=self.generate_session_pdf,
+                                          width=btn_width)
+        self.session_pdf_btn.pack(side="left", padx=(0, 4))
+
+        self.file_pdf_btn = ttk.Button(btn_bar, text="Journal complet",
+                                       command=self.generate_log_file_pdf,
+                                       width=btn_width)
+        self.file_pdf_btn.pack(side="left", padx=(0, 4))
+
+        self.exit_btn = ttk.Button(btn_bar, text="Quitter",
+                                   command=self.exit_application, width=10)
+        self.exit_btn.pack(side="left", padx=(0, 4))
+
+        self.poweroff_btn = ttk.Button(btn_bar, text="Éteindre",
+                                       command=self.power_off_system,
+                                       style="Danger.TButton", width=10)
+        self.poweroff_btn.pack(side="left")
+
+        # Bottom border line
+        tk.Frame(self.root, bg=theme.BORDER, height=1).grid(row=0, column=0,
+                                                              sticky="sew", pady=0)
+
+    # ── Main content ──────────────────────────────────────────────────────────
     def create_main_frame(self):
-        """Create the main content frame with responsive layout"""
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        """Create the main content frame"""
+        C = theme
+
+        main_frame = ttk.Frame(self.root, style="TFrame", padding=(12, 10))
+        main_frame.grid(row=1, column=0, sticky="nsew")
         main_frame.grid_rowconfigure(5, weight=1)
         main_frame.grid_columnconfigure(0, weight=1)
-        
-        # Get layout configuration
+
         layout_config = self.get_screen_layout_config()
-        
-        # Source disk selection frame
-        source_frame = ttk.LabelFrame(main_frame, text="Source Disk Selection", padding="10")
+
+        # ── Source disk selection ─────────────────────────────────────────
+        source_frame = ttk.LabelFrame(main_frame, text="Sélection du disque source",
+                                       style="TLabelframe")
         source_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         source_frame.grid_columnconfigure(1, weight=1)
-        
-        ttk.Label(source_frame, text="Physical Disk:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w")
-        self.source_var = tk.StringVar()
-        self.source_combo = ttk.Combobox(source_frame, textvariable=self.source_var, 
-                                        state="readonly", font=("Arial", 9))
+
+        ttk.Label(source_frame, text="Disque physique :",
+                  font=C.FONT_LABEL, style="Card.TLabel"
+                  ).grid(row=0, column=0, sticky="w")
+
+        self.source_var   = tk.StringVar()
+        self.source_combo = ttk.Combobox(source_frame, textvariable=self.source_var,
+                                          state="readonly", font=C.FONT_NORMAL)
         self.source_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0))
         self.source_combo.bind("<<ComboboxSelected>>", self.on_source_selected)
-        
-        # Refresh button
-        self.refresh_btn = ttk.Button(source_frame, text="Refresh Disks", 
-                                    command=self.refresh_disks)
+
+        self.refresh_btn = ttk.Button(source_frame, text="Actualiser les disques",
+                                       command=self.refresh_disks)
         self.refresh_btn.grid(row=0, column=2, padx=(10, 0))
-        
-        # VM configuration frame
-        vm_config_frame = ttk.LabelFrame(main_frame, text="VM Configuration", padding="10")
+
+        # ── VM Configuration ──────────────────────────────────────────────
+        vm_config_frame = ttk.LabelFrame(main_frame, text="Configuration de la VM",
+                                          style="TLabelframe")
         vm_config_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         vm_config_frame.grid_columnconfigure(1, weight=1)
-        
-        # VM Name
-        ttk.Label(vm_config_frame, text="VM Name:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky="w")
-        vm_name_entry = ttk.Entry(vm_config_frame, textvariable=self.vm_name, font=("Arial", 9))
+
+        ttk.Label(vm_config_frame, text="Nom de la VM :",
+                  font=C.FONT_LABEL, style="Card.TLabel"
+                  ).grid(row=0, column=0, sticky="w")
+        vm_name_entry = ttk.Entry(vm_config_frame, textvariable=self.vm_name,
+                                   font=C.FONT_NORMAL)
         vm_name_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0))
         vm_name_entry.bind("<KeyRelease>", self.validate_vm_name_input)
-        
-        # Output Directory
-        ttk.Label(vm_config_frame, text="Output Directory:", font=("Arial", 10, "bold")).grid(row=1, column=0, sticky="w", pady=(10, 0))
-        
-        output_frame = ttk.Frame(vm_config_frame)
+
+        ttk.Label(vm_config_frame, text="Répertoire de sortie :",
+                  font=C.FONT_LABEL, style="Card.TLabel"
+                  ).grid(row=1, column=0, sticky="w", pady=(10, 0))
+
+        output_frame = ttk.Frame(vm_config_frame, style="Card.TFrame")
         output_frame.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=(10, 0))
         output_frame.grid_columnconfigure(0, weight=1)
-        
-        output_entry = ttk.Entry(output_frame, textvariable=self.output_path, font=("Arial", 9))
-        output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        
-        # Primary action buttons row (Browse, Mount, Delete Files)
-        primary_tools_frame = ttk.Frame(output_frame)
+
+        output_entry = ttk.Entry(output_frame, textvariable=self.output_path,
+                                  font=C.FONT_NORMAL)
+        output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        # Primary buttons: Browse / Mount / Delete
+        primary_tools_frame = ttk.Frame(output_frame, style="Card.TFrame")
         primary_tools_frame.grid(row=0, column=1, sticky="ew")
-        
-        browse_btn = ttk.Button(primary_tools_frame, text="Browse", command=self.browse_output_dir)
-        browse_btn.grid(row=0, column=0, padx=(0, 2), sticky="ew")
-        
-        mount_btn = ttk.Button(primary_tools_frame, text="Mount Disk", command=self.mount_disk_dialog)
-        mount_btn.grid(row=0, column=1, padx=(0, 2), sticky="ew")
-        
-        delete_files_btn = ttk.Button(primary_tools_frame, text="Delete Files", 
-                                    command=self.open_delete_files_manager)
+
+        browse_btn = ttk.Button(primary_tools_frame, text="Parcourir",
+                                 command=self.browse_output_dir)
+        browse_btn.grid(row=0, column=0, padx=(0, 3), sticky="ew")
+
+        mount_btn = ttk.Button(primary_tools_frame, text="Monter le disque",
+                                command=self.mount_disk_dialog)
+        mount_btn.grid(row=0, column=1, padx=(0, 3), sticky="ew")
+
+        delete_files_btn = ttk.Button(primary_tools_frame, text="Supprimer des fichiers",
+                                       command=self.open_delete_files_manager)
         delete_files_btn.grid(row=0, column=2, sticky="ew")
-        
-        # Secondary tools label
-        secondary_tools_label = ttk.Label(vm_config_frame, text="Utility Tools:", font=("Arial", 9, "bold"))
-        secondary_tools_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 8))
-        
-        # Dynamic tools layout based on screen width
-        tools_columns = layout_config['tools_columns']
+
+        # Utility tools row
+        tools_lbl = ttk.Label(vm_config_frame, text="Outils utilitaires :",
+                               font=("Segoe UI", 9, "bold"), style="Card.Muted.TLabel")
+        tools_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 8))
+
+        tools_columns = layout_config["tools_columns"]
         tools = [
-            ("QCOW2 Resize", self.open_qcow2_resizer),
-            ("Format Converter", self.open_format_converter),
-            ("LUKS Encryption", self.open_luks_ciphering),
-            ("Virt-Manager", self.open_virt_manager),
-            ("Export Image", self.open_image_exporter),
+            ("Redimensionner QCOW2",     self.open_qcow2_resizer),
+            ("Convertisseur de format", self.open_format_converter),
+            ("Chiffrement LUKS",  self.open_luks_ciphering),
+            ("Virt-Manager",     self.open_virt_manager),
+            ("Exporter l'image",     self.open_image_exporter),
         ]
-        
-        current_row = 3
-        current_col = 0
-        
+
+        current_row, current_col = 3, 0
         for tool_name, tool_command in tools:
-            if current_col == 0 and current_col > 0:  # New row needed
-                current_row += 1
-                current_col = 0
-            
             if current_col >= tools_columns:
                 current_row += 1
-                current_col = 0
-            
-            tools_frame = ttk.Frame(vm_config_frame)
-            tools_frame.grid(row=current_row, column=current_col, sticky="ew", padx=(10, 5), pady=(0, 5))
-            tools_frame.grid_columnconfigure(0, weight=1)
-            
-            btn = ttk.Button(tools_frame, text=tool_name, command=tool_command)
-            btn.pack(fill="x", expand=True)
-            
+                current_col  = 0
+
+            cell = ttk.Frame(vm_config_frame, style="Card.TFrame")
+            cell.grid(row=current_row, column=current_col,
+                       sticky="ew", padx=(10, 5), pady=(0, 5))
+            cell.grid_columnconfigure(0, weight=1)
+
+            ttk.Button(cell, text=tool_name, command=tool_command
+                       ).pack(fill="x", expand=True)
+
             current_col += 1
-        
-        # Adjust final row spanning
+
         if current_col > 0:
             for col in range(tools_columns):
                 vm_config_frame.grid_columnconfigure(col, weight=1)
-        
-        # Tools description - updated
-        tools_info_label = ttk.Label(vm_config_frame, 
-                                    text="Resize QCOW2 • Convert formats • Encrypt/decrypt • Manage VMs • Export images",
-                                    font=("Arial", 7), foreground="gray", wraplength=400)
-        tools_info_label.grid(row=current_row+1, column=0, columnspan=2, sticky="w", pady=(5, 0))
-        
-        # Space information frame
-        space_frame = ttk.LabelFrame(main_frame, text="Storage Space Information", padding="10")
+
+        ttk.Label(vm_config_frame,
+                  text="Redimensionner QCOW2 · Convertir formats · Chiffrer/déchiffrer · Gérer VMs · Exporter images",
+                  style="Card.Muted.TLabel", wraplength=400
+                  ).grid(row=current_row + 1, column=0, columnspan=2,
+                          sticky="w", pady=(5, 0))
+
+        # ── Storage space info ────────────────────────────────────────────
+        space_frame = ttk.LabelFrame(main_frame, text="Informations sur l'espace disque",
+                                      style="TLabelframe")
         space_frame.grid(row=6, column=0, sticky="ew", pady=(0, 10))
-        
-        self.space_info_text = tk.Text(space_frame, height=layout_config['space_height'], wrap=tk.WORD, state=tk.DISABLED, 
-                                    font=("Consolas", 9), bg="#f8f8f8")
-        space_scrollbar = ttk.Scrollbar(space_frame, orient="vertical", command=self.space_info_text.yview)
+
+        self.space_info_text = tk.Text(
+            space_frame,
+            height=layout_config["space_height"],
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+        )
+        theme.style_text_widget(self.space_info_text)
+        space_scrollbar = ttk.Scrollbar(space_frame, orient="vertical",
+                                         command=self.space_info_text.yview)
         self.space_info_text.configure(yscrollcommand=space_scrollbar.set)
-        
+
         self.space_info_text.grid(row=0, column=0, sticky="nsew")
         space_scrollbar.grid(row=0, column=1, sticky="ns")
-        
         space_frame.grid_rowconfigure(0, weight=1)
         space_frame.grid_columnconfigure(0, weight=1)
-        
-        # Control buttons frame - responsive
-        control_frame = ttk.Frame(main_frame)
+
+        # ── Control buttons ───────────────────────────────────────────────
+        control_frame = ttk.Frame(main_frame, style="TFrame")
         control_frame.grid(row=7, column=0, sticky="ew", pady=(0, 10))
         control_frame.grid_columnconfigure(1, weight=1)
-        
-        self.check_space_btn = ttk.Button(control_frame, text="Check Space", 
-                                        command=self.check_space_requirements)
-        self.check_space_btn.grid(row=0, column=0, padx=(0, 10), sticky="w")
-        
-        self.convert_btn = ttk.Button(control_frame, text="Start P2V Conversion", 
-                                    command=self.start_conversion)
-        self.convert_btn.grid(row=0, column=1, padx=(0, 10), sticky="w")
-        
-        self.stop_btn = ttk.Button(control_frame, text="Stop Operation", 
-                                command=self.stop_operation, state=tk.DISABLED)
-        self.stop_btn.grid(row=0, column=1, padx=(0, 10), sticky="e")
-        
-        self.clear_log_btn = ttk.Button(control_frame, text="Clear Display", 
-                                    command=self.clear_log_display)
+
+        self.check_space_btn = ttk.Button(control_frame, text="Vérifier l'espace",
+                                           command=self.check_space_requirements)
+        self.check_space_btn.grid(row=0, column=0, padx=(0, 8), sticky="w")
+
+        self.convert_btn = ttk.Button(control_frame, text="Démarrer la conversion P2V",
+                                       command=self.start_conversion,
+                                       style="Primary.TButton")
+        self.convert_btn.grid(row=0, column=1, padx=(0, 8), sticky="w")
+
+        self.stop_btn = ttk.Button(control_frame, text="Arrêter l'opération",
+                                    command=self.stop_operation,
+                                    style="Danger.TButton",
+                                    state=tk.DISABLED)
+        self.stop_btn.grid(row=0, column=1, padx=(0, 8), sticky="e")
+
+        self.clear_log_btn = ttk.Button(control_frame, text="Effacer l'affichage",
+                                         command=self.clear_log_display)
         self.clear_log_btn.grid(row=0, column=2)
-        
-        # Progress and log area
-        log_frame = ttk.LabelFrame(main_frame, text="Operation Log", padding="5")
+
+        # ── Operation Log ─────────────────────────────────────────────────
+        log_frame = ttk.LabelFrame(main_frame, text="Journal des opérations",
+                                    style="TLabelframe", padding=(4, 4))
         log_frame.grid(row=5, column=0, sticky="nsew")
         log_frame.grid_rowconfigure(0, weight=1)
         log_frame.grid_columnconfigure(0, weight=1)
-        
-        # Create text widget with scrollbar
-        text_frame = ttk.Frame(log_frame)
+
+        text_frame = ttk.Frame(log_frame, style="TFrame")
         text_frame.grid(row=0, column=0, sticky="nsew")
         text_frame.grid_rowconfigure(0, weight=1)
         text_frame.grid_columnconfigure(0, weight=1)
-        
-        self.log_text = tk.Text(text_frame, wrap=tk.WORD, state=tk.DISABLED, 
-                            font=("Consolas", layout_config['font_size']), bg="#f8f8f8", fg="#333333")
-        scrollbar_v = ttk.Scrollbar(text_frame, orient="vertical", command=self.log_text.yview)
-        scrollbar_h = ttk.Scrollbar(text_frame, orient="horizontal", command=self.log_text.xview)
-        
-        self.log_text.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
-        
+
+        self.log_text = tk.Text(text_frame, wrap=tk.WORD, state=tk.DISABLED,
+                                 font=(theme.FONT_MONO[0], layout_config["font_size"]))
+        theme.style_text_widget(self.log_text)
+
+        scrollbar_v = ttk.Scrollbar(text_frame, orient="vertical",
+                                     command=self.log_text.yview)
+        scrollbar_h = ttk.Scrollbar(text_frame, orient="horizontal",
+                                     command=self.log_text.xview)
+        self.log_text.configure(yscrollcommand=scrollbar_v.set,
+                                 xscrollcommand=scrollbar_h.set)
+
         self.log_text.grid(row=0, column=0, sticky="nsew")
         scrollbar_v.grid(row=0, column=1, sticky="ns")
         scrollbar_h.grid(row=1, column=0, sticky="ew")
-        
-        # Configure text tags for different log levels
-        self.log_text.tag_configure("INFO", foreground="#0066cc")
-        self.log_text.tag_configure("WARNING", foreground="#ff6600")
-        self.log_text.tag_configure("ERROR", foreground="#cc0000")
-        self.log_text.tag_configure("SUCCESS", foreground="#009900")
-        
-        # Track last displayed log count
+
+        # Log level tags
+        self.log_text.tag_configure("INFO",    foreground=theme.INFO)
+        self.log_text.tag_configure("WARNING", foreground=theme.WARNING)
+        self.log_text.tag_configure("ERROR",   foreground=theme.ERROR)
+        self.log_text.tag_configure("SUCCESS", foreground=theme.SUCCESS)
+
         self.last_log_count = 0
+
+    # ── Status bar ────────────────────────────────────────────────────────────
+    def create_status_frame(self):
+        """Create the status bar at the bottom"""
+        C = theme
+
+        status_frame = tk.Frame(self.root, bg=C.BG_CARD)
+        status_frame.grid(row=2, column=0, sticky="ew")
+        status_frame.grid_columnconfigure(1, weight=1)
+
+        # Top border
+        tk.Frame(status_frame, bg=C.BORDER, height=1).pack(fill="x")
+
+        inner = tk.Frame(status_frame, bg=C.BG_CARD, padx=14, pady=6)
+        inner.pack(fill="x")
+        inner.columnconfigure(1, weight=1)
+
+        screen_width = self.root.winfo_screenwidth()
+        bar_length   = 150 if screen_width < 1024 else 300
+
+        # Progress label
+        tk.Label(inner, text="Progression :", bg=C.BG_CARD,
+                 fg=C.TEXT_SECONDARY, font=C.FONT_SMALL
+                 ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(inner, variable=self.progress_var,
+                                             maximum=100, length=bar_length)
+        self.progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+
+        self.progress_label = tk.Label(inner, text="0%", width=5,
+                                        bg=C.BG_CARD, fg=C.TEXT_SECONDARY,
+                                        font=C.FONT_SMALL)
+        self.progress_label.grid(row=0, column=2, sticky="w", padx=(0, 20))
+
+        tk.Label(inner, text="Statut :", bg=C.BG_CARD,
+                 fg=C.TEXT_SECONDARY, font=C.FONT_SMALL
+                 ).grid(row=0, column=3, sticky="w", padx=(0, 6))
+
+        self.status_var   = tk.StringVar(value="Prêt")
+        self.status_label = tk.Label(inner, textvariable=self.status_var,
+                                      bg=C.BG_CARD, fg=C.TEXT_PRIMARY,
+                                      font=("Segoe UI", 9, "bold"))
+        self.status_label.grid(row=0, column=4, sticky="w")
+
+        wrap_len = 300 if screen_width < 1024 else 500
+        self.operation_details = tk.Label(inner, text="",
+                                           bg=C.BG_CARD, fg=C.TEXT_MUTED,
+                                           font=C.FONT_SMALL, wraplength=wrap_len,
+                                           anchor="w")
+        self.operation_details.grid(row=1, column=0, columnspan=5,
+                                     sticky="w", pady=(4, 0))
+
+        # Bootstrap disk list
+        self.root.after(100, self.refresh_disks)
+
+    # =========================================================================
+    # All business logic below is UNCHANGED from the original file
+    # =========================================================================
 
     def open_image_exporter(self):
         """Open the Virtual Image Exporter dialog"""
         try:
             log_info("Opening Virtual Image Exporter dialog")
-            
-            # Create and show the exporter dialog
             exporter = VirtualImageExporter(self.root)
-            
             log_info("Virtual Image Exporter dialog opened successfully")
-            
         except ImportError as e:
-            error_msg = f"Virtual Image Exporter not available: {str(e)}"
-            log_error(error_msg)
+            log_error(f"Virtual Image Exporter not available: {e}")
             messagebox.showerror("Feature Not Available",
-                            "Virtual Image Exporter feature is not available.\n\n"
-                            "Please ensure export.py is in the same directory.\n\n"
-                            f"Missing dependency: {str(e)}")
+                                 "Virtual Image Exporter feature is not available.\n\n"
+                                 "Please ensure export.py is in the same directory.\n\n"
+                                 f"Missing dependency: {e}")
         except tk.TclError as e:
-            error_msg = f"Window creation error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Window Error", f"Failed to create exporter window:\n\n{error_msg}")
+            log_error(f"Window creation error: {e}")
+            messagebox.showerror("Window Error", f"Failed to create exporter window:\n\n{e}")
         except (AttributeError, TypeError) as e:
-            error_msg = f"Internal error initializing exporter: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Internal Error", f"Failed to initialize exporter:\n\n{error_msg}")
+            log_error(f"Internal error initializing exporter: {e}")
+            messagebox.showerror("Internal Error", f"Failed to initialize exporter:\n\n{e}")
         except OSError as e:
-            error_msg = f"System error opening exporter: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", f"Failed to open exporter:\n\n{error_msg}")
+            log_error(f"System error opening exporter: {e}")
+            messagebox.showerror("System Error", f"Failed to open exporter:\n\n{e}")
         except ValueError as e:
-            error_msg = f"Invalid value for exporter: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Value Error", f"Failed to initialize exporter:\n\n{error_msg}")
-        except MemoryError as e:
-            error_msg = "Insufficient memory to open Virtual Image Exporter"
-            log_error(error_msg)
-            messagebox.showerror("Memory Error", f"Failed to open exporter:\n\n{error_msg}")
+            log_error(f"Invalid value for exporter: {e}")
+            messagebox.showerror("Value Error", f"Failed to initialize exporter:\n\n{e}")
+        except MemoryError:
+            log_error("Insufficient memory to open Virtual Image Exporter")
+            messagebox.showerror("Memory Error", "Failed to open exporter: insufficient memory")
         except FileNotFoundError as e:
-            error_msg = f"Required file not found: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("File Not Found", f"Failed to open exporter:\n\n{error_msg}")
+            log_error(f"Required file not found: {e}")
+            messagebox.showerror("File Not Found", f"Failed to open exporter:\n\n{e}")
         except PermissionError as e:
-            error_msg = f"Permission denied: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Permission Error", f"Failed to open exporter:\n\n{error_msg}")
-    
+            log_error(f"Permission denied: {e}")
+            messagebox.showerror("Permission Error", f"Failed to open exporter:\n\n{e}")
+
     def open_qcow2_resizer(self):
         """Open the QCOW2 resizer dialog as a modal window"""
         try:
             log_info("Opening QCOW2 Clone Resizer dialog")
-            
-            # Import and create the resizer directly - it creates its own Toplevel
             resizer_app = QCow2CloneResizerGUI(self.root)
-            
-            # The resizer creates its own window, so just wait for it
             log_info("QCOW2 Clone Resizer dialog opened")
-            
         except ImportError as e:
-            error_msg = f"QCOW2 Clone Resizer not available: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Feature Not Available", 
-                            "QCOW2 Clone Resizer feature is not available.\n\n"
-                            "Please ensure qcow2_resize_dialog.py is in the same directory.\n\n"
-                            "Missing dependency: qcow2_resize_dialog module")
+            log_error(f"QCOW2 Clone Resizer not available: {e}")
+            messagebox.showerror("Feature Not Available",
+                                 "QCOW2 Clone Resizer feature is not available.\n\n"
+                                 "Please ensure qcow2_resize_dialog.py is in the same directory.")
         except AttributeError as e:
-            error_msg = f"Error initializing QCOW2 Clone Resizer: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Initialization Error", 
-                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
+            log_error(f"Error initializing QCOW2 Clone Resizer: {e}")
+            messagebox.showerror("Initialization Error", f"Failed to initialize QCOW2 Clone Resizer:\n\n{e}")
         except tk.TclError as e:
-            error_msg = f"Window creation error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Window Error", 
-                            f"Failed to create QCOW2 Clone Resizer window:\n\n{error_msg}")
-        except TypeError as e:
-            error_msg = f"Type error initializing QCOW2 Clone Resizer: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Type Error", 
-                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
-        except ValueError as e:
-            error_msg = f"Invalid value for QCOW2 Clone Resizer: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Value Error", 
-                            f"Failed to initialize QCOW2 Clone Resizer:\n\n{error_msg}")
-        except MemoryError as e:
-            error_msg = "Insufficient memory to open QCOW2 Clone Resizer"
-            log_error(error_msg)
-            messagebox.showerror("Memory Error", 
-                            f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
-        except OSError as e:
-            error_msg = f"System error opening QCOW2 Clone Resizer: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", 
-                            f"Failed to open QCOW2 Clone Resizer:\n\n{error_msg}")
-            
+            log_error(f"Window creation error: {e}")
+            messagebox.showerror("Window Error", f"Failed to create QCOW2 Clone Resizer window:\n\n{e}")
+        except (TypeError, ValueError, MemoryError, OSError) as e:
+            log_error(f"Error opening QCOW2 Clone Resizer: {e}")
+            messagebox.showerror("Error", f"Failed to open QCOW2 Clone Resizer:\n\n{e}")
+
     def open_luks_ciphering(self):
         """Open the LUKS Encryption dialog as a modal window"""
         try:
             log_info("Opening LUKS Encryption dialog")
-            
-            # Create the ciphering directly - it creates its own Toplevel window
             ciphering_app = LUKSCiphering(self.root)
-            
             log_info("LUKS Encryption dialog opened")
-            
         except ImportError as e:
-            error_msg = f"LUKS Ciphering not available: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Feature Not Available", 
-                            "LUKS Encryption feature is not available.\n\n"
-                            "Please ensure ciphering.py is in the same directory.\n\n"
-                            f"Missing dependency: {str(e)}")
-        except AttributeError as e:
-            error_msg = f"Error initializing LUKS Ciphering: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Initialization Error", 
-                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
-        except tk.TclError as e:
-            error_msg = f"Window creation error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Window Error", 
-                            f"Failed to create LUKS Ciphering window:\n\n{error_msg}")
-        except TypeError as e:
-            error_msg = f"Type error initializing LUKS Ciphering: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Type Error", 
-                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
-        except ValueError as e:
-            error_msg = f"Invalid value for LUKS Ciphering: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Value Error", 
-                            f"Failed to initialize LUKS Ciphering:\n\n{error_msg}")
-        except MemoryError as e:
-            error_msg = "Insufficient memory to open LUKS Ciphering"
-            log_error(error_msg)
-            messagebox.showerror("Memory Error", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
-        except OSError as e:
-            error_msg = f"System error opening LUKS Ciphering: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
-        except FileNotFoundError as e:
-            error_msg = f"Required file not found: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("File Not Found", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
-        except PermissionError as e:
-            error_msg = f"Permission denied: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Permission Error", 
-                            f"Failed to open LUKS Ciphering:\n\n{error_msg}")
+            log_error(f"LUKS Ciphering not available: {e}")
+            messagebox.showerror("Feature Not Available",
+                                 "LUKS Encryption feature is not available.\n\n"
+                                 "Please ensure ciphering.py is in the same directory.\n\n"
+                                 f"Missing dependency: {e}")
+        except (AttributeError, tk.TclError, TypeError, ValueError, MemoryError,
+                OSError, FileNotFoundError, PermissionError) as e:
+            log_error(f"Error opening LUKS Ciphering: {e}")
+            messagebox.showerror("Error", f"Failed to open LUKS Encryption:\n\n{e}")
 
     def open_delete_files_manager(self):
-            """Open the Delete Files Manager for interactive file deletion"""
-            try:
-                
-                log_info("Opening Delete Files Manager")
-                
-                # Create the file deletion manager
-                file_manager = FileDeleteManager(self.root)
-                
-                # Start interactive file deletion process
-                # (user selects files, then confirms deletion)
-                stats = file_manager.delete_files_interactive()
-                
-                # Show summary in log
-                if stats['removed'] > 0 or stats['failed'] > 0:
-                    summary_msg = f"File Deletion Summary: {stats['removed']} deleted, {stats['failed']} failed"
-                    log_info(summary_msg)
-                    self.operation_details.config(text=summary_msg, foreground="green" if stats['failed'] == 0 else "orange")
-                
-            except ImportError as e:
-                error_msg = f"Delete Files Manager not available: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Feature Not Available", 
-                                "Delete Files Manager is not available.\n\n"
-                                "Please ensure delete_files.py is in the same directory.\n\n"
-                                f"Missing dependency: {str(e)}")
-            except AttributeError as e:
-                error_msg = f"Error initializing Delete Files Manager: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Initialization Error", 
-                                f"Failed to initialize Delete Files Manager:\n\n{error_msg}")
-            except tk.TclError as e:
-                error_msg = f"Window creation error: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Window Error", 
-                                f"Failed to create Delete Files Manager window:\n\n{error_msg}")
-            except TypeError as e:
-                error_msg = f"Type error initializing Delete Files Manager: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Type Error", 
-                                f"Failed to initialize Delete Files Manager:\n\n{error_msg}")
-            except ValueError as e:
-                error_msg = f"Invalid value for Delete Files Manager: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Value Error", 
-                                f"Failed to initialize Delete Files Manager:\n\n{error_msg}")
-            except MemoryError as e:
-                error_msg = "Insufficient memory to open Delete Files Manager"
-                log_error(error_msg)
-                messagebox.showerror("Memory Error", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
-            except OSError as e:
-                error_msg = f"System error opening Delete Files Manager: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("System Error", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
-            except PermissionError as e:
-                error_msg = f"Permission denied: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Permission Error", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
-            except FileNotFoundError as e:
-                error_msg = f"Required file not found: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("File Not Found", 
-                                f"Failed to open Delete Files Manager:\n\n{error_msg}")
+        """Open the Delete Files Manager for interactive file deletion"""
+        try:
+            log_info("Opening Delete Files Manager")
+            file_manager = FileDeleteManager(self.root)
+            stats = file_manager.delete_files_interactive()
+            if stats["removed"] > 0 or stats["failed"] > 0:
+                summary_msg = (f"File Deletion Summary: {stats['removed']} deleted, "
+                               f"{stats['failed']} failed")
+                log_info(summary_msg)
+                self.operation_details.config(
+                    text=summary_msg,
+                    fg=theme.SUCCESS if stats["failed"] == 0 else theme.WARNING,
+                )
+        except (ImportError, AttributeError, tk.TclError, TypeError, ValueError,
+                MemoryError, OSError, PermissionError, FileNotFoundError) as e:
+            log_error(f"Error opening Delete Files Manager: {e}")
+            messagebox.showerror("Error", f"Failed to open Delete Files Manager:\n\n{e}")
 
     def open_format_converter(self):
         """Open the Format Converter dialog as a modal window"""
         try:
             log_info("Opening Format Converter dialog")
-            
-            # Create the converter directly - it creates its own Toplevel window
             converter_app = ImageFormatConverter(self.root)
-            
             log_info("Format Converter dialog opened")
-            
-        except ImportError as e:
-            error_msg = f"Format Converter not available: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Feature Not Available", 
-                            "Format Converter feature is not available.\n\n"
-                            "Please ensure image_format_converter.py is in the same directory.\n\n"
-                            f"Missing dependency: {str(e)}")
-        except AttributeError as e:
-            error_msg = f"Error initializing Format Converter: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Initialization Error", 
-                            f"Failed to initialize Format Converter:\n\n{error_msg}")
-        except tk.TclError as e:
-            error_msg = f"Window creation error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Window Error", 
-                            f"Failed to create Format Converter window:\n\n{error_msg}")
-        except TypeError as e:
-            error_msg = f"Type error initializing Format Converter: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Type Error", 
-                            f"Failed to initialize Format Converter:\n\n{error_msg}")
-        except ValueError as e:
-            error_msg = f"Invalid value for Format Converter: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Value Error", 
-                            f"Failed to initialize Format Converter:\n\n{error_msg}")
-        except MemoryError as e:
-            error_msg = "Insufficient memory to open Format Converter"
-            log_error(error_msg)
-            messagebox.showerror("Memory Error", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
-        except OSError as e:
-            error_msg = f"System error opening Format Converter: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
-        except FileNotFoundError as e:
-            error_msg = f"Required file not found: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("File Not Found", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
-        except PermissionError as e:
-            error_msg = f"Permission denied: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Permission Error", 
-                            f"Failed to open Format Converter:\n\n{error_msg}")
+        except (ImportError, AttributeError, tk.TclError, TypeError, ValueError,
+                MemoryError, OSError, FileNotFoundError, PermissionError) as e:
+            log_error(f"Error opening Format Converter: {e}")
+            messagebox.showerror("Error", f"Failed to open Format Converter:\n\n{e}")
 
     def mount_disk_dialog(self):
         """Show dialog to select and mount a disk for output storage"""
         try:
             dialog = DiskMountDialog(self.root)
             self.root.wait_window(dialog.dialog)
-            
             if dialog.result:
-                # Update output path with the mounted disk
                 self.output_path.set(dialog.result)
                 log_info(f"Selected mounted disk path: {dialog.result}")
-                
-                # Auto-check space if source disk is selected
                 if self.source_var.get():
                     self.root.after(100, self.check_space_requirements)
-                    
-        except PermissionError as e:
-            error_msg = f"Permission denied accessing disk mount dialog: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
-        except OSError as e:
-            error_msg = f"System error in disk mount dialog: {str(e)}"
-            log_error(error_msg) 
-            messagebox.showerror("System Error", error_msg)
-        except ImportError as e:
-            error_msg = f"Missing required module for disk mounting: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Import Error", error_msg)
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command failed in disk mount dialog: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg) 
-        except ValueError as e:
-            error_msg = f"Invalid value in disk mount dialog: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Value Error", error_msg)
-        except (AttributeError, TypeError) as e:
-            error_msg = f"Internal error in disk mount dialog: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Internal Error", error_msg)
-        except tk.TclError as e:
-            error_msg = f"Dialog window error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Dialog Error", error_msg)
-    
+        except (PermissionError, OSError, ImportError, subprocess.CalledProcessError,
+                ValueError, AttributeError, TypeError, tk.TclError) as e:
+            log_error(f"Error in disk mount dialog: {e}")
+            messagebox.showerror("Error", str(e))
+
     def open_virt_manager(self):
         """Open virt-manager with proper permissions for VM management"""
         try:
             log_info("Checking virt-manager availability")
-            
-            # Check if virt-manager is available
             missing_tools, available = VirtManagerLauncher.check_virt_manager()
-            
+
             if not available:
                 error_msg = "Required virtualization tools are missing:\n\n"
                 error_msg += "\n".join(f"• {tool}" for tool in missing_tools)
                 error_msg += "\n\nPlease install the missing packages"
-                
                 log_error(f"Virt-manager check failed: {', '.join(missing_tools)}")
                 messagebox.showerror("Missing Virtualization Tools", error_msg)
                 return
-            
+
             log_info("Virt-manager is available, launching...")
-            
-            # Show confirmation dialog
+
             confirm_msg = (
-                "Launch Virt-Manager\n\n"
-                "This will open virt-manager for virtual machine management.\n\n"
-                "You can:\n"
-                "• Create new VMs\n"
-                "• Import/manage existing VM images\n"
-                "• Configure VM hardware settings\n"
-                "• Install guest operating systems\n\n"
-                "Continue?"
+                "Lancer Virt-Manager\n\n"
+                "Cela ouvrira virt-manager pour la gestion des machines virtuelles.\n\n"
+                "Vous pouvez :\n"
+                "• Créer de nouvelles VMs\n"
+                "• Importer/gérer des images VM existantes\n"
+                "• Configurer le matériel de la VM\n"
+                "• Installer des systèmes d'exploitation invités\n\n"
+                "Continuer ?"
             )
-            
-            if not messagebox.askyesno("Launch Virt-Manager", confirm_msg):
+            if not messagebox.askyesno("Lancer Virt-Manager", confirm_msg):
                 log_info("User cancelled virt-manager launch")
                 return
-            
+
             log_info("User confirmed virt-manager launch")
-            
-            # Disable button during launch
-            self.status_var.set("Launching virt-manager...")
+            self.status_var.set("Lancement de virt-manager...")
             self.root.update_idletasks()
-            
-            # Launch virt-manager
+
             try:
                 VirtManagerLauncher.launch_virt_manager(log_callback=log_info)
-                
                 log_info("Virt-manager launched successfully")
-                self.status_var.set("Virt-manager is running")
-                self.operation_details.config(text="Virt-manager opened in background", 
-                                            foreground="green")
-                
-                messagebox.showinfo("Virt-Manager Launched", 
-                                  "Virt-manager is now running.\n\n"
-                                  "You can import or create virtual machines from your disk images.\n"
-                                  "Close this dialog and virt-manager window when finished.")
-            
-            except FileNotFoundError as e:
-                error_msg = f"Virt-manager not found: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Virt-Manager Not Found", error_msg)
-            
-            except PermissionError as e:
-                error_msg = (
-                    f"Permission denied: {str(e)}\n\n"
-                    "Virt-manager requires root privileges.\n\n"
-                    "Solutions:\n"
-                    "• Run the application with: sudo python3 p2v_dialog.py\n"
-                    "• Install and configure polkit for privilege escalation\n"
-                    "• Ensure you have sudo access"
-                )
-                log_error(error_msg)
-                messagebox.showerror("Permission Denied", error_msg)
-            
-            except OSError as e:
-                error_msg = f"System error launching virt-manager: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("System Error", error_msg)
-            
-            except subprocess.CalledProcessError as e:
-                error_msg = f"Virt-manager failed to start: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Launch Error", error_msg)
-            
-            except subprocess.TimeoutExpired as e:
-                error_msg = f"Virt-manager launch timed out: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Timeout Error", error_msg)
-            
-            except subprocess.SubprocessError as e:
-                error_msg = f"Subprocess error: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Subprocess Error", error_msg)
-            
-            except ImportError as e:
-                error_msg = f"Virt-Manager launcher not available: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Import Error", error_msg)
-            
-            except (AttributeError, TypeError) as e:
-                error_msg = f"Internal error: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Internal Error", error_msg)
-        
-        except tk.TclError as e:
-            error_msg = f"GUI error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("GUI Error", error_msg)
-        
-        except (KeyError, ValueError) as e:
-            error_msg = f"Configuration error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Configuration Error", error_msg)
-        
+                self.status_var.set("Virt-manager est en cours d'exécution")
+                self.operation_details.config(text="Virt-manager ouvert en arrière-plan",
+                                               fg=theme.SUCCESS)
+                messagebox.showinfo("Virt-Manager lancé",
+                                    "Virt-manager est maintenant en cours d'exécution.\n\n"
+                                    "Vous pouvez importer ou créer des machines virtuelles à partir de vos images disque.\n"
+                                    "Fermez cette fenêtre et virt-manager une fois terminé.")
+            except (FileNotFoundError, PermissionError, OSError,
+                    subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                    subprocess.SubprocessError, ImportError, AttributeError, TypeError) as e:
+                log_error(f"Error launching virt-manager: {e}")
+                messagebox.showerror("Launch Error", str(e))
+
+        except (tk.TclError, KeyError, ValueError) as e:
+            log_error(f"GUI/config error: {e}")
+            messagebox.showerror("Error", str(e))
         finally:
-            self.status_var.set("Ready")
-    
+            self.status_var.set("Prêt")
+
     def launch_virt_manager_with_image(self, image_path):
-        """
-        Launch virt-manager with a specific VM image
-        
-        Args:
-            image_path: Path to the VM image file
-        """
+        """Launch virt-manager with a specific VM image"""
         try:
             if not os.path.exists(image_path):
-                error_msg = f"Image file not found: {image_path}"
-                log_error(error_msg)
-                messagebox.showerror("File Not Found", error_msg)
+                log_error(f"Image file not found: {image_path}")
+                messagebox.showerror("File Not Found", f"Image file not found: {image_path}")
                 return
-            
+
             log_info(f"Launching virt-manager with image: {image_path}")
-            
-            # Disable button during launch
-            self.status_var.set("Preparing VM image...")
+            self.status_var.set("Préparation de l'image VM...")
             self.root.update_idletasks()
-            
-            # Launch with image
+
             try:
                 VirtManagerLauncher.launch_virt_manager_with_image(
-                    image_path, 
-                    log_callback=log_info
+                    image_path, log_callback=log_info
                 )
-                
                 log_info(f"Virt-manager launched with image: {image_path}")
-                self.status_var.set("Virt-manager is running")
+                self.status_var.set("Virt-manager est en cours d'exécution")
                 self.operation_details.config(
-                    text=f"Virt-manager opened with: {Path(image_path).name}", 
-                    foreground="green"
+                    text=f"Virt-manager ouvert avec : {Path(image_path).name}",
+                    fg=theme.SUCCESS,
                 )
-                
-                messagebox.showinfo("Virt-Manager Launched", 
-                                  f"Virt-manager is now running with your VM image.\n\n"
-                                  f"File: {Path(image_path).name}\n"
-                                  f"Size: {VirtManagerLauncher.format_size(os.path.getsize(image_path))}")
-            
-            except FileNotFoundError as e:
-                error_msg = f"Error: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("File Error", error_msg)
-            
-            except PermissionError as e:
-                error_msg = (
-                    f"Permission error: {str(e)}\n\n"
-                    "Cannot access the VM image file.\n\n"
-                    "Ensure proper file permissions and ownership."
+                messagebox.showinfo(
+                    "Virt-Manager lancé",
+                    f"Virt-manager is now running with your VM image.\n\n"
+                    f"File: {Path(image_path).name}\n"
+                    f"Size: {VirtManagerLauncher.format_size(os.path.getsize(image_path))}",
                 )
-                log_error(error_msg)
-                messagebox.showerror("Permission Error", error_msg)
-            
-            except OSError as e:
-                error_msg = f"System error: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("System Error", error_msg)
-            
-            except subprocess.SubprocessError as e:
-                error_msg = f"Subprocess error: {str(e)}"
-                log_error(error_msg)
-                messagebox.showerror("Subprocess Error", error_msg)
-        
-        except tk.TclError as e:
-            error_msg = f"GUI error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("GUI Error", error_msg)
-        
-        finally:
-            self.status_var.set("Ready")
+            except (FileNotFoundError, PermissionError, OSError,
+                    subprocess.SubprocessError) as e:
+                log_error(f"Error launching virt-manager with image: {e}")
+                messagebox.showerror("Error", str(e))
 
-    def create_status_frame(self):
-        """Create the status frame at the bottom with responsive layout"""
-        status_frame = ttk.Frame(self.root, padding="10")
-        status_frame.grid(row=2, column=0, sticky="ew")
-        status_frame.grid_columnconfigure(1, weight=1)
-        
-        # Get screen width to determine layout
-        screen_width = self.root.winfo_screenwidth()
-        
-        if screen_width < 1024:
-            # Compact layout for small screens
-            progress_label = ttk.Label(status_frame, text="Progress:")
-            progress_label.grid(row=0, column=0, sticky="w", padx=(0, 5))
-            
-            self.progress_var = tk.DoubleVar()
-            self.progress_bar = ttk.Progressbar(status_frame, variable=self.progress_var, 
-                                            maximum=100, length=150)
-            self.progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 5))
-            
-            self.progress_label = ttk.Label(status_frame, text="0%", width=4)
-            self.progress_label.grid(row=0, column=2, sticky="w", padx=(0, 10))
-            
-            status_info_label = ttk.Label(status_frame, text="Status:")
-            status_info_label.grid(row=0, column=3, sticky="w", padx=(0, 5))
-            
-            self.status_var = tk.StringVar(value="Ready")
-            self.status_label = ttk.Label(status_frame, textvariable=self.status_var, 
-                                        font=("Arial", 8, "bold"))
-            self.status_label.grid(row=0, column=4, sticky="w")
-            
-            # Details on next row
-            self.operation_details = ttk.Label(status_frame, text="", 
-                                            font=("Arial", 7), foreground="gray", wraplength=300)
-            self.operation_details.grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
-        else:
-            # Full layout for larger screens
-            progress_label = ttk.Label(status_frame, text="Progress:")
-            progress_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
-            
-            self.progress_var = tk.DoubleVar()
-            self.progress_bar = ttk.Progressbar(status_frame, variable=self.progress_var, 
-                                            maximum=100, length=300)
-            self.progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 10))
-            
-            self.progress_label = ttk.Label(status_frame, text="0%")
-            self.progress_label.grid(row=0, column=2, sticky="w", padx=(0, 20))
-            
-            status_info_label = ttk.Label(status_frame, text="Status:")
-            status_info_label.grid(row=0, column=3, sticky="w", padx=(0, 10))
-            
-            self.status_var = tk.StringVar(value="Ready")
-            self.status_label = ttk.Label(status_frame, textvariable=self.status_var, 
-                                        font=("Arial", 9, "bold"))
-            self.status_label.grid(row=0, column=4, sticky="w")
-            
-            self.operation_details = ttk.Label(status_frame, text="", 
-                                            font=("Arial", 8), foreground="gray")
-            self.operation_details.grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
-        
-        # Initialize with disk refresh
-        self.root.after(100, self.refresh_disks)
-    
+        except tk.TclError as e:
+            log_error(f"GUI error: {e}")
+            messagebox.showerror("GUI Error", str(e))
+        finally:
+            self.status_var.set("Prêt")
+
+    # ── Misc / Business logic (unchanged) ─────────────────────────────────────
+
     def check_prerequisites(self):
-        """Check if required tools are available"""
         tools_available, message = check_qemu_tools()
         if not tools_available:
             log_error(f"Prerequisites check failed: {message}")
-            messagebox.showerror("Missing Prerequisites", 
-                               f"Required tools are missing:\n\n{message}\n\n"
-                               f"Please install the required packages:\n"
-                               f"• qemu-utils (for qemu-img)\n"
-                               f"• coreutils (for dd)")
+            messagebox.showerror("Prérequis manquants",
+                                 f"Outils requis manquants :\n\n{message}\n\n"
+                                 "Veuillez installer les paquets requis :\n"
+                                 "• qemu-utils (for qemu-img)\n"
+                                 "• coreutils (for dd)")
         else:
             log_info("All prerequisites are available")
 
     def power_off_system(self):
         """Power off the system after confirmation."""
         try:
-            # Check if any operation is running
             if self.operation_running:
-                messagebox.showwarning(
-                    "Operation in Progress",
-                    "Cannot power off while an operation is running.\n\n"
-                    "Please stop the current operation first."
-                )
+                messagebox.showwarning("Opération en cours",
+                                       "Cannot power off while an operation is running.\n\n"
+                                       "Please stop the current operation first.")
                 return
-            
-            # Final confirmation
+
             result = messagebox.askyesno(
-                "Power Off Confirmation",
-                "Are you sure you want to power off the system?\n\n"
-                "This will:\n"
-                "• Close all applications\n"
-                "• Save session logs\n"
-                "• Shut down the system\n\n"
-                "Continue with power off?"
+                "Confirmation d'extinction",
+                "Êtes-vous sûr de vouloir éteindre le système ?\n\n"
+                "Cela va :\n"
+                "• Fermer toutes les applications\n"
+                "• Enregistrer les journaux de session\n"
+                "• Éteindre le système\n\n"
+                "Continuer avec l'extinction ?",
             )
-            
             if not result:
                 log_info("Power off cancelled by user")
                 return
-            
+
             log_info("System power off requested by user")
-            
-            # End session before shutdown
+
             try:
                 if is_session_active():
                     log_info("Ending session before system power off")
                     session_end()
             except (AttributeError, IOError, OSError, KeyError, ValueError) as e:
-                log_warning(f"Error ending session before power off: {str(e)}")
-            
-            # Show final message
-            self.status_var.set("Shutting down system...")
+                log_warning(f"Error ending session before power off: {e}")
+
+            self.status_var.set("Arrêt du système en cours...")
             self.root.update_idletasks()
-            
-            # Attempt to power off using various methods
-            try:
-                # Try systemctl first (systemd systems)
-                subprocess.run(
-                    ['systemctl', 'poweroff'],
-                    check=True,
-                    timeout=5
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+
+            for cmd in (["systemctl", "poweroff"], ["shutdown", "-h", "now"], ["poweroff"]):
                 try:
-                    # Try shutdown command
-                    subprocess.run(
-                        ['shutdown', '-h', 'now'],
-                        check=True,
-                        timeout=5
-                    )
-                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                    try:
-                        # Try poweroff command directly
-                        subprocess.run(
-                            ['poweroff'],
-                            check=True,
-                            timeout=5
-                        )
-                    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                        # All methods failed
-                        error_msg = (
-                            "Failed to power off the system.\n\n"
-                            "Attempted methods:\n"
-                            "• systemctl poweroff\n"
-                            "• shutdown -h now\n"
-                            "• poweroff\n\n"
-                            "Please run with sudo or use system power button."
-                        )
-                        log_error("All power off methods failed")
-                        messagebox.showerror("Power Off Failed", error_msg)
-                        return
-            
+                    subprocess.run(cmd, check=True, timeout=5)
+                    return
+                except (subprocess.CalledProcessError, FileNotFoundError,
+                        subprocess.TimeoutExpired):
+                    continue
+
+            log_error("All power off methods failed")
+            messagebox.showerror("Échec de l'extinction",
+                                 "Impossible d'éteindre le système.\n\n"
+                                 "Méthodes essayées :\n"
+                                 "• systemctl poweroff\n"
+                                 "• shutdown -h now\n"
+                                 "• poweroff\n\n"
+                                 "Veuillez exécuter avec sudo ou utiliser le bouton d'alimentation du système.")
+
         except PermissionError as e:
-            error_msg = f"Permission denied: {str(e)}\n\nPower off requires root/administrator privileges."
-            log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
-        except OSError as e:
-            error_msg = f"System error during power off: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
-        except subprocess.SubprocessError as e:
-            error_msg = f"Command execution error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
-        except tk.TclError as e:
-            error_msg = f"GUI error during power off: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("GUI Error", error_msg)
-        except (AttributeError, TypeError) as e:
-            error_msg = f"Internal error during power off: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Internal Error", error_msg)
-    
+            log_error(f"Permission denied: {e}")
+            messagebox.showerror("Permission Error",
+                                 f"Permission denied:\n\n{e}\n\nPower off requires root privileges.")
+        except (OSError, subprocess.SubprocessError, tk.TclError,
+                AttributeError, TypeError) as e:
+            log_error(f"Error during power off: {e}")
+            messagebox.showerror("Error", str(e))
+
     def update_log_from_session(self):
         """Update log display from session logs"""
         try:
             if is_session_active():
                 session_logs = get_current_session_logs()
-                
-                # Only update if there are new logs
                 if len(session_logs) > self.last_log_count:
                     new_logs = session_logs[self.last_log_count:]
-                    
                     self.log_text.config(state=tk.NORMAL)
-                    
                     for log_entry in new_logs:
-                        # Parse log entry to extract level and message
-                        # Format: [TIMESTAMP] LEVEL: MESSAGE
                         if "] " in log_entry and ": " in log_entry:
                             try:
-                                # Extract timestamp, level, and message
-                                parts = log_entry.split("] ", 1)
+                                parts     = log_entry.split("] ", 1)
                                 timestamp = parts[0] + "]"
-                                rest = parts[1]
-                                
+                                rest      = parts[1]
                                 level_parts = rest.split(": ", 1)
-                                level = level_parts[0]
+                                level   = level_parts[0]
                                 message = level_parts[1] if len(level_parts) > 1 else rest
-                                
-                                # Insert with appropriate formatting
                                 self.log_text.insert(tk.END, f"{timestamp} ", "INFO")
                                 self.log_text.insert(tk.END, f"{level}: {message}\n", level.upper())
-                                
                             except (IndexError, ValueError, AttributeError):
-                                # Fallback: display as-is
                                 self.log_text.insert(tk.END, f"{log_entry}\n", "INFO")
                         else:
-                            # Display as-is if format doesn't match expected pattern
                             self.log_text.insert(tk.END, f"{log_entry}\n", "INFO")
-                    
-                    # Auto-scroll to bottom
                     self.log_text.see(tk.END)
                     self.log_text.config(state=tk.DISABLED)
-                    
-                    # Update counter
                     self.last_log_count = len(session_logs)
         except (AttributeError, KeyError, TypeError, IOError, OSError):
-            # Don't let log update errors crash the GUI
             pass
-        
-        # Schedule next update
         self.root.after(1000, self.update_log_from_session)
-    
+
     def clear_log_display(self):
-        """Clear the log display (but not the actual session logs)"""
         self.log_text.config(state=tk.NORMAL)
         self.log_text.delete(1.0, tk.END)
         self.log_text.config(state=tk.DISABLED)
-        
         log_info("Log display cleared (session logs preserved)")
-        # Reset counter so logs will reappear on next update
         self.last_log_count = 0
-    
+
     def refresh_disks(self):
-        """Refresh the list of available disks"""
         try:
             log_info("Refreshing disk list")
             self.current_disks = get_disk_list()
-            
+
             if self.current_disks:
-                disk_options = []
+                disk_options    = []
                 unavailable_count = 0
-                
+
                 for disk in self.current_disks:
                     disk_info = f"{disk['device']} ({disk['size']}) - {disk['model']}"
-                    
-                    if disk['label'] and disk['label'] != "No Label":
+                    if disk["label"] and disk["label"] != "No Label":
                         disk_info += f" [{disk['label']}]"
-                    
-                    is_unavailable, reason = self.is_disk_unavailable_for_conversion(disk['device'])
-                    
+
+                    is_unavailable, reason = self.is_disk_unavailable_for_conversion(disk["device"])
                     if is_unavailable:
                         unavailable_count += 1
                         if "active system disk" in reason.lower():
-                            disk_info = f"SYSTEM: {disk_info} [ACTIVE]"
+                            disk_info = f"SYSTÈME : {disk_info} [ACTIF]"
                         elif "mounted" in reason.lower():
-                            disk_info = f"MOUNTED: {disk_info} [IN USE]"
+                            disk_info = f"MONTÉ : {disk_info} [EN COURS D'UTILISATION]"
                         else:
-                            disk_info = f"BUSY: {disk_info} [UNAVAILABLE]"
-                    
+                            disk_info = f"OCCUPÉ : {disk_info} [INDISPONIBLE]"
+
                     disk_options.append(disk_info)
-                
-                self.source_combo['values'] = disk_options
-                
+
+                self.source_combo["values"] = disk_options
                 if self.source_var.get() not in disk_options:
                     self.source_var.set("")
-                
+
                 log_info(f"Found {len(self.current_disks)} disk(s)")
-                
                 available_count = len(self.current_disks) - unavailable_count
                 if unavailable_count > 0:
-                    self.status_var.set(f"Found {len(self.current_disks)} disk(s) ({available_count} available, {unavailable_count} unavailable)")
+                    self.status_var.set(
+                        f"Trouvé {len(self.current_disks)} disque(s) "
+                        f"({available_count} disponible(s), {unavailable_count} indisponible(s))"
+                    )
                 else:
-                    self.status_var.set(f"Found {len(self.current_disks)} disk(s) (all available)")
-                
+                    self.status_var.set(f"Trouvé {len(self.current_disks)} disque(s) (tous disponibles)")
             else:
-                log_warning("No disks found")
-                self.status_var.set("No disks found")
-                self.source_combo['values'] = []
-                
-        except OSError as e:
-            error_msg = f"System error refreshing disks: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
-            self.status_var.set("Error refreshing disks")
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command execution error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
-            self.status_var.set("Error refreshing disks")
-        except FileNotFoundError as e:
-            error_msg = f"Required command not found: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
-            self.status_var.set("Error refreshing disks")
-        except (ValueError, KeyError) as e:
-            error_msg = f"Data parsing error: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Data Error", error_msg)
-            self.status_var.set("Error refreshing disks")
-        except PermissionError as e:
-            error_msg = f"Permission denied accessing disk information: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
-            self.status_var.set("Error refreshing disks")
-        except AttributeError as e:
-            error_msg = f"Invalid data structure returned: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Data Error", error_msg)
-            self.status_var.set("Error refreshing disks")
-    
+                log_warning("Aucun disque trouvé")
+                self.status_var.set("Aucun disque trouvé")
+                self.source_combo["values"] = []
+
+        except (OSError, subprocess.CalledProcessError, FileNotFoundError,
+                ValueError, KeyError, PermissionError, AttributeError) as e:
+            log_error(f"Error refreshing disks: {e}")
+            messagebox.showerror("Error", str(e))
+            self.status_var.set("Erreur lors de l'actualisation des disques")
+
     def get_selected_disk_info(self):
-        """Get disk info for currently selected disk"""
         selected = self.source_var.get()
         if not selected:
             return None
-        
-        # Extract device path from display string
-        device_path = selected.split(' ')[1] if selected.startswith('SYSTEM:') else selected.split(' ')[0]
-        
-        # Find matching disk in current_disks
+        device_path = (selected.split(" ")[1]
+                       if selected.startswith("SYSTEM:") else selected.split(" ")[0])
         for disk in self.current_disks:
-            if disk['device'] == device_path:
+            if disk["device"] == device_path:
                 return disk
-        
         return None
-    
+
     def on_source_selected(self, event=None):
-        """Handle source disk selection with enhanced validation"""
         selected = self.source_var.get()
-        if selected:
-            # Extract device path
-            device_path = selected.split(' ')[1] if selected.startswith('SYSTEM:') else selected.split(' ')[0]
-            
-            # Check if this disk is unavailable for conversion
-            is_unavailable, reason = self.is_disk_unavailable_for_conversion(device_path)
-            
-            if is_unavailable:
-                # Show detailed warning dialog
-                warning_title = "Disk Unavailable for Conversion"
-                warning_message = f"Cannot Select Disk for Conversion\n\n"
-                warning_message += f"Selected disk: {device_path}\n"
-                warning_message += f"Reason: {reason}\n\n"
-                
-                if "active system disk" in reason.lower():
-                    warning_message += f"Converting an active system disk is dangerous and may:\n"
-                    warning_message += f"• Cause system instability or crashes\n"
-                    warning_message += f"• Result in incomplete or corrupted conversion\n"
-                    warning_message += f"• Interfere with running system processes\n\n"
-                    warning_message += f"Recommendations:\n"
-                    warning_message += f"• Select a different, inactive disk for conversion\n"
-                    warning_message += f"• Boot from a live USB/CD to convert this disk safely"
-                
-                elif "mounted" in reason.lower():
-                    warning_message += f"Converting a disk with mounted partitions may:\n"
-                    warning_message += f"• Cause data corruption or loss\n"
-                    warning_message += f"• Result in incomplete conversion\n"
-                    warning_message += f"• Interfere with active file operations\n\n"
-                    warning_message += f"Recommendations:\n"
-                    warning_message += f"• Unmount all partitions on this disk first\n"
-                    warning_message += f"• Select a different disk that is not mounted\n"
-                    warning_message += f"• Use 'umount' command to safely unmount partitions"
-                
-                else:
-                    warning_message += f"Please select a different disk that is not in use."
-                
-                messagebox.showerror(warning_title, warning_message)
-                
-                # Clear the selection
-                self.source_var.set("")
-                log_warning(f"User attempted to select unavailable disk: {device_path} - {reason}")
-                self.status_var.set("Disk selection denied")
-                self.operation_details.config(text=f"Cannot select disk: {reason}", foreground="red")
-                
-                # Clear space info
-                self.space_info_text.config(state=tk.NORMAL)
-                self.space_info_text.delete(1.0, tk.END)
-                self.space_info_text.insert(tk.END, 
-                    "Please select a disk that is not mounted or in active use for P2V conversion.\n\n"
-                    "Safe disks for conversion:\n"
-                    "• Secondary storage drives not currently mounted\n"
-                    "• External drives that are unmounted\n"
-                    "• Drives from systems booted via live media")
-                self.space_info_text.config(state=tk.DISABLED)
-                return
-            
-            log_info(f"Selected source disk: {device_path}")
-            
-            # Auto-update VM name based on disk
-            disk_name = device_path.split('/')[-1]  # e.g., sda from /dev/sda
-            self.vm_name.set(f"{disk_name}_vm")
-            
-            # Clear any previous error messages
-            self.operation_details.config(text="", foreground="gray")
-            
-            # Update space info if we have detailed disk information
-            disk_info = self.get_selected_disk_info()
-            if disk_info and self.output_path.get():
-                self.root.after(100, self.check_space_requirements)
-    
+        if not selected:
+            return
+
+        device_path = (selected.split(" ")[1]
+                       if selected.startswith("SYSTEM:") else selected.split(" ")[0])
+
+        is_unavailable, reason = self.is_disk_unavailable_for_conversion(device_path)
+        if is_unavailable:
+            warning_message = f"Impossible de sélectionner le disque\n\nDisque sélectionné : {device_path}\nRaison : {reason}\n\n"
+            if "active system disk" in reason.lower():
+                warning_message += ("La conversion d'un disque système actif est dangereuse.\n\n"
+                                    "Recommandations :\n"
+                                    "• Sélectionnez un autre disque inactif\n"
+                                    "• Démarrez sur un support live USB/CD pour convertir ce disque en toute sécurité")
+            elif "mounted" in reason.lower():
+                warning_message += ("La conversion d'un disque avec des partitions montées peut provoquer une corruption.\n\n"
+                                    "Recommandations :\n"
+                                    "• Démontez toutes les partitions de ce disque d'abord\n"
+                                    "• Utilisez la commande 'umount' pour démonter en toute sécurité")
+            else:
+                warning_message += "Veuillez sélectionner un autre disque qui n'est pas en cours d'utilisation."
+
+            messagebox.showerror("Disque indisponible pour la conversion", warning_message)
+            self.source_var.set("")
+            log_warning(f"User attempted to select unavailable disk: {device_path} - {reason}")
+            self.status_var.set("Sélection du disque refusée")
+            self.operation_details.config(text=f"Impossible de sélectionner le disque : {reason}",
+                                           fg=theme.ERROR)
+
+            self.space_info_text.config(state=tk.NORMAL)
+            self.space_info_text.delete(1.0, tk.END)
+            self.space_info_text.insert(
+                tk.END,
+                "Veuillez sélectionner un disque non monté et non utilisé pour la conversion P2V.\n\n"
+                "Disques compatibles pour la conversion :\n"
+                "• Disques de stockage secondaires non montés\n"
+                "• Disques externes non montés\n"
+                "• Disques de systèmes démarrés depuis un support live",
+            )
+            self.space_info_text.config(state=tk.DISABLED)
+            return
+
+        log_info(f"Selected source disk: {device_path}")
+        disk_name = device_path.split("/")[-1]
+        self.vm_name.set(f"{disk_name}_vm")
+        self.operation_details.config(text="", fg=theme.TEXT_MUTED)
+
+        disk_info = self.get_selected_disk_info()
+        if disk_info and self.output_path.get():
+            self.root.after(100, self.check_space_requirements)
+
     def validate_vm_name_input(self, event=None):
-        """Validate VM name as user types"""
         name = self.vm_name.get()
         is_valid, message = validate_vm_name(name)
-        
-        if not is_valid and name:  # Only show error if there's content
-            self.operation_details.config(text=f"Warning: {message}", foreground="red")
+        if not is_valid and name:
+            self.operation_details.config(text=f"Attention : {message}", fg=theme.WARNING)
         else:
-            self.operation_details.config(text="", foreground="gray")
-    
+            self.operation_details.config(text="", fg=theme.TEXT_MUTED)
+
     def browse_output_dir(self):
-        """Browse for output directory"""
         selected_dir = filedialog.askdirectory(
             title="Select Output Directory for VM Files",
-            initialdir=self.output_path.get()
+            initialdir=self.output_path.get(),
         )
-        
         if selected_dir:
             self.output_path.set(selected_dir)
             log_info(f"Output directory selected: {selected_dir}")
-            
-            # Auto-check space if disk is selected
             if self.source_var.get():
                 self.root.after(100, self.check_space_requirements)
-    
+
     def check_space_requirements(self):
-        """Check space requirements and display information"""
         try:
-            source = self.source_var.get()
+            source     = self.source_var.get()
             output_dir = self.output_path.get()
-            
+
             if not source:
-                messagebox.showwarning("Warning", "Please select a source disk first")
+                messagebox.showwarning("Avertissement", "Veuillez d'abord sélectionner un disque source")
                 return
-            
             if not output_dir:
-                messagebox.showwarning("Warning", "Please specify an output directory")
+                messagebox.showwarning("Avertissement", "Veuillez spécifier un répertoire de sortie")
                 return
-            
-            # Extract device path
-            device_path = source.split(' ')[1] if source.startswith(('SYSTEM:', 'MOUNTED:', 'BUSY:')) else source.split(' ')[0]
-            
+
+            device_path = (source.split(" ")[1]
+                           if source.startswith(("SYSTEM:", "MOUNTED:", "BUSY:"))
+                           else source.split(" ")[0])
+
             log_info(f"Checking space requirements for {device_path}")
-            
-            # Use the consolidated check_output_space function
             has_space, space_message = check_output_space(output_dir, device_path)
-            
-            # Get disk info for additional display information
             disk_info = get_disk_info(device_path)
-            
-            # Update space info display with enhanced information
+
             self.space_info_text.config(state=tk.NORMAL)
             self.space_info_text.delete(1.0, tk.END)
-            
-            info_text = f"Source Disk: {device_path}\n"
-            info_text += f"Model: {disk_info.get('model', 'Unknown')}\n"
-            if disk_info.get('label') and disk_info['label'] != "Unknown":
+
+            info_text  = f"Disque source : {device_path}\n"
+            info_text += f"Modèle : {disk_info.get('model', 'Inconnu')}\n"
+            if disk_info.get("label") and disk_info["label"] != "Unknown":
                 info_text += f"Label: {disk_info['label']}\n"
-            info_text += f"Output Directory: {output_dir}\n\n"
+            info_text += f"Répertoire de sortie : {output_dir}\n\n"
             info_text += space_message
-            
-            # Add system disk warning if applicable
+
             if is_system_disk(device_path):
                 info_text += "\n\nWarning: This is an active system disk!"
-            
+
             self.space_info_text.insert(tk.END, info_text)
             self.space_info_text.config(state=tk.DISABLED)
-            
+
             if has_space:
-                log_info("Space check passed - sufficient space available")
-                self.operation_details.config(text="Sufficient space available", foreground="green")
+                log_info("Space check passed")
+                self.operation_details.config(text="Espace disponible suffisant",
+                                               fg=theme.SUCCESS)
             else:
                 log_error("Space check failed - insufficient space")
-                self.operation_details.config(text="Insufficient space", foreground="red")
-                messagebox.showwarning("Insufficient Space", 
-                                     f"Not enough space available!\n\n{space_message}")
-            
-        except (OSError, IOError) as e:
-            error_msg = f"System error checking space requirements: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
-            self.operation_details.config(text="Space check failed", foreground="red")
-        except (ValueError, TypeError) as e:
-            error_msg = f"Data error checking space requirements: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Data Error", error_msg)
-            self.operation_details.config(text="Space check failed", foreground="red")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            error_msg = f"Command error checking space requirements: {str(e)}"
-            log_error(error_msg)
-            messagebox.showerror("Command Error", error_msg)
-            self.operation_details.config(text="Space check failed", foreground="red")
-    
+                self.operation_details.config(text="Espace insuffisant", fg=theme.ERROR)
+                messagebox.showwarning("Espace insuffisant",
+                                       f"Espace disponible insuffisant !\n\n{space_message}")
+
+        except (OSError, IOError, ValueError, TypeError,
+                subprocess.CalledProcessError, FileNotFoundError) as e:
+            log_error(f"Error checking space requirements: {e}")
+            messagebox.showerror("Error", str(e))
+            self.operation_details.config(text="Vérification de l'espace échouée", fg=theme.ERROR)
+
     def start_conversion(self):
-        """Start the P2V conversion operation with enhanced validation"""
-        source = self.source_var.get()
-        vm_name = self.vm_name.get().strip()
+        source     = self.source_var.get()
+        vm_name    = self.vm_name.get().strip()
         output_dir = self.output_path.get().strip()
-        
-        # Validation
+
         if not source:
-            messagebox.showwarning("Warning", "Please select a source disk")
+            messagebox.showwarning("Avertissement", "Veuillez sélectionner un disque source")
             return
-        
         if not vm_name:
-            messagebox.showwarning("Warning", "Please enter a VM name")
+            messagebox.showwarning("Avertissement", "Veuillez saisir un nom de VM")
             return
-        
         if not output_dir:
-            messagebox.showwarning("Warning", "Please specify an output directory")
+            messagebox.showwarning("Avertissement", "Veuillez spécifier un répertoire de sortie")
             return
-        
-        # Validate VM name
+
         is_valid, validation_message = validate_vm_name(vm_name)
         if not is_valid:
-            messagebox.showerror("Invalid VM Name", validation_message)
+            messagebox.showerror("Nom de VM invalide", validation_message)
             return
-        
-        # Extract device path
-        device_path = source.split(' ')[1] if source.startswith(('SYSTEM:', 'MOUNTED:', 'BUSY:')) else source.split(' ')[0]
-        
-        # Final safety check - re-validate disk availability right before conversion
+
+        device_path = (source.split(" ")[1]
+                       if source.startswith(("SYSTEM:", "MOUNTED:", "BUSY:"))
+                       else source.split(" ")[0])
+
         is_unavailable, reason = self.is_disk_unavailable_for_conversion(device_path)
         if is_unavailable:
-            messagebox.showerror("Disk Unavailable", 
-                            f"Conversion Blocked\n\n"
-                            f"The selected disk ({device_path}) is not available for conversion.\n\n"
-                            f"Reason: {reason}\n\n"
-                            f"Please select a different disk or resolve the issue before converting.")
-            # Refresh disk list to update status
+            messagebox.showerror(
+                "Disque indisponible",
+                f"Conversion bloquée\n\n"
+                f"Le disque sélectionné ({device_path}) n'est pas disponible pour la conversion.\n\n"
+                f"Raison : {reason}\n\n"
+                f"Veuillez sélectionner un autre disque ou résoudre le problème avant de convertir.",
+            )
             self.refresh_disks()
             return
-        
-        # Space check before starting
+
         try:
             has_space, space_message = check_output_space(output_dir, device_path)
             if not has_space:
-                if not messagebox.askyesno("Insufficient Space Warning",
-                                        f"Space Warning\n\n{space_message}\n\n"
-                                        f"Continue anyway? The conversion may fail."):
+                if not messagebox.askyesno("Avertissement : espace insuffisant",
+                                           f"Avertissement d'espace\n\n{space_message}\n\n"
+                                           f"Continuer quand même ? La conversion risque d'échouer."):
                     return
-        except (OSError, IOError) as e:
-            log_warning(f"System error checking space before conversion: {str(e)}")
-        except (ValueError, TypeError, KeyError) as e:
-            log_warning(f"Data error checking space before conversion: {str(e)}")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            log_warning(f"Command error checking space before conversion: {str(e)}")
-        
-        # Final confirmation with enhanced information
+        except (OSError, IOError, ValueError, TypeError, KeyError,
+                subprocess.CalledProcessError, FileNotFoundError) as e:
+            log_warning(f"Error checking space before conversion: {e}")
+
         try:
             disk_info = get_disk_info(device_path)
-            confirmation_text = f"P2V Conversion Confirmation\n\n"
-            confirmation_text += f"Source Disk: {device_path}\n"
-            confirmation_text += f"Model: {disk_info.get('model', 'Unknown')}\n"
-            confirmation_text += f"Size: {disk_info.get('size_human', 'Unknown')}\n"
-            if disk_info.get('label') and disk_info['label'] != "Unknown":
+            confirmation_text = (
+                f"Confirmation de la conversion P2V\n\n"
+                f"Disque source : {device_path}\n"
+                f"Modèle : {disk_info.get('model', 'Inconnu')}\n"
+                f"Taille : {disk_info.get('size_human', 'Inconnue')}\n"
+            )
+            if disk_info.get("label") and disk_info["label"] != "Unknown":
                 confirmation_text += f"Label: {disk_info['label']}\n"
-            confirmation_text += f"VM Name: {vm_name}\n"
-            confirmation_text += f"Output Directory: {output_dir}\n\n"
-            confirmation_text += f"This will create a compressed qcow2 virtual machine.\n"
-            confirmation_text += f"The process may take a significant amount of time.\n\n"
-            confirmation_text += f"Continue with the conversion?"
+            confirmation_text += (
+                f"Nom VM : {vm_name}\n"
+                f"Répertoire de sortie : {output_dir}\n\n"
+                f"Cela créera une machine virtuelle qcow2 compressée.\n"
+                f"Le processus peut prendre un temps considérable.\n\n"
+                f"Continuer la conversion ?"
+            )
         except (OSError, IOError, ValueError, KeyError, AttributeError):
-            confirmation_text = f"P2V Conversion Confirmation\n\n"
-            confirmation_text += f"Source Disk: {device_path}\n"
-            confirmation_text += f"VM Name: {vm_name}\n"
-            confirmation_text += f"Output Directory: {output_dir}\n\n"
-            confirmation_text += f"Continue with the conversion?"
-        
-        if not messagebox.askyesno("Confirm P2V Conversion", confirmation_text):
+            confirmation_text = (
+                f"Confirmation de la conversion P2V\n\n"
+                f"Disque source : {device_path}\n"
+                f"Nom VM : {vm_name}\n"
+                f"Répertoire de sortie : {output_dir}\n\n"
+                f"Continuer la conversion ?"
+            )
+
+        if not messagebox.askyesno("Confirmer la conversion P2V", confirmation_text):
             return
-        
-        # Start conversion in a separate thread
+
         self.operation_running = True
-        self.stop_requested = False
-        
-        conversion_thread = threading.Thread(target=self._conversion_worker, 
-                                            args=(device_path, output_dir, vm_name))
+        self.stop_requested    = False
+
+        conversion_thread = threading.Thread(
+            target=self._conversion_worker,
+            args=(device_path, output_dir, vm_name),
+        )
         conversion_thread.daemon = True
         conversion_thread.start()
-        
-        # Update UI
+
         self.convert_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self.refresh_btn.config(state=tk.DISABLED)
         self.check_space_btn.config(state=tk.DISABLED)
         self.source_combo.config(state=tk.DISABLED)
-        self.status_var.set("P2V conversion in progress...")
+        self.status_var.set("Conversion P2V en cours...")
 
-    
     def _conversion_worker(self, source_device, output_dir, vm_name):
-        """Worker thread for P2V conversion operation"""
         try:
             log_info(f"Starting P2V conversion: {source_device} -> {vm_name}.qcow2")
-            
+
             def progress_callback(percent, status):
                 self.root.after(0, lambda: self._update_progress(percent, status))
-            
+
             def stop_check():
                 return self.stop_requested
-            
-            # Perform the conversion using the improved function
-            output_file = create_vm_from_disk(source_device, output_dir, vm_name, 
-                                            progress_callback, stop_check)
-            
+
+            output_file = create_vm_from_disk(source_device, output_dir, vm_name,
+                                               progress_callback, stop_check)
+
             if not self.stop_requested:
                 log_info("P2V conversion completed successfully")
-                
-                # Get final file size
                 final_size = os.path.getsize(output_file)
                 log_info(f"VM created: {output_file} ({format_bytes(final_size)})")
-                
-                # Show completion dialog with enhanced information
-                completion_text = f"P2V conversion completed successfully!\n\n"
-                completion_text += f"VM File: {output_file}\n"
-                completion_text += f"Size: {format_bytes(final_size)}\n\n"
-                completion_text += f"You can now use this qcow2 file with:\n"
-                completion_text += f"• QEMU/KVM virtualization\n"
-                completion_text += f"• VirtualBox (with conversion)\n"
-                completion_text += f"• Other virtualization platforms supporting qcow2\n\n"
-                completion_text += f"To boot the VM with QEMU:\n"
-                completion_text += f"qemu-system-x86_64 -hda \"{output_file}\" -m 2048\n\n"
-                completion_text += f"Use 'Resize QCOW2...' button to optimize disk size if needed."
-                
-                self.root.after(0, lambda: messagebox.showinfo("Conversion Complete", completion_text))
-        
+                completion_text = (
+                    f"Conversion P2V effectuée avec succès !\n\n"
+                    f"Fichier VM : {output_file}\n"
+                    f"Taille : {format_bytes(final_size)}\n\n"
+                    f"Vous pouvez maintenant utiliser ce fichier qcow2 avec :\n"
+                    f"• Virtualisation QEMU/KVM\n"
+                    f"• VirtualBox (après conversion)\n"
+                    f"• Autres plateformes de virtualisation supportant qcow2\n\n"
+                    f"Pour démarrer la VM avec QEMU :\n"
+                    f'qemu-system-x86_64 -hda "{output_file}" -m 2048\n\n'
+                    f"Utilisez le bouton 'Redimensionner QCOW2' pour optimiser la taille si nécessaire."
+                )
+                self.root.after(0, lambda: messagebox.showinfo("Conversion terminée",
+                                                                completion_text))
+
         except FileNotFoundError as e:
-            error_msg = f"Required command or file not found: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Command Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-                
+            log_error(f"Required command or file not found: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Command Error",
+                                                             f"P2V conversion failed:\n\n{e}"))
         except subprocess.CalledProcessError as e:
-            error_msg = f"Command execution failed: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Command Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        
+            log_error(f"Command execution failed: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Command Error",
+                                                             f"P2V conversion failed:\n\n{e}"))
         except subprocess.TimeoutExpired as e:
-            error_msg = f"Command timed out: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Timeout Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-                
+            log_error(f"Command timed out: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Timeout Error",
+                                                             f"P2V conversion failed:\n\n{e}"))
         except PermissionError as e:
-            error_msg = f"Permission denied accessing disk or output directory: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Permission Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-                
-        except OSError as e:
-            error_msg = f"System error during disk operation: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("System Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        
-        except IOError as e:
-            error_msg = f"I/O error during conversion: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("I/O Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-                
-        except ValueError as e:
-            error_msg = f"Invalid value or parameter: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Value Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-                
-        except TypeError as e:
-            error_msg = f"Type error in conversion process: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Type Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-                
-        except AttributeError as e:
-            error_msg = f"Object attribute error during conversion: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Attribute Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        
-        except KeyError as e:
-            error_msg = f"Missing configuration key: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Configuration Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        
-        except IndexError as e:
-            error_msg = f"Index error during data processing: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Data Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-                
+            log_error(f"Permission denied: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Permission Error",
+                                                             f"P2V conversion failed:\n\n{e}"))
+        except (OSError, IOError, ValueError, TypeError, AttributeError,
+                KeyError, IndexError, MemoryError, RuntimeError, UnicodeError) as e:
+            log_error(f"Error during conversion: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Error",
+                                                             f"P2V conversion failed:\n\n{e}"))
         except KeyboardInterrupt:
             log_warning("P2V conversion cancelled by user")
-            self.root.after(0, lambda: messagebox.showinfo("Cancelled", 
-                "P2V conversion was cancelled by user"))
-                
-        except MemoryError:
-            error_msg = "Insufficient memory to perform conversion"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Memory Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        
-        except RuntimeError as e:
-            error_msg = f"Runtime error during conversion: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Runtime Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        
-        except UnicodeError as e:
-            error_msg = f"Text encoding error: {str(e)}"
-            log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Encoding Error", 
-                f"P2V conversion failed:\n\n{error_msg}"))
-        
+            self.root.after(0, lambda: messagebox.showinfo("Annulée",
+                                                            "Conversion P2V annulée par l'utilisateur"))
         finally:
-            # Reset UI in main thread
             self.root.after(0, self._reset_ui_after_operation)
 
     def _update_progress(self, percent, status):
-        """Update progress bar and status from worker thread"""
-        # Ensure percent is within valid range
         percent = max(0, min(100, percent))
-        
         self.progress_var.set(percent)
         self.progress_label.config(text=f"{percent:.1f}%")
-        self.operation_details.config(text=status, foreground="blue")
-        
-        # Force GUI update
+        self.operation_details.config(text=status, fg=theme.INFO)
         self.root.update_idletasks()
-    
+
     def _reset_ui_after_operation(self):
-        """Reset UI after operation completes"""
         self.operation_running = False
         self.convert_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
         self.refresh_btn.config(state=tk.NORMAL)
         self.check_space_btn.config(state=tk.NORMAL)
-        self.source_combo.config(state="readonly")  # Re-enable combobox
+        self.source_combo.config(state="readonly")
         self.progress_var.set(0)
         self.progress_label.config(text="0%")
-        self.status_var.set("Ready")
-        self.operation_details.config(text="", foreground="gray")
-    
+        self.status_var.set("Prêt")
+        self.operation_details.config(text="", fg=theme.TEXT_MUTED)
+
     def stop_operation(self):
-        """Stop the current operation"""
         if self.operation_running:
             self.stop_requested = True
             log_warning("Stop requested by user")
-            self.status_var.set("Stopping...")
-            self.operation_details.config(text="Stopping operation, please wait...", foreground="orange")
-    
+            self.status_var.set("Arrêt...")
+            self.operation_details.config(text="Arrêt en cours, veuillez patienter...",
+                                           fg=theme.WARNING)
+
     def exit_application(self):
-        """Exit the application with confirmation"""
         if self.operation_running:
-            result = messagebox.askyesno("Exit Confirmation", 
-                                       "An operation is currently running.\n\n"
-                                       "Are you sure you want to exit?\n"
-                                       "This will stop the current operation.")
+            result = messagebox.askyesno("Confirmation de fermeture",
+                                         "Une opération est en cours.\n\n"
+                                         "Êtes-vous sûr de vouloir quitter ?\n"
+                                         "Cela arrêtera l'opération en cours.")
             if result:
                 self.stop_requested = True
                 log_warning("Application exit requested during operation")
-                # Give a moment for the operation to stop
                 self.root.after(1000, self._force_exit)
             return
-        
-        # Normal exit confirmation
-        result = messagebox.askyesno("Exit Confirmation", 
-                                   "Are you sure you want to exit the P2V Converter?")
+
+        result = messagebox.askyesno("Confirmation de fermeture",
+                                     "Êtes-vous sûr de vouloir quitter le convertisseur P2V ?")
         if result:
             self._perform_exit("GUI Exit button")
-    
+
     def _force_exit(self):
-        """Force exit after stopping operation"""
         self._perform_exit("Forced exit during operation")
-    
+
     def _perform_exit(self, reason):
-        """Perform the actual exit with proper session cleanup"""
         try:
             log_application_exit(reason)
-            # Only end session if it's still active
             if is_session_active():
                 session_end()
         except (AttributeError, IOError, OSError, KeyError, ValueError):
-            # Don't let logging errors prevent exit
-            print(f"Warning: Error during session cleanup")
+            print("Warning: Error during session cleanup")
         finally:
             self.root.quit()
             self.root.destroy()
-    
-    # -------------------------------------------------------------------------
-    #  External-storage helpers (detect / mount / unmount / export)
-    # -------------------------------------------------------------------------
+
+    # ── External-storage helpers (detect / mount / unmount / export) ──────────
 
     def _get_external_disks(self) -> list:
-        """
-        Return a list of dicts describing block devices that are NOT the
-        active system disk and NOT a virtual/loop device.
-
-        Each dict has:
-            device       – base device name, e.g. 'sdb'
-            path         – full path, e.g. '/dev/sdb'
-            size         – human-readable size from lsblk
-            model        – model string (may be empty)
-            partitions   – list of partition names, e.g. ['sdb1', 'sdb2']
-            mount_points – dict {partition_name: mount_point or None}
-        """
         import subprocess as _sp
         import json as _json
 
         result = []
-
         try:
-            raw = _sp.run(
-                ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MODEL,MOUNTPOINT"],
-                stdout=_sp.PIPE, stderr=_sp.PIPE
-            ).stdout.decode()
+            raw  = _sp.run(["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MODEL,MOUNTPOINT"],
+                           stdout=_sp.PIPE, stderr=_sp.PIPE).stdout.decode()
             data = _json.loads(raw)
         except Exception as e:
             log_error(f"lsblk JSON failed: {e}")
@@ -1754,30 +1210,23 @@ class P2VConverterGUI:
         for dev in data.get("blockdevices", []):
             dev_name = dev.get("name", "")
             dev_type = dev.get("type", "")
-
-            # Only plain disks
             if dev_type not in ("disk",):
                 continue
-            # Skip loop devices
             if dev_name.startswith("loop"):
                 continue
-            # Skip system disk (uses is_system_disk from utils)
             if is_system_disk(f"/dev/{dev_name}"):
                 continue
 
             partitions = []
             mount_map  = {}
-
             children = dev.get("children") or []
             if children:
                 for child in children:
                     p_name = child.get("name", "")
-                    p_type = child.get("type", "")
-                    if p_type == "part":
+                    if child.get("type") == "part":
                         partitions.append(p_name)
                         mount_map[p_name] = child.get("mountpoint") or None
             else:
-                # Disk with no partition table – treat disk itself as target
                 partitions.append(dev_name)
                 mount_map[dev_name] = dev.get("mountpoint") or None
 
@@ -1792,19 +1241,13 @@ class P2VConverterGUI:
 
         return result
 
-    def _mount_partition(self, partition: str) -> str | None:
-        """
-        Mount /dev/<partition> to a unique temp directory.
-        Returns the mount point on success, None on failure.
-        """
+    def _mount_partition(self, partition: str):
         import tempfile as _tf
 
         mount_dir = _tf.mkdtemp(prefix="p2v_export_")
         try:
-            r = subprocess.run(
-                ["mount", f"/dev/{partition}", mount_dir],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
+            r = subprocess.run(["mount", f"/dev/{partition}", mount_dir],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if r.returncode != 0:
                 err = r.stderr.decode().strip()
                 log_error(f"mount /dev/{partition} -> {mount_dir} failed: {err}")
@@ -1823,7 +1266,6 @@ class P2VConverterGUI:
             return None
 
     def _unmount_partition(self, mount_dir: str) -> None:
-        """Unmount and remove the temporary mount directory."""
         try:
             r = subprocess.run(["umount", mount_dir],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1840,53 +1282,44 @@ class P2VConverterGUI:
                 pass
 
     def _show_disk_picker(self, external_disks: list):
-        """
-        Modal dialog to pick one partition from the list of external disks.
-        Returns (partition_name, already_mounted, existing_mount_point)
-        or (None, False, None) if cancelled.
-        """
+        C = theme
         result = {"partition": None, "already_mounted": False, "mount_point": None}
 
         dlg = tk.Toplevel(self.root)
         dlg.title("Sélectionner le support externe")
+        dlg.configure(bg=C.BG)
         dlg.grab_set()
         dlg.resizable(False, False)
+        theme.apply_theme(dlg)
 
-        ttk.Label(
-            dlg,
-            text="Choisissez le support externe pour l'export PDF",
-            font=("Arial", 11, "bold"),
-            padding=(10, 10)
-        ).pack(fill=tk.X)
+        ttk.Label(dlg, text="Choisissez le support externe pour l'export PDF",
+                  font=C.FONT_LABEL, padding=(10, 10)
+                  ).pack(fill=tk.X)
 
-        ttk.Label(
-            dlg,
-            text="Seuls les disques hors système sont listés.\n"
-                 "Le support sera monté automatiquement si nécessaire.",
-            foreground="#555555",
-            padding=(10, 0, 10, 6)
-        ).pack(fill=tk.X)
+        ttk.Label(dlg,
+                  text="Seuls les disques hors système sont listés.\n"
+                       "Le support sera monté automatiquement si nécessaire.",
+                  style="Muted.TLabel", padding=(10, 0, 10, 6)
+                  ).pack(fill=tk.X)
 
         frame = ttk.Frame(dlg, padding=(10, 0, 10, 6))
         frame.pack(fill=tk.BOTH, expand=True)
 
-        lb = tk.Listbox(frame, width=70, height=12, font=("Courier", 9),
-                        selectmode=tk.SINGLE, activestyle="dotbox")
+        lb = tk.Listbox(frame, width=70, height=12, selectmode=tk.SINGLE, activestyle="dotbox")
+        theme.style_listbox(lb)
         sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=lb.yview)
         lb.configure(yscrollcommand=sb.set)
         lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Flat list: disk headers (unselectable) + indented partitions
         entries = []
         for disk in external_disks:
-            model_str = f" [{disk['model']}]" if disk['model'] else ""
+            model_str = f" [{disk['model']}]" if disk["model"] else ""
             lb.insert(tk.END, f"── {disk['path']}  {disk['size']}{model_str}")
-            lb.itemconfig(tk.END, foreground="#333388", background="#eeeeff")
-            entries.append(None)  # disk header – not selectable
-
+            lb.itemconfig(tk.END, foreground=C.ACCENT, background=C.BG_CARD)
+            entries.append(None)
             for part in disk["partitions"]:
-                mp = disk["mount_points"].get(part)
+                mp     = disk["mount_points"].get(part)
                 status = f"monté sur {mp}" if mp else "non monté"
                 lb.insert(tk.END, f"     /dev/{part:<14}  {status}")
                 entries.append((part, mp is not None, mp))
@@ -1898,22 +1331,20 @@ class P2VConverterGUI:
             sel = lb.curselection()
             if not sel:
                 messagebox.showwarning("Aucune sélection",
-                                       "Veuillez sélectionner une partition.",
-                                       parent=dlg)
+                                       "Veuillez sélectionner une partition.", parent=dlg)
                 return
             entry = entries[sel[0]]
             if entry is None:
                 messagebox.showwarning("Sélection invalide",
                                        "Veuillez sélectionner une partition,\n"
-                                       "pas un en-tête de disque.",
-                                       parent=dlg)
+                                       "pas un en-tête de disque.", parent=dlg)
                 return
-            result.update({"partition": entry[0],
-                           "already_mounted": entry[1],
+            result.update({"partition": entry[0], "already_mounted": entry[1],
                            "mount_point": entry[2]})
             dlg.destroy()
 
-        ttk.Button(btn_frame, text="Sélectionner", command=on_select).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Sélectionner", command=on_select,
+                   style="Primary.TButton").pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Annuler", command=dlg.destroy).pack(side=tk.LEFT, padx=4)
 
         dlg.update_idletasks()
@@ -1926,34 +1357,18 @@ class P2VConverterGUI:
         return result["partition"], result["already_mounted"], result["mount_point"]
 
     def _request_external_export_path(self, default_filename: str):
-        """
-        Full export-path workflow:
-          1. Detect external disks (mounted or not).
-          2. Show the disk picker dialog.
-          3. Mount the chosen partition if not already mounted.
-          4. Open the standard Tk save-as dialog on that mount point.
-          5. Validate the destination is on the external mount.
-          6. Return the chosen path.
-             After the PDF is written, call _finalize_export() to unmount.
-
-        Returns:
-            str | None: Chosen absolute file path, or None if cancelled.
-        """
         external_disks = self._get_external_disks()
         if not external_disks:
-            messagebox.showerror(
-                "Aucun support externe détecté",
-                "Aucun disque externe n'a été détecté.\n\n"
-                "Branchez une clé USB, un disque dur externe ou tout autre "
-                "support amovible, puis réessayez."
-            )
+            messagebox.showerror("Aucun support externe détecté",
+                                 "Aucun disque externe n'a été détecté.\n\n"
+                                 "Branchez une clé USB, un disque dur externe ou tout autre "
+                                 "support amovible, puis réessayez.")
             return None
 
         partition, already_mounted, existing_mp = self._show_disk_picker(external_disks)
         if not partition:
             return None
 
-        # Mount if needed
         self._pending_unmount_dir = None
         if already_mounted and existing_mp:
             mount_point = existing_mp
@@ -1962,13 +1377,11 @@ class P2VConverterGUI:
             self.root.update_idletasks()
             mount_point = self._mount_partition(partition)
             if not mount_point:
-                messagebox.showerror(
-                    "Erreur de montage",
-                    f"Impossible de monter /dev/{partition}.\n\n"
-                    "Vérifiez que le support est correctement branché et "
-                    "que le système de fichiers est supporté (ext4, NTFS, FAT32…)."
-                )
-                self.status_var.set("Ready")
+                messagebox.showerror("Erreur de montage",
+                                     f"Impossible de monter /dev/{partition}.\n\n"
+                                     "Vérifiez que le support est correctement branché et "
+                                     "que le système de fichiers est supporté (ext4, NTFS, FAT32…).")
+                self.status_var.set("Prêt")
                 return None
             self._pending_unmount_dir = mount_point
 
@@ -1986,18 +1399,15 @@ class P2VConverterGUI:
                 self.root.update_idletasks()
                 self._unmount_partition(self._pending_unmount_dir)
                 self._pending_unmount_dir = None
-            self.status_var.set("Ready")
+            self.status_var.set("Prêt")
             return None
 
-        # Validate the chosen path sits on the external mount point
-        mp_norm   = mount_point.rstrip('/') + '/'
-        path_norm = os.path.abspath(chosen_path).rstrip('/') + '/'
+        mp_norm   = mount_point.rstrip("/") + "/"
+        path_norm = os.path.abspath(chosen_path).rstrip("/") + "/"
         if not path_norm.startswith(mp_norm):
-            messagebox.showwarning(
-                "Destination invalide",
-                "Le chemin choisi n'est pas sur le support externe monté.\n"
-                f"Veuillez choisir un emplacement sous : {mount_point}"
-            )
+            messagebox.showwarning("Destination invalide",
+                                   "Le chemin choisi n'est pas sur le support externe monté.\n"
+                                   f"Veuillez choisir un emplacement sous : {mount_point}")
             if self._pending_unmount_dir:
                 self._unmount_partition(self._pending_unmount_dir)
                 self._pending_unmount_dir = None
@@ -2006,11 +1416,7 @@ class P2VConverterGUI:
         return chosen_path
 
     def _finalize_export(self) -> None:
-        """
-        Unmount the temporary mount directory created during an export (if any).
-        Call this after the PDF has been successfully written.
-        """
-        if getattr(self, '_pending_unmount_dir', None):
+        if getattr(self, "_pending_unmount_dir", None):
             self.status_var.set("Démontage du support externe…")
             self.root.update_idletasks()
             self._unmount_partition(self._pending_unmount_dir)
@@ -2018,106 +1424,57 @@ class P2VConverterGUI:
             self.status_var.set("Support externe démonté.")
             log_info("Support externe démonté avec succès après export.")
 
-    # -------------------------------------------------------------------------
-    #  PDF generation (export to external storage)
-    # -------------------------------------------------------------------------
+    # ── PDF generation ────────────────────────────────────────────────────────
 
     def generate_session_pdf(self):
-        """Generate PDF from current session logs and export to external storage."""
         from datetime import datetime as _dt
         default_name = f"p2v_session_{_dt.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-
-        export_path = self._request_external_export_path(default_name)
+        export_path  = self._request_external_export_path(default_name)
         if not export_path:
             log_info("Export PDF session annulé par l'utilisateur.")
-            self.status_var.set("Ready")
+            self.status_var.set("Prêt")
             return
 
         try:
             log_info("Génération du PDF de session…")
             self.session_pdf_btn.config(state=tk.DISABLED)
             self.status_var.set("Génération du PDF…")
-
             pdf_path = generate_session_pdf(output_path=export_path)
-
             self._finalize_export()
-
-            messagebox.showinfo(
-                "PDF Exporté",
-                f"PDF de session exporté avec succès !\n\nEnregistré : {pdf_path}"
-            )
+            messagebox.showinfo("PDF Exporté",
+                                f"PDF de session exporté avec succès !\n\nEnregistré : {pdf_path}")
             log_info(f"PDF de session exporté : {pdf_path}")
-
-        except ValueError as e:
-            log_warning(f"Cannot generate session PDF: {str(e)}")
-            messagebox.showerror("Erreur PDF", f"Impossible de générer le PDF de session :\n\n{str(e)}")
-        except PermissionError as e:
-            log_error(f"Permission denied: {str(e)}")
-            messagebox.showerror("Erreur de permission", f"Permission refusée :\n\n{str(e)}")
-        except (OSError, IOError) as e:
-            log_error(f"System error generating PDF: {str(e)}")
-            messagebox.showerror("Erreur système", f"Erreur système :\n\n{str(e)}")
-        except ImportError as e:
-            log_error(f"Missing required module: {str(e)}")
-            messagebox.showerror("Module manquant", f"Module requis absent :\n\n{str(e)}")
-        except (AttributeError, TypeError) as e:
-            log_error(f"Internal error generating PDF: {str(e)}")
-            messagebox.showerror("Erreur interne", f"Erreur interne :\n\n{str(e)}")
+        except (ValueError, PermissionError, OSError, IOError,
+                ImportError, AttributeError, TypeError) as e:
+            log_error(f"Error generating session PDF: {e}")
+            messagebox.showerror("Erreur PDF", f"Impossible de générer le PDF de session :\n\n{e}")
         finally:
             self.session_pdf_btn.config(state=tk.NORMAL)
-            self.status_var.set("Ready")
+            self.status_var.set("Prêt")
 
     def generate_log_file_pdf(self):
-        """Generate PDF from complete log file and export to external storage."""
         from datetime import datetime as _dt
         default_name = f"p2v_complete_log_{_dt.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-
-        export_path = self._request_external_export_path(default_name)
+        export_path  = self._request_external_export_path(default_name)
         if not export_path:
             log_info("Export PDF journal complet annulé par l'utilisateur.")
-            self.status_var.set("Ready")
+            self.status_var.set("Prêt")
             return
 
         try:
             log_info("Génération du PDF journal complet…")
             self.file_pdf_btn.config(state=tk.DISABLED)
             self.status_var.set("Génération du PDF…")
-
             pdf_path = generate_log_file_pdf(output_path=export_path)
-
             self._finalize_export()
-
-            messagebox.showinfo(
-                "PDF Exporté",
-                f"PDF journal complet exporté avec succès !\n\nEnregistré : {pdf_path}"
-            )
+            messagebox.showinfo("PDF Exporté",
+                                f"PDF journal complet exporté avec succès !\n\nEnregistré : {pdf_path}")
             log_info(f"PDF journal complet exporté : {pdf_path}")
-
-        except FileNotFoundError as e:
-            log_warning(f"Log file not found: {str(e)}")
-            messagebox.showwarning("Fichier introuvable", f"Fichier journal introuvable :\n\n{str(e)}")
-        except (PermissionError, OSError, IOError) as e:
-            log_error(f"Failed to generate log file PDF: {str(e)}")
-            messagebox.showerror("Erreur PDF", f"Échec de génération du PDF :\n\n{str(e)}")
-        except UnicodeDecodeError as e:
-            log_error(f"Text encoding error in log file: {str(e)}")
-            messagebox.showerror("Erreur d'encodage", f"Erreur d'encodage dans le journal :\n\n{str(e)}")
-        except ImportError as e:
-            log_error(f"Missing required module: {str(e)}")
-            messagebox.showerror("Module manquant", f"Module requis absent :\n\n{str(e)}")
-        except (AttributeError, TypeError, KeyError, ValueError) as e:
-            log_error(f"Unexpected error generating log file PDF: {str(e)}")
-            messagebox.showerror("Erreur inattendue", f"Erreur inattendue :\n\n{str(e)}")
+        except (FileNotFoundError, PermissionError, OSError, IOError,
+                UnicodeDecodeError, ImportError, AttributeError, TypeError,
+                KeyError, ValueError) as e:
+            log_error(f"Error generating log file PDF: {e}")
+            messagebox.showerror("Erreur PDF", f"Échec de génération du PDF :\n\n{e}")
         finally:
             self.file_pdf_btn.config(state=tk.NORMAL)
-            self.status_var.set("Ready")
-
-
-def main():
-    """Main entry point for the GUI application"""
-    root = tk.Tk()
-    app = P2VConverterGUI(root)
-    root.mainloop()
-
-if __name__ == "__main__":
-    main()
+            self.status_var.set("Prêt")

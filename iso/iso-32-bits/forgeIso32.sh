@@ -1,10 +1,17 @@
 #!/bin/bash
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║ forgeIso32.sh – ISO dual-boot VirtuPack (32-bit)                           ║
+# ║                                                                             ║
+# ║ Entrée 1 : Live → OpenBox kiosque (code/)                                  ║
+# ║ Entrée 2 : Live Safe → Live + nomodeset                                    ║
+# ║                                                                             ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # Exit on any error
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/p2vConverter-v2.0-32bits.iso"
+ISO_NAME="$(pwd)/VirtuPack-v3.0-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../../code"
 
@@ -24,17 +31,17 @@ sudo lb clean --purge || true
 
 echo "Configuring live-build for Debian Bullseye i386..."
 lb config \
-  --distribution=bullseye \
-  --architectures=i386 \
-  --linux-packages=linux-image \
-  --linux-flavours=686 \
-  --debian-installer=none \
-  --bootappend-live="boot=live components config hostname=p2v-converter username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
-  --bootloaders="syslinux" \
-  --binary-images=iso-hybrid
+--distribution=bullseye \
+--architectures=i386 \
+--linux-packages=linux-image \
+--linux-flavours=686 \
+--debian-installer=none \
+--bootappend-live="boot=live components config hostname=virtupack username=user locales=fr_FR.UTF-8 keyboard-layouts=fr" \
+--bootloaders="syslinux" \
+--binary-images=iso-hybrid
 # NOTE: --debian-installer=none is intentional.
 # Using --debian-installer=live on bullseye i386 triggers:
-#   "flAbsPath on localArchive/aptdir/.../dpkg/status failed (realpath: No such file or directory)"
+# "flAbsPath on localArchive/aptdir/.../dpkg/status failed (realpath: No such file or directory)"
 # This is a live-build bug on 32-bit bullseye. Since Calamares is not needed
 # in this kiosk-only ISO, none is correct and avoids the error entirely.
 
@@ -135,8 +142,8 @@ AllowHybridSleep=no
 EOF
 
 for target in sleep suspend hibernate hybrid-sleep; do
-  mkdir -p "config/includes.chroot/etc/systemd/system/${target}.target.d/"
-  cat << EOF > "config/includes.chroot/etc/systemd/system/${target}.target.d/override.conf"
+mkdir -p "config/includes.chroot/etc/systemd/system/${target}.target.d/"
+cat << EOF > "config/includes.chroot/etc/systemd/system/${target}.target.d/override.conf"
 [Unit]
 ConditionPathExists=/dev/null
 EOF
@@ -146,47 +153,86 @@ echo "Disabling screen blanking..."
 mkdir -p config/includes.chroot/etc/X11/xorg.conf.d/
 cat << 'EOF' > config/includes.chroot/etc/X11/xorg.conf.d/10-monitor.conf
 Section "ServerFlags"
-  Option "BlankTime" "0"
-  Option "StandbyTime" "0"
-  Option "SuspendTime" "0"
-  Option "OffTime" "0"
+Option "BlankTime" "0"
+Option "StandbyTime" "0"
+Option "SuspendTime" "0"
+Option "OffTime" "0"
 EndSection
 EOF
 
-echo "Configuring libvirt..."
+# ════════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION LIBVIRT – accès supports amovibles depuis virt-manager
+# ════════════════════════════════════════════════════════════════════════════════
+echo "=== Configuration libvirt / qemu.conf (supports amovibles) ==="
 mkdir -p config/includes.chroot/etc/libvirt/
+
+# qemu.conf : exécution en root + ACL étendue aux blocs amovibles courants
+# Note : les wildcards ne sont pas supportés dans cgroup_device_acl ; ajouter /dev/sdX supplémentaires si nécessaire.
 cat << 'EOF' > config/includes.chroot/etc/libvirt/qemu.conf
+# VirtuPack – accès QEMU aux supports amovibles (virt-manager)
+# Modifiez cgroup_device_acl si votre clé USB apparaît sur /dev/sdg ou au-delà.
+
 user = "root"
 group = "root"
 security_driver = "none"
 dynamic_ownership = 0
 vnc_listen = "0.0.0.0"
+
+cgroup_device_acl = [
+"/dev/null", "/dev/full", "/dev/zero",
+"/dev/random", "/dev/urandom",
+"/dev/ptmx", "/dev/kvm",
+"/dev/rtc", "/dev/hpet",
+"/dev/sdb", "/dev/sdc", "/dev/sdd",
+"/dev/sde", "/dev/sdf"
+]
 EOF
 
+# Service one-shot : démarre libvirtd, attend le socket, ajoute l'utilisateur au groupe libvirt
 mkdir -p config/includes.chroot/etc/systemd/system/
-cat << 'EOF' > config/includes.chroot/etc/systemd/system/libvirtd-startup.service
+cat << 'EOF' > config/includes.chroot/etc/systemd/system/vp-libvirt-setup.service
 [Unit]
-Description=Start libvirtd daemon on boot
+Description=VirtuPack – initialisation libvirt pour supports amovibles
 After=network.target
+Wants=libvirtd.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/systemctl start libvirtd
 RemainAfterExit=yes
+# Démarrage explicite de libvirtd (au cas où il ne serait pas encore actif)
+ExecStart=/usr/bin/systemctl start libvirtd.service
+# Attendre que le socket soit disponible
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 20); do [ -S /var/run/libvirt/libvirt-sock ] && exit 0; sleep 0.5; done; exit 0'
+# Ajout de l'utilisateur live au groupe libvirt
+ExecStartPost=/usr/sbin/usermod -a -G libvirt user
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+# Activation des services via liens symboliques dans le target (sans systemctl enable)
+mkdir -p config/includes.chroot/etc/systemd/system/multi-user.target.wants/
+
+# Activer libvirtd.service au boot
+# Sur Bullseye i386 le chemin est /lib/systemd/system (pas /usr/lib)
+ln -sf /lib/systemd/system/libvirtd.service \
+config/includes.chroot/etc/systemd/system/multi-user.target.wants/libvirtd.service
+
+# Activer notre service de setup libvirt
+ln -sf /etc/systemd/system/vp-libvirt-setup.service \
+config/includes.chroot/etc/systemd/system/multi-user.target.wants/vp-libvirt-setup.service
+
+echo " --> qemu.conf, libvirtd.service et vp-libvirt-setup.service ecrits"
+
 echo "Copying application files..."
 mkdir -p config/includes.chroot/usr/local/bin/
 cp -r "${CODE_DIR}"/* config/includes.chroot/usr/local/bin/ 2>/dev/null || true
 chmod +x config/includes.chroot/usr/local/bin/* 2>/dev/null || true
-cat << 'WRAPPER' > config/includes.chroot/usr/local/bin/d2q
+cat << 'WRAPPER' > config/includes.chroot/usr/local/bin/vp
 #!/bin/bash
 exec python3 /usr/local/bin/main.py "$@"
 WRAPPER
-chmod +x config/includes.chroot/usr/local/bin/d2q
+chmod +x config/includes.chroot/usr/local/bin/vp
 
 mkdir -p config/includes.chroot/etc/sudoers.d/
 echo "user ALL=(ALL) NOPASSWD: ALL" > config/includes.chroot/etc/sudoers.d/passwordless
@@ -208,9 +254,9 @@ EOF
 # rc.xml forces every window fullscreen + borderless the moment it maps.
 #
 # Boot flow:
-#   LightDM auto-login → p2v-kiosk XSession → p2v-session.sh
-#     → openbox (WM, background) + d2q (app, fullscreen, foreground)
-#   When the app exits the session ends and LightDM restarts it (Relogin).
+# LightDM auto-login → p2v-kiosk XSession → p2v-session.sh
+# → openbox (WM, background) + vp (app, fullscreen, foreground)
+# When the app exits the session ends and LightDM restarts it (Relogin).
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo "Configuring openbox kiosk session..."
@@ -220,29 +266,68 @@ cat << 'EOF' > config/includes.chroot/etc/xdg/openbox/rc.xml
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc"
                 xmlns:xi="http://www.w3.org/2001/XInclude">
-  <applications>
-    <application class="*">
-      <fullscreen>yes</fullscreen>
-      <decor>no</decor>
-      <maximized>yes</maximized>
-      <layer>above</layer>
-    </application>
-  </applications>
+  <resistance>
+    <strength>10</strength>
+    <screen_edge_strength>20</screen_edge_strength>
+  </resistance>
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+    <focusLast>yes</focusLast>
+    <underMouse>no</underMouse>
+    <focusDelay>200</focusDelay>
+    <raiseOnFocus>no</raiseOnFocus>
+  </focus>
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout>NLIMC</titleLayout>
+  </theme>
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+    <names/>
+    <popupTime>875</popupTime>
+  </desktops>
+  <resize>
+    <drawContents>yes</drawContents>
+    <popupShow>NonPixel</popupShow>
+  </resize>
+  <mouse>
+    <dragThreshold>8</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <screenEdgeWarpTime>400</screenEdgeWarpTime>
+    <screenEdgeWarpMouse>false</screenEdgeWarpMouse>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+    </context>
+    <context name="Desktop">
+      <mousebind button="A-Left" action="Press">
+        <action name="Focus"/>
+      </mousebind>
+    </context>
+  </mouse>
+  <keyboard>
+    <chainQuitKey>C-g</chainQuitKey>
+  </keyboard>
+  <applications/>
 </openbox_config>
 EOF
 
 cat << 'EOF' > config/includes.chroot/usr/local/bin/p2v-session.sh
 #!/bin/bash
-# P2V Converter kiosk session — called by LightDM.
+# VirtuPack kiosk session — called by LightDM.
 
 xset s off -dpms 2>/dev/null || true
-xset s noblank   2>/dev/null || true
+xset s noblank 2>/dev/null || true
 
 openbox &
 WM_PID=$!
 sleep 1
 
-sudo /usr/local/bin/d2q
+sudo /usr/local/bin/vp
 
 kill "$WM_PID" 2>/dev/null || true
 EOF
@@ -251,8 +336,8 @@ chmod +x config/includes.chroot/usr/local/bin/p2v-session.sh
 mkdir -p config/includes.chroot/usr/share/xsessions/
 cat << 'EOF' > config/includes.chroot/usr/share/xsessions/p2v-kiosk.desktop
 [Desktop Entry]
-Name=P2V Converter (Kiosk)
-Comment=Launch P2V Converter fullscreen, no desktop
+Name=VirtuPack (Kiosk)
+Comment=Launch VirtuPack fullscreen, no desktop
 Exec=/usr/local/bin/p2v-session.sh
 Type=Application
 EOF
@@ -273,25 +358,13 @@ EOF
 
 cat << 'EOF' > config/includes.chroot/etc/skel/.bashrc
 if [ -f /etc/bashrc ]; then
-  . /etc/bashrc
+. /etc/bashrc
 fi
-echo "P2V Converter (32-bit)"
-echo "Type 'sudo d2q' to use the P2V Converter program"
+echo "VirtuPack (32-bit)"
+echo "Type 'sudo vp' to use the VirtuPack program"
 EOF
 
 # ─────────────────────────────────────────────────────────────────────────────
-
-mkdir -p config/includes.chroot/lib/live/boot
-cat << 'EOF' > config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
-#!/bin/sh
-echo "Initializing libvirt daemon..."
-mkdir -p /var/lib/libvirt/images /var/lib/libvirt/qemu /var/run/libvirt
-chmod 755 /var/lib/libvirt /var/lib/libvirt/images /var/lib/libvirt/qemu /var/run/libvirt
-/usr/sbin/libvirtd -d 2>/dev/null || true
-sleep 2
-echo "libvirt daemon initialized"
-EOF
-chmod +x config/includes.chroot/lib/live/boot/9999-libvirt-init.sh
 
 echo "Configuring boot menu..."
 mkdir -p config/includes.binary/isolinux
@@ -300,30 +373,30 @@ UI vesamenu.c32
 DEFAULT live
 TIMEOUT 50
 
-MENU TITLE P2V Converter (32-bit) - Boot Menu
+MENU TITLE VirtuPack (32-bit) - Boot Menu
 
 LABEL live
-  MENU LABEL Start P2V Converter
-  MENU DEFAULT
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img boot=live config components
+MENU LABEL Start VirtuPack
+MENU DEFAULT
+KERNEL /live/vmlinuz
+APPEND initrd=/live/initrd.img boot=live config components
 
 LABEL live-safe
-  MENU LABEL Start P2V Converter - Safe Mode (nomodeset)
-  KERNEL /live/vmlinuz
-  APPEND initrd=/live/initrd.img boot=live config components nomodeset
+MENU LABEL Start VirtuPack - Safe Mode (nomodeset)
+KERNEL /live/vmlinuz
+APPEND initrd=/live/initrd.img boot=live config components nomodeset
 EOF
 
 echo "Building the ISO..."
 sudo lb build
 
 if [ -f live-image-i386.hybrid.iso ]; then
-  mv live-image-i386.hybrid.iso "$ISO_NAME"
+mv live-image-i386.hybrid.iso "$ISO_NAME"
 elif [ -f live-image-i386.iso ]; then
-  mv live-image-i386.iso "$ISO_NAME"
+mv live-image-i386.iso "$ISO_NAME"
 else
-  echo "ERROR: Could not find generated ISO file"
-  exit 1
+echo "ERROR: Could not find generated ISO file"
+exit 1
 fi
 
 sudo lb clean

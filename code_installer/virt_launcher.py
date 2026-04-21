@@ -110,6 +110,68 @@ class VirtManagerLauncher:
         return False
     
     @staticmethod
+    def ensure_libvirtd_running(log_callback=None):
+        """
+        S'assure que libvirtd est en cours d'exécution.
+        Vérifie le socket, et démarre libvirtd via systemctl si nécessaire.
+
+        Returns:
+            bool: True si libvirtd est opérationnel
+        """
+        import time
+
+        LIBVIRT_SOCK = "/var/run/libvirt/libvirt-sock"
+
+        # 1. Vérifier si le socket existe déjà (libvirtd tourne)
+        if os.path.exists(LIBVIRT_SOCK):
+            if log_callback:
+                log_callback("libvirtd est déjà actif")
+            return True
+
+        if log_callback:
+            log_callback("libvirtd non détecté — tentative de démarrage...")
+
+        # 2. Tenter de démarrer libvirtd via systemctl
+        for service in ("libvirtd.service", "libvirtd.socket"):
+            try:
+                result = subprocess.run(
+                    ["systemctl", "start", service],
+                    capture_output=True, text=True, timeout=15
+                )
+                if log_callback:
+                    if result.returncode == 0:
+                        log_callback(f"{service} démarré")
+                    else:
+                        log_callback(f"Impossible de démarrer {service} : {result.stderr.strip()}")
+            except (subprocess.SubprocessError, FileNotFoundError):
+                pass
+
+        # 3. Attendre que le socket apparaisse (max 10 s)
+        for _ in range(20):
+            if os.path.exists(LIBVIRT_SOCK):
+                if log_callback:
+                    log_callback("libvirtd opérationnel")
+                return True
+            time.sleep(0.5)
+
+        # 4. Fallback : vérifier via virsh
+        try:
+            result = subprocess.run(
+                ["virsh", "-c", "qemu:///system", "list"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                if log_callback:
+                    log_callback("libvirtd répond via virsh")
+                return True
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+        if log_callback:
+            log_callback("Avertissement : libvirtd peut ne pas être disponible")
+        return False
+
+    @staticmethod
     def launch_virt_manager(image_path=None, log_callback=None):
         """
         Launch virt-manager with proper privilege escalation
@@ -136,6 +198,9 @@ class VirtManagerLauncher:
                     log_callback(error_msg)
                 raise FileNotFoundError(error_msg)
             
+            # S'assurer que libvirtd tourne avant de lancer virt-manager
+            VirtManagerLauncher.ensure_libvirtd_running(log_callback)
+
             # Fix image permissions if path provided
             if image_path:
                 if not os.path.exists(image_path):

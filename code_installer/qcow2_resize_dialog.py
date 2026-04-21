@@ -7,7 +7,8 @@ Features: preallocation=metadata for new images and improved error handling
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, filedialog
+import theme
 import os
 import subprocess
 import threading
@@ -30,7 +31,8 @@ class QCow2CloneResizerGUI:
     def __init__(self, parent):
         self.parent = parent
         self.root = tk.Toplevel(parent)
-        self.root.title("QCOW2 Clone Resizer - GParted + Safe Cloning")
+        self.root.title("Redimensionneur QCOW2 — GParted + Clonage sécurisé")
+        theme.apply_theme(self.root)
         
         # Appropriate window size
         self.root.attributes("-fullscreen", True)
@@ -258,11 +260,7 @@ class QCow2CloneResizerGUI:
     def close_window(self):
         """Handle window close event - forcefully stop operations"""
         if self.operation_active:
-            result = messagebox.askyesno("Operation in Progress", 
-                                    "An operation is currently running.\n\n"
-                                    "This will STOP the operation immediately.\n"
-                                    "Temporary files will be handled appropriately.\n\n"
-                                    "Continue?")
+            result = self._notify("Notification", level="info")
             if not result:
                 return
             
@@ -473,6 +471,16 @@ class QCow2CloneResizerGUI:
                        font=("Arial", 12, "bold"),
                        padding=(20, 10))
     
+    def _notify(self, message: str, level: str = "info",
+                confirm: bool = False, on_yes=None, on_no=None):
+        """Notification inline sans pop-up."""
+        try:
+            self.notif_bar.show(message, level=level, confirm=confirm,
+                                on_yes=on_yes, on_no=on_no,
+                                auto_hide=not confirm)
+        except AttributeError:
+            print(f"[{level.upper()}] {message}")
+
     def check_prerequisites(self):
         """Check if required tools are installed"""
         missing, optional = QCow2CloneResizer.check_tools()
@@ -489,7 +497,7 @@ class QCow2CloneResizerGUI:
             install_msg += "Arch Linux:\n"
             install_msg += "sudo pacman -S qemu parted gparted"
             
-            messagebox.showerror("Missing Tools", install_msg)
+            self._notify(install_msg, level="error")
             
         else:
             text = "All required tools available\n"
@@ -517,11 +525,11 @@ class QCow2CloneResizerGUI:
         """Analyze selected image"""
         path = self.image_path.get().strip()
         if not path:
-            messagebox.showwarning("No File Selected", "Please select an image file first")
+            self._notify("Please select an image file first", level="warning")
             return
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", "The selected file does not exist")
+            self._notify("The selected file does not exist", level="error")
             return
         
         try:
@@ -536,19 +544,19 @@ class QCow2CloneResizerGUI:
             self.status_label.config(text="Image analyzed - Ready to start GParted + Clone process")
             
         except FileNotFoundError:
-            messagebox.showerror("File Not Found", f"Image file not found: {path}")
+            self._notify(f"Image file not found: {path}", level="error")
             self.update_progress(0, "Analysis failed - file not found")
         except PermissionError:
-            messagebox.showerror("Permission Denied", f"Permission denied accessing image file: {path}")
+            self._notify(f"Permission denied accessing image file: {path}", level="error")
             self.update_progress(0, "Analysis failed - permission denied")
         except subprocess.CalledProcessError as e:
-            messagebox.showerror("Command Failed", f"qemu-img analysis failed:\n\n{e}")
+            self._notify(f"qemu-img analysis failed:\n\n{e}", level="error")
             self.update_progress(0, "Analysis failed - command error")
         except json.JSONDecodeError:
-            messagebox.showerror("Parse Error", f"Failed to parse image analysis results")
+            self._notify(f"Failed to parse image analysis results", level="error")
             self.update_progress(0, "Analysis failed - parse error")
         except OSError as e:
-            messagebox.showerror("System Error", f"System error during image analysis:\n\n{e}")
+            self._notify(f"System error during image analysis:\n\n{e}", level="error")
             self.update_progress(0, "Analysis failed - system error")
     
     def display_image_info(self):
@@ -600,7 +608,7 @@ class QCow2CloneResizerGUI:
         """Create backup of current image using rsync with progress"""
         path = self.image_path.get().strip()
         if not path or not os.path.exists(path):
-            messagebox.showwarning("No File", "Select a valid image file first")
+            self._notify("Select a valid image file first", level="warning")
             return
         
         try:
@@ -625,19 +633,19 @@ class QCow2CloneResizerGUI:
         except OSError as e:
             error_msg = f"System error preparing backup: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
+            self._notify(error_msg, level="error")
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
         except PermissionError as e:
             error_msg = f"Permission denied preparing backup: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
+            self._notify(error_msg, level="error")
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
         except ValueError as e:
             error_msg = f"Invalid path for backup: {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Value Error", error_msg)
+            self._notify(error_msg, level="error")
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
 
@@ -711,43 +719,43 @@ class QCow2CloneResizerGUI:
             backup_msg += f"The backup is a complete copy of your virtual disk.\n"
             backup_msg += f"You can now safely proceed with the resizing process."
             
-            self.root.after(0, lambda: messagebox.showinfo("Backup Complete", backup_msg))
+            self.root.after(0, lambda: self._notify(backup_msg, level="success"))
             self.root.after(100, lambda: self.update_progress(0, "Backup complete"))
             
         except FileNotFoundError as fnf_e:
             error_msg = f"Backup failed - file not found: {str(fnf_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
             self.update_progress(0, "Backup failed")
         except PermissionError as perm_e:
             error_msg = f"Backup failed - permission denied: {str(perm_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
             self.update_progress(0, "Backup failed")
         except subprocess.CalledProcessError as cpe:
             error_msg = f"Backup failed - rsync error (code {cpe.returncode})"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Backup Failed", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
             self.update_progress(0, "Backup failed")
         except subprocess.TimeoutExpired as timeout_e:
             error_msg = f"Backup failed - operation timed out"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Timeout", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
             self.update_progress(0, "Backup failed")
         except ValueError as val_e:
             error_msg = f"Backup failed - verification error: {str(val_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Verification Failed", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
             self.update_progress(0, "Backup failed")
         except OSError as os_e:
             error_msg = f"Backup failed - system error: {str(os_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
             self.update_progress(0, "Backup failed")
         except IOError as io_e:
             error_msg = f"Backup failed - I/O error: {str(io_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("I/O Error", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
             self.update_progress(0, "Backup failed")
         finally:
             self.root.after(0, lambda: self.backup_btn.config(state="normal"))
@@ -787,7 +795,7 @@ class QCow2CloneResizerGUI:
         
         msg += f"Continue with GParted + Clone process?"
         
-        if not messagebox.askyesno("Confirm Operation", msg):
+        if not self._notify("Notification", level="info"):
             return
         
         # Check root privileges
@@ -800,7 +808,7 @@ class QCow2CloneResizerGUI:
                     "sudo python3 qcow2_clone_resizer.py\n\n"
                     "Continue anyway?")
             
-            if not messagebox.askyesno("Root Privileges Required", root_msg):
+            if not self._notify("Notification", level="info"):
                 return
         
         # Start resize in thread
@@ -2233,7 +2241,7 @@ class QCow2CloneResizerGUI:
             error_msg += f"• Original: {source_path}\n"
             error_msg += f"• Intermediate: {intermediate_path}\n"
             error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - File Not Found", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
         except PermissionError as e:
             log_error(f"Cleanup failed - permission denied: {e}")
             error_msg = f"Permission denied during file cleanup:\n{e}\n\n"
@@ -2242,7 +2250,7 @@ class QCow2CloneResizerGUI:
             error_msg += f"• Original: {source_path}\n"
             error_msg += f"• Intermediate: {intermediate_path}\n"
             error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - Permission Denied", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
         except OSError as e:
             log_error(f"Cleanup failed - system error: {e}")
             error_msg = f"System error during file cleanup:\n{e}\n\n"
@@ -2251,7 +2259,7 @@ class QCow2CloneResizerGUI:
             error_msg += f"• Original: {source_path}\n"
             error_msg += f"• Intermediate: {intermediate_path}\n"
             error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - System Error", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
         except Exception as e:
             log_error(f"Cleanup failed - unexpected error: {e}")
             error_msg = f"Unexpected error during cleanup:\n{e}\n\n"
@@ -2259,51 +2267,75 @@ class QCow2CloneResizerGUI:
             error_msg += f"• Original: {source_path}\n"
             error_msg += f"• Intermediate: {intermediate_path}\n"
             error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed", error_msg))
+            self.root.after(0, lambda: self._notify(error_msg, level="error"))
 
 
     def _show_message_and_wait(self, title, message):
-        """Show info message and wait for user to click OK"""
+        """Affiche une notification inline et libère le thread worker."""
         self.dialog_result_event.clear()
         self.dialog_result_value = None
-        
-        def show_dialog():
-            messagebox.showinfo(title, message)
+
+        def show_notif():
+            if any(w in title.lower() for w in ("error", "fail", "failed")):
+                level = "error"
+            elif any(w in title.lower() for w in ("warn", "cancel")):
+                level = "warning"
+            elif any(w in title.lower() for w in ("complete", "success", "done")):
+                level = "success"
+            else:
+                level = "info"
+            self._notify(f"{title} — {message}", level=level)
             self.dialog_result_event.set()
-        
-        self.root.after(0, show_dialog)
+
+        self.root.after(0, show_notif)
         self.dialog_result_event.wait()
 
 
     def _show_yesno_and_wait(self, title, message):
-        """Show yes/no dialog and wait for user response"""
+        """Confirmation inline — bloque le thread worker."""
         self.dialog_result_event.clear()
         self.dialog_result_value = None
-        
-        def show_dialog():
-            result = messagebox.askyesno(title, message, default='yes')
-            self.dialog_result_value = result
+
+        def on_yes():
+            self.dialog_result_value = True
             self.dialog_result_event.set()
-        
-        self.root.after(0, show_dialog)
+
+        def on_no():
+            self.dialog_result_value = False
+            self.dialog_result_event.set()
+
+        self.root.after(0, lambda: self._notify(
+            f"{title} — {message}", level="warning",
+            confirm=True, on_yes=on_yes, on_no=on_no))
         self.dialog_result_event.wait()
-        
         return self.dialog_result_value
 
 
     def _show_yesnocancel_and_wait(self, title, message):
-        """Show yes/no/cancel dialog and wait for user response"""
+        """Confirmation Oui/Non/Annuler inline — bloque le thread worker."""
         self.dialog_result_event.clear()
         self.dialog_result_value = None
-        
-        def show_dialog():
-            result = messagebox.askyesnocancel(title, message, default='yes')
-            self.dialog_result_value = result
+
+        def on_yes():
+            self.dialog_result_value = True
             self.dialog_result_event.set()
-        
-        self.root.after(0, show_dialog)
-        self.dialog_result_event.wait()
-        
+
+        def on_no():
+            self.dialog_result_value = False
+            self.dialog_result_event.set()
+
+        def on_timeout():
+            if not self.dialog_result_event.is_set():
+                self.dialog_result_value = None
+                self.dialog_result_event.set()
+
+        def show_notif():
+            self._notify(f"{title} — {message} (✕ = Annuler)", level="warning",
+                        confirm=True, on_yes=on_yes, on_no=on_no)
+            self.root.after(60000, on_timeout)
+
+        self.root.after(0, show_notif)
+        self.dialog_result_event.wait(timeout=65)
         return self.dialog_result_value
 
     @staticmethod
@@ -3268,18 +3300,15 @@ class QCow2CloneResizerGUI:
         path = self.image_path.get().strip()
         
         if not path:
-            messagebox.showwarning("No File Selected", 
-                                  "Please select a QCOW2 image file first")
+            self._notify("Please select a QCOW2 image file first", level="warning")
             return False
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", 
-                                "The selected file does not exist")
+            self._notify("The selected file does not exist", level="error")
             return False
         
         if not self.image_info:
-            messagebox.showwarning("Image Not Analyzed", 
-                                  "Please analyze the image first by clicking 'Analyze'")
+            self._notify("Please analyze the image first by clicking 'Analyze'", level="warning")
             return False
         
         return True
