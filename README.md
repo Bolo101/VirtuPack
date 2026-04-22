@@ -76,21 +76,21 @@ Toutes les fonctionnalités sont disponibles pour l’utilisateur, à l’except
 ## Démarrage rapide
 
 ### Télécharger l’ISO précompilée (recommandé)
-**[Télécharger l’ISO VirtuPack](https://archive.org/details/virtu-pack-v3.0)**
+**[Télécharger l’ISO VirtuPack](https://archive.org/details/virtu-pack-v-3.0)**
 
 ```txt
 - VirtuPack-v2.0-64bits.iso : b8b0d78cf2c63b4d063ce15d06ccbbdc74ea6383b477baf46fa5bc4730dfe983
 - VirtuPack-v2.0-32bits.iso : d8941c2ce673f8693c09c35ae0662226b9f6324b3c1e4a4c86e4affa5ce7a7b7
 ```
 
-Choisissez la version d’ISO souhaitée : 32 bits ou 64 bits, XFCE (plus léger) ou KDE.
+Choisissez la version d’ISO souhaitée : 32 bits ou 64 bits.
 
 ### Ou créer votre propre ISO
 
 ```bash
 cd iso/
-make
-make 32  # environnement XFCE 32 bits (plus léger)
+make  # environnement 64 bits
+make 32  # environnement 32 bits
 make all-iso # génère les 2 ISO
 make clean   # nettoie les fichiers de build
 make help    # affiche le message d’aide
