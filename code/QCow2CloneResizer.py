@@ -204,10 +204,6 @@ class QCow2CloneResizer:
             print(f"ERROR - compression command failed: {e}")
             QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
-        except subprocess.TimeoutExpired as e:
-            print(f"ERROR - compression timed out: {e}")
-            QCow2CloneResizer._force_remove_file(temp_compressed_path)
-            raise
         except FileNotFoundError as e:
             print(f"ERROR - file not found during compression: {e}")
             QCow2CloneResizer._force_remove_file(temp_compressed_path)
@@ -315,7 +311,7 @@ class QCow2CloneResizer:
             
             result = subprocess.run(
                 ['qemu-img', 'info', '--output=json', image_path],
-                capture_output=True, text=True, check=True, timeout=30
+                capture_output=True, text=True, check=True
             )
             data = json.loads(result.stdout)
             
@@ -337,14 +333,12 @@ class QCow2CloneResizer:
             try:
                 fallback_result = subprocess.run(
                     ['qemu-img', 'info', image_path],
-                    capture_output=True, text=True, timeout=30, check=False
+                    capture_output=True, text=True, check=False
                 )
                 if fallback_result.stdout:
                     error_msg += f"Fallback info output:\n{fallback_result.stdout}\n"
                 if fallback_result.stderr:
                     error_msg += f"Fallback info stderr:\n{fallback_result.stderr}\n"
-            except subprocess.TimeoutExpired as fallback_timeout:
-                error_msg += f"Fallback check also timed out: {fallback_timeout}\n"
             except subprocess.CalledProcessError as fallback_e:
                 error_msg += f"Fallback check also failed: {fallback_e}\n"
             except FileNotFoundError as fallback_file:
@@ -354,9 +348,6 @@ class QCow2CloneResizer:
             
             print(f"ERROR: {error_msg}")
             raise RuntimeError(error_msg)
-        except subprocess.TimeoutExpired:
-            raise subprocess.TimeoutExpired(['qemu-img', 'info'], 30, 
-                f"qemu-img timed out while analyzing image: {image_path}")
         except json.JSONDecodeError as e:
             raise json.JSONDecodeError(f"Failed to parse qemu-img JSON output", e.doc, e.pos)
         except FileNotFoundError:
@@ -399,16 +390,13 @@ class QCow2CloneResizer:
                     # Method 1: Check if qemu-nbd can list the device (means it's connected)
                     list_result = subprocess.run(
                         ['qemu-nbd', '--list', device],
-                        capture_output=True, text=True, timeout=3, check=False
+                        capture_output=True, text=True, check=False
                     )
                     # If --list succeeds, device is connected/busy
                     if list_result.returncode == 0:
                         print(f"Device {device} is connected (qemu-nbd --list succeeded)")
                         device_available = False
                     
-                except subprocess.TimeoutExpired:
-                    print(f"Device {device} check timed out, assuming busy")
-                    device_available = False
                 except FileNotFoundError:
                     print(f"qemu-nbd not found for checking {device}")
                 except subprocess.SubprocessError as e:
@@ -422,7 +410,7 @@ class QCow2CloneResizer:
                     # Method 2: Check if blockdev can get size (means device has content)
                     size_result = subprocess.run(
                         ['blockdev', '--getsize64', device],
-                        capture_output=True, text=True, timeout=3, check=False
+                        capture_output=True, text=True, check=False
                     )
                     # If blockdev succeeds and shows size > 0, device is connected
                     if size_result.returncode == 0:
@@ -447,7 +435,7 @@ class QCow2CloneResizer:
                     # Method 3: Check lsblk more carefully
                     lsblk_result = subprocess.run(
                         ['lsblk', '-n', device],  # -n for no headers
-                        capture_output=True, text=True, timeout=3, check=False
+                        capture_output=True, text=True, check=False
                     )
                     # If lsblk shows the device with partitions, it's in use
                     if lsblk_result.returncode == 0 and lsblk_result.stdout.strip():
@@ -477,9 +465,7 @@ class QCow2CloneResizer:
                         try:
                             print(f"Force disconnecting {device}...")
                             subprocess.run(['qemu-nbd', '--disconnect', device], 
-                                        capture_output=True, timeout=5, check=False)
-                        except subprocess.TimeoutExpired:
-                            print(f"Timeout while disconnecting {device}")
+                                        capture_output=True, check=False)
                         except subprocess.SubprocessError as e:
                             print(f"Subprocess error disconnecting {device}: {e}")
                         except FileNotFoundError:
@@ -508,7 +494,7 @@ class QCow2CloneResizer:
             try:
                 result = subprocess.run(
                     connect_cmd,
-                    capture_output=True, text=True, check=True, timeout=30
+                    capture_output=True, text=True, check=True
                 )
                 
                 if result.stdout:
@@ -533,27 +519,22 @@ class QCow2CloneResizer:
                             print(f"Trying alternative device: {alt_device}")
                             # Force disconnect first
                             subprocess.run(['qemu-nbd', '--disconnect', alt_device], 
-                                        capture_output=True, timeout=5, check=False)
+                                        capture_output=True, check=False)
                             time.sleep(1)
                             # Try to connect
                             subprocess.run(['qemu-nbd', '--connect', alt_device, image_path],
-                                        capture_output=True, text=True, check=True, timeout=30)
+                                        capture_output=True, text=True, check=True)
                             nbd_device = alt_device
                             print(f"Successfully connected to {alt_device}")
                             break
                         except subprocess.CalledProcessError as alt_e:
                             print(f"Alternative device {alt_device} connection failed: {alt_e}")
                             continue
-                        except subprocess.TimeoutExpired:
-                            print(f"Alternative device {alt_device} connection timed out")
-                            continue
                         except FileNotFoundError:
                             print(f"qemu-nbd not found for alternative device {alt_device}")
                             continue
                 else:
                     raise Exception(f"Could not connect to any NBD device. Last error: {error_details}")
-            except subprocess.TimeoutExpired:
-                raise Exception(f"NBD connection timed out for device {nbd_device}")
             except FileNotFoundError:
                 raise Exception("qemu-nbd command not found")
             
@@ -565,20 +546,18 @@ class QCow2CloneResizer:
                 
                 # Force kernel to re-read partition table
                 subprocess.run(['partprobe', nbd_device], check=False, 
-                            capture_output=True, timeout=10)
+                            capture_output=True)
                 time.sleep(1)
                 
                 # Check if device is accessible
                 try:
                     result = subprocess.run(['lsblk', nbd_device], 
-                                        capture_output=True, text=True, timeout=10)
+                                        capture_output=True, text=True)
                     if result.returncode == 0:
                         print(f"NBD device {nbd_device} is ready after {attempt + 1} attempts")
                         if result.stdout.strip():
                             print(f"Device info:\n{result.stdout}")
                         break
-                except subprocess.TimeoutExpired:
-                    print(f"Attempt {attempt + 1}: Device check timed out")
                 except FileNotFoundError:
                     print(f"Attempt {attempt + 1}: lsblk command not found")
                 except subprocess.SubprocessError as e:
@@ -615,8 +594,7 @@ class QCow2CloneResizer:
                 try:
                     print(f"Disconnect attempt {attempt + 1}")
                     result = subprocess.run(['qemu-nbd', '--disconnect', nbd_device], 
-                                        capture_output=True, text=True, 
-                                        timeout=10, check=True)
+                                        capture_output=True, text=True, check=True)
                     print(f"Disconnect successful on attempt {attempt + 1}")
                     if result.stdout:
                         print(f"  stdout: {result.stdout}")
@@ -626,9 +604,6 @@ class QCow2CloneResizer:
                     print(f"Disconnect attempt {attempt + 1} failed: return code {e.returncode}")
                     if e.stderr:
                         print(f"  stderr: {e.stderr}")
-                    time.sleep(2)
-                except subprocess.TimeoutExpired:
-                    print(f"Disconnect attempt {attempt + 1} timed out")
                     time.sleep(2)
                 except FileNotFoundError:
                     print(f"Disconnect attempt {attempt + 1}: qemu-nbd command not found")
@@ -643,10 +618,8 @@ class QCow2CloneResizer:
                 try:
                     # Try to kill any qemu-nbd processes using this device
                     subprocess.run(['pkill', '-f', f'qemu-nbd.*{nbd_device}'], 
-                                check=False, timeout=10)
+                                check=False)
                     time.sleep(2)
-                except subprocess.TimeoutExpired:
-                    print("pkill command timed out")
                 except FileNotFoundError:
                     print("pkill command not found")
                 except subprocess.SubprocessError as e:
@@ -656,13 +629,11 @@ class QCow2CloneResizer:
             time.sleep(2)
             try:
                 result = subprocess.run(['lsblk', nbd_device],
-                                    capture_output=True, text=True, timeout=5)
+                                    capture_output=True, text=True)
                 if result.returncode != 0 or not result.stdout.strip():
                     print(f"NBD device {nbd_device} appears to be disconnected")
                 else:
                     print(f"Warning: {nbd_device} may still be connected")
-            except subprocess.TimeoutExpired:
-                print(f"NBD device {nbd_device} disconnect verification timed out")
             except FileNotFoundError:
                 print(f"lsblk command not found for verification")
             except subprocess.SubprocessError as e:
@@ -685,7 +656,7 @@ class QCow2CloneResizer:
             # 1. Can we get size? If yes and > 0, it's connected
             try:
                 result = subprocess.run(['blockdev', '--getsize64', device_path],
-                                    capture_output=True, text=True, timeout=3, check=False)
+                                    capture_output=True, text=True, check=False)
                 if result.returncode == 0 and int(result.stdout.strip()) > 0:
                     return False
             except ValueError as e:
@@ -698,11 +669,9 @@ class QCow2CloneResizer:
             # 2. Does qemu-nbd think it's connected?
             try:
                 result = subprocess.run(['qemu-nbd', '--list', device_path],
-                                    capture_output=True, text=True, timeout=3, check=False)
+                                    capture_output=True, text=True, check=False)
                 if result.returncode == 0:
                     return False
-            except subprocess.TimeoutExpired:
-                print(f"qemu-nbd list timed out for {device_path}")
             except FileNotFoundError:
                 print(f"qemu-nbd command not found for {device_path}")
             except subprocess.SubprocessError as e:
@@ -711,7 +680,7 @@ class QCow2CloneResizer:
             # 3. Does lsblk show partitions?
             try:
                 result = subprocess.run(['lsblk', '-n', device_path],
-                                    capture_output=True, text=True, timeout=3, check=False)
+                                    capture_output=True, text=True, check=False)
                 if result.returncode == 0 and result.stdout.strip():
                     lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
                     if len(lines) > 1:
@@ -745,7 +714,7 @@ class QCow2CloneResizer:
             
             result = subprocess.run(
                 ['parted', '-s', nbd_device, 'print'],
-                capture_output=True, text=True, check=True, timeout=30
+                capture_output=True, text=True, check=True
             )
             
             print(result.stdout)
@@ -817,7 +786,7 @@ class QCow2CloneResizer:
                     try:
                         result = subprocess.run(
                             ['blockdev', '--getsize64', part_device],
-                            capture_output=True, text=True, check=True, timeout=10
+                            capture_output=True, text=True, check=True
                         )
                         actual_size = int(result.stdout.strip())
                         partition['blockdev_size_bytes'] = actual_size
@@ -853,20 +822,14 @@ class QCow2CloneResizer:
         try:
             print(f"{operation_name}: Starting sync...")
             
-            try:
-                process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdout, stderr = process.communicate(timeout=120)
-                if process.returncode == 0:
-                    print(f"{operation_name}: Sync completed")
-                    time.sleep(2)
-                    return True
-            except subprocess.TimeoutExpired:
-                print(f"{operation_name}: Sync taking longer, continuing...")
-                time.sleep(5)
+            process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate()
+            if process.returncode == 0:
+                print(f"{operation_name}: Sync completed")
+                time.sleep(2)
                 return True
-                
             # Fallback
-            subprocess.run(['sync', '-f'], check=False, timeout=30)
+            subprocess.run(['sync', '-f'], check=False)
             time.sleep(2)
             return True
             
@@ -900,10 +863,8 @@ class QCow2CloneResizer:
                     if shutil.which(cmd[0]):
                         try:
                             print(f"Using {cmd[0]} for privilege escalation")
-                            subprocess.run(cmd, env=env, timeout=3600)
+                            subprocess.run(cmd, env=env)
                             return True
-                        except subprocess.TimeoutExpired:
-                            raise Exception("GParted operation timed out (1 hour limit)")
                         except subprocess.CalledProcessError as e:
                             print(f"Failed with {cmd[0]}: return code {e.returncode}")
                             continue
@@ -914,11 +875,9 @@ class QCow2CloneResizer:
                 print("Warning: No privilege escalation found, trying direct launch")
             
             # Direct launch
-            subprocess.run(['gparted', nbd_device], env=env, timeout=3600)
+            subprocess.run(['gparted', nbd_device], env=env)
             return True
             
-        except subprocess.TimeoutExpired:
-            raise Exception("GParted operation timed out (1 hour limit)")
         except FileNotFoundError:
             raise Exception("GParted command not found")
         except PermissionError:
@@ -993,7 +952,7 @@ class QCow2CloneResizer:
                 time.sleep(1)  # Check process status every 1 second
             
             # Get final output
-            stdout, stderr = process.communicate(timeout=30)
+            stdout, stderr = process.communicate()
             
             if stdout:
                 print(f"qemu-img output: {stdout}")
@@ -1033,15 +992,6 @@ class QCow2CloneResizer:
         except subprocess.CalledProcessError as e:
             error_msg = f"qemu-img failed: {e.stderr if e.stderr else str(e)}"
             print(f"ERROR: {error_msg}")
-            raise Exception(error_msg)
-        except subprocess.TimeoutExpired:
-            error_msg = f"Image creation communication timed out. "
-            error_msg += "The image may have been created successfully. Check: " + target_path
-            print(f"ERROR: {error_msg}")
-            # Don't fail - image might still be created
-            if os.path.exists(target_path):
-                print("Image file exists, continuing...")
-                return target_path
             raise Exception(error_msg)
         except FileNotFoundError:
             raise Exception("qemu-img command not found")
@@ -1085,7 +1035,7 @@ class QCow2CloneResizer:
                 'status=none',
             ]
             print(f"Copying MBR/GPT: {' '.join(dd_cmd)}")
-            subprocess.run(dd_cmd, capture_output=True, text=True, check=True, timeout=300)
+            subprocess.run(dd_cmd, capture_output=True, text=True, check=True)
 
             if progress_callback:
                 progress_callback(50, "Recreating partition table...")
@@ -1093,7 +1043,7 @@ class QCow2CloneResizer:
             # ── Step 2: Detect partition table type and flags from source ─────
             parted_result = subprocess.run(
                 ['parted', '-s', source_nbd, 'print'],
-                capture_output=True, text=True, check=True, timeout=60
+                capture_output=True, text=True, check=True
             )
             source_parted_output = parted_result.stdout
 
@@ -1125,9 +1075,9 @@ class QCow2CloneResizer:
             # ── Step 3: Recreate partition table on target ────────────────────
             subprocess.run(
                 ['parted', '-s', target_nbd, 'mklabel', table_type],
-                check=True, timeout=60
+                check=True
             )
-            subprocess.run(['sync'], check=False, timeout=30)
+            subprocess.run(['sync'], check=False)
 
             # ── Step 4: Recreate each partition with kernel-accurate sizing ───
             partitions = layout_info['partitions']
@@ -1166,7 +1116,7 @@ class QCow2CloneResizer:
                         try:
                             blockdev_bytes = int(subprocess.run(
                                 ['blockdev', '--getsize64', src_part_device],
-                                capture_output=True, text=True, check=True, timeout=10
+                                capture_output=True, text=True, check=True
                             ).stdout.strip())
                         except Exception as bde:
                             print(f"  ⚠ blockdev fallback failed for {src_part_device}: {bde}")
@@ -1186,7 +1136,7 @@ class QCow2CloneResizer:
 
                 result = subprocess.run(
                     ['parted', '-s', target_nbd, 'mkpart', 'primary', start_str, end_str],
-                    capture_output=True, text=True, check=True, timeout=60
+                    capture_output=True, text=True, check=True
                 )
                 if result.stderr:
                     print(f"  parted stderr: {result.stderr.strip()}")
@@ -1196,22 +1146,22 @@ class QCow2CloneResizer:
                     try:
                         subprocess.run(
                             ['parted', '-s', target_nbd, 'set', str(part_num), flag, 'on'],
-                            capture_output=True, text=True, check=True, timeout=15
+                            capture_output=True, text=True, check=True
                         )
                         print(f"  ✓ Flag '{flag}' on partition {part_num}")
                     except subprocess.CalledProcessError as fe:
                         print(f"  ⚠ Could not set flag '{flag}' on partition {part_num}: {fe.stderr}")
 
-                subprocess.run(['sync'], check=False, timeout=30)
-                subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+                subprocess.run(['sync'], check=False)
+                subprocess.run(['partprobe', target_nbd], check=False)
 
             # ── Step 5: Final probe + verify ──────────────────────────────────
             time.sleep(3)
-            subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+            subprocess.run(['partprobe', target_nbd], check=False)
             time.sleep(2)
 
             verify = subprocess.run(
-                ['lsblk', target_nbd], capture_output=True, text=True, timeout=10
+                ['lsblk', target_nbd], capture_output=True, text=True
             )
             print(f"Target partition layout:\n{verify.stdout}")
 
@@ -1230,11 +1180,11 @@ class QCow2CloneResizer:
                 try:
                     src_sz = int(subprocess.run(
                         ['blockdev', '--getsize64', src_dev],
-                        capture_output=True, text=True, check=True, timeout=10
+                        capture_output=True, text=True, check=True
                     ).stdout.strip())
                     dst_sz = int(subprocess.run(
                         ['blockdev', '--getsize64', dst_dev],
-                        capture_output=True, text=True, check=True, timeout=10
+                        capture_output=True, text=True, check=True
                     ).stdout.strip())
                     status = "✓" if dst_sz >= src_sz else "✗"
                     print(f"  {status} Partition {part_num}: "
@@ -1258,8 +1208,6 @@ class QCow2CloneResizer:
         except subprocess.CalledProcessError as e:
             print(f"ERROR in clone_disk_structure: {e}")
             raise Exception(f"Failed to clone structure: {e}")
-        except subprocess.TimeoutExpired:
-            raise Exception("Disk structure cloning timed out")
         except FileNotFoundError:
             raise Exception("Required command not found for disk structure cloning")
         except PermissionError:
@@ -1284,7 +1232,7 @@ class QCow2CloneResizer:
         try:
             result = subprocess.run(
                 ['blockdev', '--getsize64', part_device],
-                capture_output=True, text=True, check=True, timeout=10
+                capture_output=True, text=True, check=True
             )
             size = int(result.stdout.strip())
             print(f"blockdev --getsize64 {part_device} => {QCow2CloneResizer.format_size(size)} ({size} bytes)")
@@ -1293,8 +1241,6 @@ class QCow2CloneResizer:
             raise Exception(f"blockdev failed for {part_device}: {e.stderr}")
         except ValueError as e:
             raise Exception(f"Could not parse blockdev output for {part_device}: {e}")
-        except subprocess.TimeoutExpired:
-            raise Exception(f"blockdev timed out for {part_device}")
         except FileNotFoundError:
             raise Exception("blockdev command not found — install util-linux")
 
@@ -1402,7 +1348,7 @@ class QCow2CloneResizer:
             max_retries = 1  # No retry loop — if dd fails the root cause must be fixed, not hidden
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True,
-                                        check=True, timeout=3600)
+                                        check=True)
                 if result.stderr:
                     print(f"  dd stderr: {result.stderr}")
                 print(f"  ✓ Partition {part_num} cloned successfully")
@@ -1413,12 +1359,6 @@ class QCow2CloneResizer:
                 raise Exception(
                     f"dd FAILED for partition {part_num} ({src_device} → {dst_device}):\n{err_detail}"
                 )
-            except subprocess.TimeoutExpired:
-                raise Exception(
-                    f"dd TIMED OUT for partition {part_num} ({src_device} → {dst_device}). "
-                    f"Partition size: {QCow2CloneResizer.format_size(src_size_bytes)}"
-                )
-
         if progress_callback:
             progress_callback(90, f"All {total} partitions cloned successfully")
 
@@ -1478,7 +1418,7 @@ class QCow2CloneResizer:
             try:
                 parted_result = subprocess.run(
                     ['parted', '-s', nbd_device, 'print'],
-                    capture_output=True, text=True, check=True, timeout=10
+                    capture_output=True, text=True, check=True
                 )
                 
                 print(f"Parted output:\n{parted_result.stdout}\n")
@@ -1493,8 +1433,6 @@ class QCow2CloneResizer:
                 
             except subprocess.CalledProcessError as parted_e:
                 print(f"⚠ Parted error: {parted_e}")
-            except subprocess.TimeoutExpired:
-                print(f"⚠ Parted timeout")
             except FileNotFoundError:
                 print(f"⚠ Parted not found")
             except OSError as e:
@@ -1517,7 +1455,7 @@ class QCow2CloneResizer:
                             
                             result = subprocess.run(
                                 ['mount', '-t', fs_type, '-o', 'ro', part_device, mount_point],
-                                capture_output=True, timeout=10, check=False
+                                capture_output=True, check=False
                             )
                             
                             if result.returncode == 0:
@@ -1567,7 +1505,7 @@ class QCow2CloneResizer:
                                 print(f"    ✓ Found Windows indicator: {win_indicator}")
                         
                         if windows_found:
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            subprocess.run(['umount', mount_point], check=False)
                             print(f"\n✓ DETECTED: Windows (found {len(windows_found)} indicators)")
                             print(f"{'='*60}\n")
                             return 'windows'
@@ -1581,7 +1519,7 @@ class QCow2CloneResizer:
                                 print(f"    EFI directory found with: {efi_contents}")
                                 
                                 if 'Microsoft' in efi_contents or 'Boot' in efi_contents:
-                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
+                                    subprocess.run(['umount', mount_point], check=False)
                                     print(f"\n✓ DETECTED: Windows (found EFI/Microsoft or EFI/Boot)")
                                     print(f"{'='*60}\n")
                                     return 'windows'
@@ -1611,7 +1549,7 @@ class QCow2CloneResizer:
                                 print(f"    ✓ Found Linux indicator: {description} ({linux_path})")
                         
                         if linux_found:
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            subprocess.run(['umount', mount_point], check=False)
                             print(f"\n✓ DETECTED: Linux (found {len(linux_found)} indicators)")
                             print(f"  Indicators: {', '.join(linux_found)}")
                             print(f"{'='*60}\n")
@@ -1624,36 +1562,33 @@ class QCow2CloneResizer:
                         
                         if os.path.exists(boot_path):
                             print(f"    ✓ Found /boot directory")
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            subprocess.run(['umount', mount_point], check=False)
                             print(f"\n✓ DETECTED: Linux (found /boot)")
                             print(f"{'='*60}\n")
                             return 'linux'
                         
                         if os.path.exists(grub_path):
                             print(f"    ✓ Found /grub directory")
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
+                            subprocess.run(['umount', mount_point], check=False)
                             print(f"\n✓ DETECTED: Linux (found /grub)")
                             print(f"{'='*60}\n")
                             return 'linux'
                         
                         # Cleanup
-                        subprocess.run(['umount', mount_point], check=False, timeout=10)
+                        subprocess.run(['umount', mount_point], check=False)
                         
-                    except subprocess.TimeoutExpired as mount_timeout:
-                        print(f"  ✗ Timeout: {mount_timeout}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
                     except subprocess.CalledProcessError as mount_e:
                         print(f"  ✗ Mount failed: {mount_e}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                        subprocess.run(['umount', mount_point], check=False)
                     except FileNotFoundError as mount_file:
                         print(f"  ✗ Command not found: {mount_file}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                        subprocess.run(['umount', mount_point], check=False)
                     except PermissionError as mount_perm:
                         print(f"  ✗ Permission denied: {mount_perm}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                        subprocess.run(['umount', mount_point], check=False)
                     except OSError as mount_os:
                         print(f"  ✗ OS error: {mount_os}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
+                        subprocess.run(['umount', mount_point], check=False)
             
             print(f"\n✗ DETECTED: Unknown (could not determine OS)")
             print(f"{'='*60}\n")
