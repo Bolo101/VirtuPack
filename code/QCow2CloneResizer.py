@@ -712,14 +712,13 @@ class QCow2CloneResizer:
         try:
             print(f"\nGetting partition layout from {nbd_device}...")
             
-            result = subprocess.run(
-                ['parted', '-s', nbd_device, 'print'],
-                capture_output=True, text=True, check=True
-            )
-            
-            print(result.stdout)
-            
-            lines = result.stdout.split('\n')
+            parted_output = QCow2CloneResizer._safe_parted_print(nbd_device)
+            if not parted_output:
+                return QCow2CloneResizer._layout_from_lsblk(nbd_device)
+
+            print(parted_output)
+
+            lines = parted_output.split('\n')
             partitions = []
             max_end_bytes = 0
             
@@ -1383,6 +1382,146 @@ class QCow2CloneResizer:
             raise Exception(f"System error creating backup: {e}")
         except shutil.Error as e:
             raise Exception(f"Copy error creating backup: {e}")
+
+    @staticmethod
+    def _safe_parted_print(device):
+        """Run parted print defensively and tolerate parted crashes."""
+        try:
+            result = subprocess.run(
+                ['parted', '-s', device, 'print'],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                return result.stdout
+            stderr = (result.stderr or '').strip()
+            stdout = (result.stdout or '').strip()
+            combined = f"{stdout}\n{stderr}".strip().lower()
+            if result.returncode == -6 or 'realloc(): invalid next size' in combined:
+                print(f"WARNING: parted crashed on {device}; ignoring unsafe parted output")
+                return None
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                ['parted', '-s', device, 'print'],
+                output=result.stdout,
+                stderr=result.stderr
+            )
+        except FileNotFoundError:
+            print("WARNING: parted command not found")
+            return None
+
+    @staticmethod
+    def _layout_from_lsblk(nbd_device):
+        """Build a usable partition layout using lsblk when parted crashes."""
+        result = subprocess.run(
+            ['lsblk', '-b', '-P', '-o', 'NAME,PATH,TYPE,START,SIZE,PARTLABEL,PARTFLAGS', nbd_device],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            raise Exception(f"lsblk failed to inspect {nbd_device}")
+
+        partitions = []
+        max_end_bytes = 0
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if not line or 'PATH=' not in line:
+                continue
+            fields = dict(re.findall(r'(\w+)="([^"]*)"', line))
+            if fields.get('TYPE') != 'part':
+                continue
+            path = fields.get('PATH', '')
+            start_bytes = int(fields.get('START') or 0)
+            size_bytes = int(fields.get('SIZE') or 0)
+            end_bytes = start_bytes + size_bytes
+            m = re.search(r'(?:p)?(\d+)$', path)
+            if not m:
+                continue
+            partition_num = int(m.group(1))
+            partitions.append({
+                'number': partition_num,
+                'start': f'{start_bytes}B',
+                'end': f'{end_bytes}B',
+                'start_bytes': start_bytes,
+                'end_bytes': end_bytes,
+                'size': f'{size_bytes}B',
+                'blockdev_size_bytes': size_bytes,
+                'path': path,
+                'partlabel': fields.get('PARTLABEL', ''),
+                'partflags': fields.get('PARTFLAGS', ''),
+            })
+            max_end_bytes = max(max_end_bytes, end_bytes)
+
+        partitions.sort(key=lambda p: p['number'])
+        if not partitions:
+            raise Exception(f"No partitions found via lsblk on {nbd_device}")
+
+        buffer_5_percent = int(max_end_bytes * 0.05)
+        required_minimum_bytes = max_end_bytes + buffer_5_percent
+        print("WARNING: using lsblk fallback for partition layout")
+        print("=" * 60)
+        print("Image size calculation (lsblk fallback):")
+        print(f"  Last partition ends at: {QCow2CloneResizer.format_size(max_end_bytes)}")
+        print(f"  Safety buffer (5%): {QCow2CloneResizer.format_size(buffer_5_percent)}")
+        print(f"  RECOMMENDED IMAGE SIZE: {QCow2CloneResizer.format_size(required_minimum_bytes)}")
+        print("=" * 60)
+        return {
+            'partitions': partitions,
+            'last_partition_end_bytes': max_end_bytes,
+            'required_minimum_bytes': required_minimum_bytes,
+            'partition_count': len(partitions)
+        }
+
+    @staticmethod
+    def detect_boot_mode(nbd_device):
+        """Detect boot mode without relying primarily on parted."""
+        try:
+            result = subprocess.run(
+                ['lsblk', '-P', '-o', 'NAME,PATH,PARTTYPE,FSTYPE,PARTLABEL,PARTFLAGS', nbd_device],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                for raw_line in result.stdout.splitlines():
+                    line = raw_line.strip()
+                    if not line or 'PATH=' not in line:
+                        continue
+                    fields = dict(re.findall(r'(\w+)="([^"]*)"', line))
+                    path = fields.get('PATH', '')
+                    if path == nbd_device:
+                        continue
+                    parttype = (fields.get('PARTTYPE', '') or '').lower()
+                    fstype = (fields.get('FSTYPE', '') or '').lower()
+                    partlabel = (fields.get('PARTLABEL', '') or '').lower()
+                    partflags = (fields.get('PARTFLAGS', '') or '').lower()
+                    if parttype == 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b':
+                        return 'uefi'
+                    if 'esp' in partlabel or 'esp' in partflags:
+                        return 'uefi'
+                    if fstype in ('vfat', 'fat16', 'fat32') and ('efi' in partlabel or 'system' in partlabel):
+                        return 'uefi'
+                    if parttype == '21686148-6449-6e6f-744e-656564454649':
+                        return 'bios'
+                    if 'bios_grub' in partflags or 'bios' in partlabel:
+                        return 'bios'
+        except Exception as e:
+            print(f"lsblk-based boot mode detection warning: {e}")
+        try:
+            parted_output = QCow2CloneResizer._safe_parted_print(nbd_device)
+            if parted_output:
+                lowered = parted_output.lower()
+                if 'bios_grub' in lowered or 'bios boot' in lowered:
+                    return 'bios'
+                if 'partition table: gpt' in lowered:
+                    return 'uefi'
+                if 'partition table: msdos' in lowered:
+                    return 'bios'
+        except subprocess.CalledProcessError as e:
+            print(f"parted fallback failed during boot detection: {e}")
+        return 'unknown'
 
     @staticmethod
     def detect_vm_os(nbd_device):
