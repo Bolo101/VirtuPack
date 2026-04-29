@@ -869,17 +869,10 @@ class QCow2CloneResizerGUI:
             log_info("Detecting VM operating system...")
             os_type = QCow2CloneResizer.detect_vm_os(source_nbd)
             log_info(f"Detected OS type: {os_type}")
-            
-            # Detect boot mode by checking partition table
+            # Detect boot mode safely without depending on parted
             log_info("Detecting boot mode (UEFI/BIOS)...")
-            parted_result = subprocess.run(
-                ['parted', '-s', source_nbd, 'print'],
-                capture_output=True, text=True, check=True, timeout=30
-            )
-            is_gpt = 'gpt' in parted_result.stdout.lower()
-            has_esp = 'esp' in parted_result.stdout.lower()
-            boot_mode = 'uefi' if (is_gpt and has_esp) else 'bios'
-            log_info(f"Boot mode detected: {boot_mode.upper()} (GPT: {is_gpt}, ESP: {has_esp})")
+            boot_mode = QCow2CloneResizer.detect_boot_mode(source_nbd)
+            log_info(f"Boot mode detected: {boot_mode.upper()}")
             
             # Get initial partition layout
             self.update_progress(20, "Analyzing initial partition layout...")
