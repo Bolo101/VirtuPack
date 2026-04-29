@@ -867,7 +867,7 @@ class QCow2CloneResizerGUI:
             # Detect OS type
             self.update_progress(15, "Detecting VM operating system...")
             log_info("Detecting VM operating system...")
-            os_type = QCow2CloneResizer.detect_vm_os(source_nbd)
+            os_type = QCow2CloneResizer._detect_vm_os_safe(source_nbd)
             log_info(f"Detected OS type: {os_type}")
             # Detect boot mode safely without depending on parted
             log_info("Detecting boot mode (UEFI/BIOS)...")
