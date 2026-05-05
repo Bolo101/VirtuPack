@@ -204,10 +204,6 @@ class QCow2CloneResizer:
             print(f"ERROR - compression command failed: {e}")
             QCow2CloneResizer._force_remove_file(temp_compressed_path)
             raise
-        except subprocess.TimeoutExpired as e:
-            print(f"ERROR - compression timed out: {e}")
-            QCow2CloneResizer._force_remove_file(temp_compressed_path)
-            raise
         except FileNotFoundError as e:
             print(f"ERROR - file not found during compression: {e}")
             QCow2CloneResizer._force_remove_file(temp_compressed_path)
@@ -315,7 +311,7 @@ class QCow2CloneResizer:
             
             result = subprocess.run(
                 ['qemu-img', 'info', '--output=json', image_path],
-                capture_output=True, text=True, check=True, timeout=30
+                capture_output=True, text=True, check=True
             )
             data = json.loads(result.stdout)
             
@@ -337,14 +333,12 @@ class QCow2CloneResizer:
             try:
                 fallback_result = subprocess.run(
                     ['qemu-img', 'info', image_path],
-                    capture_output=True, text=True, timeout=30, check=False
+                    capture_output=True, text=True, check=False
                 )
                 if fallback_result.stdout:
                     error_msg += f"Fallback info output:\n{fallback_result.stdout}\n"
                 if fallback_result.stderr:
                     error_msg += f"Fallback info stderr:\n{fallback_result.stderr}\n"
-            except subprocess.TimeoutExpired as fallback_timeout:
-                error_msg += f"Fallback check also timed out: {fallback_timeout}\n"
             except subprocess.CalledProcessError as fallback_e:
                 error_msg += f"Fallback check also failed: {fallback_e}\n"
             except FileNotFoundError as fallback_file:
@@ -354,9 +348,6 @@ class QCow2CloneResizer:
             
             print(f"ERROR: {error_msg}")
             raise RuntimeError(error_msg)
-        except subprocess.TimeoutExpired:
-            raise subprocess.TimeoutExpired(['qemu-img', 'info'], 30, 
-                f"qemu-img timed out while analyzing image: {image_path}")
         except json.JSONDecodeError as e:
             raise json.JSONDecodeError(f"Failed to parse qemu-img JSON output", e.doc, e.pos)
         except FileNotFoundError:
@@ -399,16 +390,13 @@ class QCow2CloneResizer:
                     # Method 1: Check if qemu-nbd can list the device (means it's connected)
                     list_result = subprocess.run(
                         ['qemu-nbd', '--list', device],
-                        capture_output=True, text=True, timeout=3, check=False
+                        capture_output=True, text=True, check=False
                     )
                     # If --list succeeds, device is connected/busy
                     if list_result.returncode == 0:
                         print(f"Device {device} is connected (qemu-nbd --list succeeded)")
                         device_available = False
                     
-                except subprocess.TimeoutExpired:
-                    print(f"Device {device} check timed out, assuming busy")
-                    device_available = False
                 except FileNotFoundError:
                     print(f"qemu-nbd not found for checking {device}")
                 except subprocess.SubprocessError as e:
@@ -422,7 +410,7 @@ class QCow2CloneResizer:
                     # Method 2: Check if blockdev can get size (means device has content)
                     size_result = subprocess.run(
                         ['blockdev', '--getsize64', device],
-                        capture_output=True, text=True, timeout=3, check=False
+                        capture_output=True, text=True, check=False
                     )
                     # If blockdev succeeds and shows size > 0, device is connected
                     if size_result.returncode == 0:
@@ -447,7 +435,7 @@ class QCow2CloneResizer:
                     # Method 3: Check lsblk more carefully
                     lsblk_result = subprocess.run(
                         ['lsblk', '-n', device],  # -n for no headers
-                        capture_output=True, text=True, timeout=3, check=False
+                        capture_output=True, text=True, check=False
                     )
                     # If lsblk shows the device with partitions, it's in use
                     if lsblk_result.returncode == 0 and lsblk_result.stdout.strip():
@@ -477,9 +465,7 @@ class QCow2CloneResizer:
                         try:
                             print(f"Force disconnecting {device}...")
                             subprocess.run(['qemu-nbd', '--disconnect', device], 
-                                        capture_output=True, timeout=5, check=False)
-                        except subprocess.TimeoutExpired:
-                            print(f"Timeout while disconnecting {device}")
+                                        capture_output=True, check=False)
                         except subprocess.SubprocessError as e:
                             print(f"Subprocess error disconnecting {device}: {e}")
                         except FileNotFoundError:
@@ -508,7 +494,7 @@ class QCow2CloneResizer:
             try:
                 result = subprocess.run(
                     connect_cmd,
-                    capture_output=True, text=True, check=True, timeout=30
+                    capture_output=True, text=True, check=True
                 )
                 
                 if result.stdout:
@@ -533,27 +519,22 @@ class QCow2CloneResizer:
                             print(f"Trying alternative device: {alt_device}")
                             # Force disconnect first
                             subprocess.run(['qemu-nbd', '--disconnect', alt_device], 
-                                        capture_output=True, timeout=5, check=False)
+                                        capture_output=True, check=False)
                             time.sleep(1)
                             # Try to connect
                             subprocess.run(['qemu-nbd', '--connect', alt_device, image_path],
-                                        capture_output=True, text=True, check=True, timeout=30)
+                                        capture_output=True, text=True, check=True)
                             nbd_device = alt_device
                             print(f"Successfully connected to {alt_device}")
                             break
                         except subprocess.CalledProcessError as alt_e:
                             print(f"Alternative device {alt_device} connection failed: {alt_e}")
                             continue
-                        except subprocess.TimeoutExpired:
-                            print(f"Alternative device {alt_device} connection timed out")
-                            continue
                         except FileNotFoundError:
                             print(f"qemu-nbd not found for alternative device {alt_device}")
                             continue
                 else:
                     raise Exception(f"Could not connect to any NBD device. Last error: {error_details}")
-            except subprocess.TimeoutExpired:
-                raise Exception(f"NBD connection timed out for device {nbd_device}")
             except FileNotFoundError:
                 raise Exception("qemu-nbd command not found")
             
@@ -565,20 +546,18 @@ class QCow2CloneResizer:
                 
                 # Force kernel to re-read partition table
                 subprocess.run(['partprobe', nbd_device], check=False, 
-                            capture_output=True, timeout=10)
+                            capture_output=True)
                 time.sleep(1)
                 
                 # Check if device is accessible
                 try:
                     result = subprocess.run(['lsblk', nbd_device], 
-                                        capture_output=True, text=True, timeout=10)
+                                        capture_output=True, text=True)
                     if result.returncode == 0:
                         print(f"NBD device {nbd_device} is ready after {attempt + 1} attempts")
                         if result.stdout.strip():
                             print(f"Device info:\n{result.stdout}")
                         break
-                except subprocess.TimeoutExpired:
-                    print(f"Attempt {attempt + 1}: Device check timed out")
                 except FileNotFoundError:
                     print(f"Attempt {attempt + 1}: lsblk command not found")
                 except subprocess.SubprocessError as e:
@@ -615,8 +594,7 @@ class QCow2CloneResizer:
                 try:
                     print(f"Disconnect attempt {attempt + 1}")
                     result = subprocess.run(['qemu-nbd', '--disconnect', nbd_device], 
-                                        capture_output=True, text=True, 
-                                        timeout=10, check=True)
+                                        capture_output=True, text=True, check=True)
                     print(f"Disconnect successful on attempt {attempt + 1}")
                     if result.stdout:
                         print(f"  stdout: {result.stdout}")
@@ -626,9 +604,6 @@ class QCow2CloneResizer:
                     print(f"Disconnect attempt {attempt + 1} failed: return code {e.returncode}")
                     if e.stderr:
                         print(f"  stderr: {e.stderr}")
-                    time.sleep(2)
-                except subprocess.TimeoutExpired:
-                    print(f"Disconnect attempt {attempt + 1} timed out")
                     time.sleep(2)
                 except FileNotFoundError:
                     print(f"Disconnect attempt {attempt + 1}: qemu-nbd command not found")
@@ -643,10 +618,8 @@ class QCow2CloneResizer:
                 try:
                     # Try to kill any qemu-nbd processes using this device
                     subprocess.run(['pkill', '-f', f'qemu-nbd.*{nbd_device}'], 
-                                check=False, timeout=10)
+                                check=False)
                     time.sleep(2)
-                except subprocess.TimeoutExpired:
-                    print("pkill command timed out")
                 except FileNotFoundError:
                     print("pkill command not found")
                 except subprocess.SubprocessError as e:
@@ -656,13 +629,11 @@ class QCow2CloneResizer:
             time.sleep(2)
             try:
                 result = subprocess.run(['lsblk', nbd_device],
-                                    capture_output=True, text=True, timeout=5)
+                                    capture_output=True, text=True)
                 if result.returncode != 0 or not result.stdout.strip():
                     print(f"NBD device {nbd_device} appears to be disconnected")
                 else:
                     print(f"Warning: {nbd_device} may still be connected")
-            except subprocess.TimeoutExpired:
-                print(f"NBD device {nbd_device} disconnect verification timed out")
             except FileNotFoundError:
                 print(f"lsblk command not found for verification")
             except subprocess.SubprocessError as e:
@@ -685,7 +656,7 @@ class QCow2CloneResizer:
             # 1. Can we get size? If yes and > 0, it's connected
             try:
                 result = subprocess.run(['blockdev', '--getsize64', device_path],
-                                    capture_output=True, text=True, timeout=3, check=False)
+                                    capture_output=True, text=True, check=False)
                 if result.returncode == 0 and int(result.stdout.strip()) > 0:
                     return False
             except ValueError as e:
@@ -698,11 +669,9 @@ class QCow2CloneResizer:
             # 2. Does qemu-nbd think it's connected?
             try:
                 result = subprocess.run(['qemu-nbd', '--list', device_path],
-                                    capture_output=True, text=True, timeout=3, check=False)
+                                    capture_output=True, text=True, check=False)
                 if result.returncode == 0:
                     return False
-            except subprocess.TimeoutExpired:
-                print(f"qemu-nbd list timed out for {device_path}")
             except FileNotFoundError:
                 print(f"qemu-nbd command not found for {device_path}")
             except subprocess.SubprocessError as e:
@@ -711,7 +680,7 @@ class QCow2CloneResizer:
             # 3. Does lsblk show partitions?
             try:
                 result = subprocess.run(['lsblk', '-n', device_path],
-                                    capture_output=True, text=True, timeout=3, check=False)
+                                    capture_output=True, text=True, check=False)
                 if result.returncode == 0 and result.stdout.strip():
                     lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
                     if len(lines) > 1:
@@ -735,117 +704,160 @@ class QCow2CloneResizer:
 
     @staticmethod
     def get_partition_layout(nbd_device):
-        """Get partition layout from GParted-modified disk with 5% buffer calculation
-        
-        This simply extracts what GParted created - no recalculations.
-        The 5% buffer is added to the IMAGE SIZE, not to partition calculations.
+        """Get partition layout — multi-tool fallback with aggressive retry.
+
+        Tool priority (most to least reliable):
+          1. sfdisk -J   : JSON, sector-precise, never crashes on exotic types
+          2. parted -s   : human-readable, well-tested; may crash on some GPTs
+          3. lsblk -P    : reads kernel metadata; requires prior successful partprobe
+
+        Between each failed attempt the kernel partition table is forcibly
+        re-read (partprobe + blockdev --rereadpt) and we wait up to 10 s total
+        before giving up.  This eliminates the race condition where the kernel
+        has not yet propagated the partition layout after qemu-nbd connected.
         """
-        try:
-            print(f"\nGetting partition layout from {nbd_device}...")
-            
-            result = subprocess.run(
-                ['parted', '-s', nbd_device, 'print'],
-                capture_output=True, text=True, check=True, timeout=30
-            )
-            
-            print(result.stdout)
-            
-            lines = result.stdout.split('\n')
-            partitions = []
-            max_end_bytes = 0
-            
-            # Parse partitions
-            for line in lines:
-                line = line.strip()
-                if re.match(r'^\s*\d+\s+', line):
-                    parts = line.split()
-                    
-                    if len(parts) >= 3:
-                        partition_num = int(parts[0])
-                        start_str = parts[1]
-                        end_str = parts[2]
-                        
-                        # Parse to bytes for calculation
-                        def parse_size_str(size_str):
-                            """Parse '1049kB', '538MB', '10.7GB' to bytes"""
-                            size_str = size_str.strip()
-                            
-                            gb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*GB', size_str, re.IGNORECASE)
-                            if gb_match:
-                                return int(float(gb_match.group(1).replace(',', '.')) * 1024**3)
-                            
-                            mb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*MB', size_str, re.IGNORECASE)
-                            if mb_match:
-                                return int(float(mb_match.group(1).replace(',', '.')) * 1024**2)
-                            
-                            kb_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*kB', size_str, re.IGNORECASE)
-                            if kb_match:
-                                return int(float(kb_match.group(1).replace(',', '.')) * 1024)
-                            
-                            try:
-                                return int(float(size_str.replace(',', '.')))
-                            except:
-                                return 0
-                        
-                        start_bytes = parse_size_str(start_str)
-                        end_bytes = parse_size_str(end_str)
-                        
-                        partitions.append({
-                            'number': partition_num,
-                            'start': start_str,      # Keep original strings for parted
-                            'end': end_str,          # Keep original strings for parted
-                            'start_bytes': start_bytes,
-                            'end_bytes': end_bytes,
-                            'size': parts[3] if len(parts) > 3 else 'unknown',
-                            'blockdev_size_bytes': None,  # Will be filled from blockdev if available
-                        })
-                        
-                        max_end_bytes = max(max_end_bytes, end_bytes)
-            
-            # Get blockdev sizes for reference (but DON'T use for partition creation)
-            print(f"\nActual partition sizes from kernel:")
-            for partition in partitions:
-                part_num = partition['number']
-                part_device = None
-                
-                for path_fmt in [f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"]:
-                    if os.path.exists(path_fmt):
-                        part_device = path_fmt
+        sep = '=' * 60
+        print(f"\nGetting partition layout from {nbd_device}...")
+
+        # ── Helper: enrich partitions with blockdev kernel sizes ─────────────
+        def _fill_blockdev_sizes(partitions):
+            for p in partitions:
+                if p.get('blockdev_size_bytes') is not None:
+                    continue
+                for fmt in (f"{nbd_device}p{p['number']}", f"{nbd_device}{p['number']}"):
+                    if os.path.exists(fmt):
+                        try:
+                            bv = subprocess.run(
+                                ['blockdev', '--getsize64', fmt],
+                                capture_output=True, text=True, check=True, timeout=10
+                            )
+                            p['blockdev_size_bytes'] = int(bv.stdout.strip())
+                        except Exception:
+                            pass
                         break
-                
-                if part_device:
-                    try:
-                        result = subprocess.run(
-                            ['blockdev', '--getsize64', part_device],
-                            capture_output=True, text=True, check=True, timeout=10
-                        )
-                        actual_size = int(result.stdout.strip())
-                        partition['blockdev_size_bytes'] = actual_size
-                        print(f"  Partition {part_num}: {QCow2CloneResizer.format_size(actual_size)}")
-                    except:
-                        pass
-            
-            # Add 5% buffer to max_end_bytes for the image size
-            buffer_5percent = int(max_end_bytes * 0.05)
-            required_minimum_bytes = max_end_bytes + buffer_5percent
-            
-            print(f"\n{'='*60}")
-            print(f"Image size calculation:")
-            print(f"  Last partition ends at: {QCow2CloneResizer.format_size(max_end_bytes)}")
-            print(f"  Safety buffer (5%):     {QCow2CloneResizer.format_size(buffer_5percent)}")
-            print(f"  RECOMMENDED IMAGE SIZE: {QCow2CloneResizer.format_size(required_minimum_bytes)}")
-            print(f"{'='*60}\n")
-            
+
+        # ── Helper: build final result dict ──────────────────────────────────
+        def _make_result(partitions):
+            if not partitions:
+                return None
+            max_end = max(p['end_bytes'] for p in partitions)
+            buf     = int(max_end * 0.05)
+            req     = max_end + buf
+            print(f"\n{sep}")
+            print("Image size calculation:")
+            print(f"  Last partition ends at: {QCow2CloneResizer.format_size(max_end)}")
+            print(f"  Safety buffer (5%):     {QCow2CloneResizer.format_size(buf)}")
+            print(f"  RECOMMENDED IMAGE SIZE: {QCow2CloneResizer.format_size(req)}")
+            print(f"{sep}\n")
             return {
-                'partitions': partitions,
-                'last_partition_end_bytes': max_end_bytes,
-                'required_minimum_bytes': required_minimum_bytes,
-                'partition_count': len(partitions)
+                'partitions':              partitions,
+                'last_partition_end_bytes': max_end,
+                'required_minimum_bytes':  req,
+                'partition_count':         len(partitions),
             }
-            
-        except Exception as e:
-            print(f"ERROR getting partition layout: {e}")
-            raise
+
+        # ── Helper: parted text parse (extracted from old implementation) ────
+        def _parse_parted_output(parted_output):
+            partitions = []
+            for line in parted_output.split('\n'):
+                line = line.strip()
+                if not re.match(r'^\d+\s+', line):
+                    continue
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                try:
+                    part_num  = int(parts[0])
+                    start_str = parts[1]
+                    end_str   = parts[2]
+                except (ValueError, IndexError):
+                    continue
+
+                def _parse(s):
+                    s = (s or '').strip().replace(',', '.')
+                    _UNITS = [
+                        (r'([\d.]+)\s*TiB', 1024**4), (r'([\d.]+)\s*GiB', 1024**3),
+                        (r'([\d.]+)\s*MiB', 1024**2), (r'([\d.]+)\s*KiB', 1024),
+                        (r'([\d.]+)\s*TB',  1000**4), (r'([\d.]+)\s*GB',  1000**3),
+                        (r'([\d.]+)\s*MB',  1000**2), (r'([\d.]+)\s*kB',  1000),
+                        (r'([\d.]+)\s*B',   1),
+                    ]
+                    for pat, mul in _UNITS:
+                        m = re.search(pat, s, re.IGNORECASE)
+                        if m:
+                            try:
+                                return int(float(m.group(1)) * mul)
+                            except Exception:
+                                continue
+                    try:
+                        return int(float(s))
+                    except Exception:
+                        return 0
+
+                partitions.append({
+                    'number':            part_num,
+                    'start':             start_str,
+                    'end':               end_str,
+                    'start_bytes':       _parse(start_str),
+                    'end_bytes':         _parse(end_str),
+                    'size':              parts[3] if len(parts) > 3 else 'unknown',
+                    'blockdev_size_bytes': None,
+                })
+            return partitions
+
+        # ════════════════════════════════════════════════════════════════════
+        # Retry loop — up to 4 rounds, increasingly longer waits
+        # ════════════════════════════════════════════════════════════════════
+        wait_seq = [0, 3, 5, 7]   # seconds to wait before each attempt
+
+        for attempt, wait in enumerate(wait_seq):
+            if wait > 0:
+                print(f"\n  [Attempt {attempt + 1}/{len(wait_seq)}] "
+                      f"Waiting {wait}s then re-reading partition table...")
+                time.sleep(wait)
+
+            # Force kernel re-read every attempt
+            QCow2CloneResizer._force_reread_partition_table(nbd_device, wait=2)
+
+            # ── Method 1: sfdisk (most reliable) ─────────────────────────
+            print(f"  [Attempt {attempt + 1}] Trying sfdisk -J...")
+            layout = QCow2CloneResizer._layout_from_sfdisk(nbd_device)
+            if layout and layout['partition_count'] > 0:
+                _fill_blockdev_sizes(layout['partitions'])
+                print(f"  ✓ sfdisk succeeded with "
+                      f"{layout['partition_count']} partition(s)")
+                return layout
+
+            # ── Method 2: parted ──────────────────────────────────────────
+            print(f"  [Attempt {attempt + 1}] Trying parted...")
+            parted_out = QCow2CloneResizer._safe_parted_print(nbd_device)
+            if parted_out:
+                print(parted_out)
+                parts = _parse_parted_output(parted_out)
+                if parts:
+                    _fill_blockdev_sizes(parts)
+                    result = _make_result(parts)
+                    if result:
+                        print(f"  ✓ parted succeeded with {len(parts)} partition(s)")
+                        return result
+
+            # ── Method 3: lsblk ───────────────────────────────────────────
+            print(f"  [Attempt {attempt + 1}] Trying lsblk...")
+            layout = QCow2CloneResizer._layout_from_lsblk(nbd_device)
+            if layout and layout['partition_count'] > 0:
+                print(f"  ✓ lsblk succeeded with "
+                      f"{layout['partition_count']} partition(s)")
+                return layout
+
+            print(f"  ✗ Attempt {attempt + 1}: no partitions visible yet")
+
+        # All attempts exhausted
+        raise Exception(
+            f"No partitions found on {nbd_device} after "
+            f"{len(wait_seq)} attempts using sfdisk, parted, and lsblk. "
+            f"The NBD device may not be properly connected or the image "
+            f"may have an unsupported partition table format."
+        )
 
 
     def _perform_safe_sync_static(operation_name="Sync"):
@@ -853,20 +865,14 @@ class QCow2CloneResizer:
         try:
             print(f"{operation_name}: Starting sync...")
             
-            try:
-                process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdout, stderr = process.communicate(timeout=120)
-                if process.returncode == 0:
-                    print(f"{operation_name}: Sync completed")
-                    time.sleep(2)
-                    return True
-            except subprocess.TimeoutExpired:
-                print(f"{operation_name}: Sync taking longer, continuing...")
-                time.sleep(5)
+            process = subprocess.Popen(['sync'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate()
+            if process.returncode == 0:
+                print(f"{operation_name}: Sync completed")
+                time.sleep(2)
                 return True
-                
             # Fallback
-            subprocess.run(['sync', '-f'], check=False, timeout=30)
+            subprocess.run(['sync', '-f'], check=False)
             time.sleep(2)
             return True
             
@@ -900,10 +906,8 @@ class QCow2CloneResizer:
                     if shutil.which(cmd[0]):
                         try:
                             print(f"Using {cmd[0]} for privilege escalation")
-                            subprocess.run(cmd, env=env, timeout=3600)
+                            subprocess.run(cmd, env=env)
                             return True
-                        except subprocess.TimeoutExpired:
-                            raise Exception("GParted operation timed out (1 hour limit)")
                         except subprocess.CalledProcessError as e:
                             print(f"Failed with {cmd[0]}: return code {e.returncode}")
                             continue
@@ -914,11 +918,9 @@ class QCow2CloneResizer:
                 print("Warning: No privilege escalation found, trying direct launch")
             
             # Direct launch
-            subprocess.run(['gparted', nbd_device], env=env, timeout=3600)
+            subprocess.run(['gparted', nbd_device], env=env)
             return True
             
-        except subprocess.TimeoutExpired:
-            raise Exception("GParted operation timed out (1 hour limit)")
         except FileNotFoundError:
             raise Exception("GParted command not found")
         except PermissionError:
@@ -993,7 +995,7 @@ class QCow2CloneResizer:
                 time.sleep(1)  # Check process status every 1 second
             
             # Get final output
-            stdout, stderr = process.communicate(timeout=30)
+            stdout, stderr = process.communicate()
             
             if stdout:
                 print(f"qemu-img output: {stdout}")
@@ -1033,15 +1035,6 @@ class QCow2CloneResizer:
         except subprocess.CalledProcessError as e:
             error_msg = f"qemu-img failed: {e.stderr if e.stderr else str(e)}"
             print(f"ERROR: {error_msg}")
-            raise Exception(error_msg)
-        except subprocess.TimeoutExpired:
-            error_msg = f"Image creation communication timed out. "
-            error_msg += "The image may have been created successfully. Check: " + target_path
-            print(f"ERROR: {error_msg}")
-            # Don't fail - image might still be created
-            if os.path.exists(target_path):
-                print("Image file exists, continuing...")
-                return target_path
             raise Exception(error_msg)
         except FileNotFoundError:
             raise Exception("qemu-img command not found")
@@ -1085,7 +1078,7 @@ class QCow2CloneResizer:
                 'status=none',
             ]
             print(f"Copying MBR/GPT: {' '.join(dd_cmd)}")
-            subprocess.run(dd_cmd, capture_output=True, text=True, check=True, timeout=300)
+            subprocess.run(dd_cmd, capture_output=True, text=True, check=True)
 
             if progress_callback:
                 progress_callback(50, "Recreating partition table...")
@@ -1093,7 +1086,7 @@ class QCow2CloneResizer:
             # ── Step 2: Detect partition table type and flags from source ─────
             parted_result = subprocess.run(
                 ['parted', '-s', source_nbd, 'print'],
-                capture_output=True, text=True, check=True, timeout=60
+                capture_output=True, text=True, check=True
             )
             source_parted_output = parted_result.stdout
 
@@ -1125,9 +1118,9 @@ class QCow2CloneResizer:
             # ── Step 3: Recreate partition table on target ────────────────────
             subprocess.run(
                 ['parted', '-s', target_nbd, 'mklabel', table_type],
-                check=True, timeout=60
+                check=True
             )
-            subprocess.run(['sync'], check=False, timeout=30)
+            subprocess.run(['sync'], check=False)
 
             # ── Step 4: Recreate each partition with kernel-accurate sizing ───
             partitions = layout_info['partitions']
@@ -1166,7 +1159,7 @@ class QCow2CloneResizer:
                         try:
                             blockdev_bytes = int(subprocess.run(
                                 ['blockdev', '--getsize64', src_part_device],
-                                capture_output=True, text=True, check=True, timeout=10
+                                capture_output=True, text=True, check=True
                             ).stdout.strip())
                         except Exception as bde:
                             print(f"  ⚠ blockdev fallback failed for {src_part_device}: {bde}")
@@ -1186,7 +1179,7 @@ class QCow2CloneResizer:
 
                 result = subprocess.run(
                     ['parted', '-s', target_nbd, 'mkpart', 'primary', start_str, end_str],
-                    capture_output=True, text=True, check=True, timeout=60
+                    capture_output=True, text=True, check=True
                 )
                 if result.stderr:
                     print(f"  parted stderr: {result.stderr.strip()}")
@@ -1196,22 +1189,22 @@ class QCow2CloneResizer:
                     try:
                         subprocess.run(
                             ['parted', '-s', target_nbd, 'set', str(part_num), flag, 'on'],
-                            capture_output=True, text=True, check=True, timeout=15
+                            capture_output=True, text=True, check=True
                         )
                         print(f"  ✓ Flag '{flag}' on partition {part_num}")
                     except subprocess.CalledProcessError as fe:
                         print(f"  ⚠ Could not set flag '{flag}' on partition {part_num}: {fe.stderr}")
 
-                subprocess.run(['sync'], check=False, timeout=30)
-                subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+                subprocess.run(['sync'], check=False)
+                subprocess.run(['partprobe', target_nbd], check=False)
 
             # ── Step 5: Final probe + verify ──────────────────────────────────
             time.sleep(3)
-            subprocess.run(['partprobe', target_nbd], check=False, timeout=30)
+            subprocess.run(['partprobe', target_nbd], check=False)
             time.sleep(2)
 
             verify = subprocess.run(
-                ['lsblk', target_nbd], capture_output=True, text=True, timeout=10
+                ['lsblk', target_nbd], capture_output=True, text=True
             )
             print(f"Target partition layout:\n{verify.stdout}")
 
@@ -1230,11 +1223,11 @@ class QCow2CloneResizer:
                 try:
                     src_sz = int(subprocess.run(
                         ['blockdev', '--getsize64', src_dev],
-                        capture_output=True, text=True, check=True, timeout=10
+                        capture_output=True, text=True, check=True
                     ).stdout.strip())
                     dst_sz = int(subprocess.run(
                         ['blockdev', '--getsize64', dst_dev],
-                        capture_output=True, text=True, check=True, timeout=10
+                        capture_output=True, text=True, check=True
                     ).stdout.strip())
                     status = "✓" if dst_sz >= src_sz else "✗"
                     print(f"  {status} Partition {part_num}: "
@@ -1258,8 +1251,6 @@ class QCow2CloneResizer:
         except subprocess.CalledProcessError as e:
             print(f"ERROR in clone_disk_structure: {e}")
             raise Exception(f"Failed to clone structure: {e}")
-        except subprocess.TimeoutExpired:
-            raise Exception("Disk structure cloning timed out")
         except FileNotFoundError:
             raise Exception("Required command not found for disk structure cloning")
         except PermissionError:
@@ -1284,7 +1275,7 @@ class QCow2CloneResizer:
         try:
             result = subprocess.run(
                 ['blockdev', '--getsize64', part_device],
-                capture_output=True, text=True, check=True, timeout=10
+                capture_output=True, text=True, check=True
             )
             size = int(result.stdout.strip())
             print(f"blockdev --getsize64 {part_device} => {QCow2CloneResizer.format_size(size)} ({size} bytes)")
@@ -1293,8 +1284,6 @@ class QCow2CloneResizer:
             raise Exception(f"blockdev failed for {part_device}: {e.stderr}")
         except ValueError as e:
             raise Exception(f"Could not parse blockdev output for {part_device}: {e}")
-        except subprocess.TimeoutExpired:
-            raise Exception(f"blockdev timed out for {part_device}")
         except FileNotFoundError:
             raise Exception("blockdev command not found — install util-linux")
 
@@ -1402,7 +1391,7 @@ class QCow2CloneResizer:
             max_retries = 1  # No retry loop — if dd fails the root cause must be fixed, not hidden
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True,
-                                        check=True, timeout=3600)
+                                        check=True)
                 if result.stderr:
                     print(f"  dd stderr: {result.stderr}")
                 print(f"  ✓ Partition {part_num} cloned successfully")
@@ -1413,12 +1402,6 @@ class QCow2CloneResizer:
                 raise Exception(
                     f"dd FAILED for partition {part_num} ({src_device} → {dst_device}):\n{err_detail}"
                 )
-            except subprocess.TimeoutExpired:
-                raise Exception(
-                    f"dd TIMED OUT for partition {part_num} ({src_device} → {dst_device}). "
-                    f"Partition size: {QCow2CloneResizer.format_size(src_size_bytes)}"
-                )
-
         if progress_callback:
             progress_callback(90, f"All {total} partitions cloned successfully")
 
@@ -1445,233 +1428,691 @@ class QCow2CloneResizer:
             raise Exception(f"Copy error creating backup: {e}")
 
     @staticmethod
+    def _force_reread_partition_table(nbd_device, wait=2):
+        """Force the kernel to re-read the partition table of an NBD device.
+
+        Uses every available tool in sequence so at least one succeeds:
+          1. partprobe   — asks the kernel to re-read via ioctl BLKPG
+          2. blockdev --rereadpt — alternative ioctl, often works when partprobe fails
+          3. kpartx -u   — device-mapper fallback (some distros)
+        Then waits `wait` seconds and gives udev time to create the /dev nodes.
+        """
+        print(f"  Force re-reading partition table on {nbd_device}...")
+
+        for cmd in (
+            ['partprobe', nbd_device],
+            ['blockdev', '--rereadpt', nbd_device],
+        ):
+            try:
+                r = subprocess.run(cmd, capture_output=True, check=False, timeout=15)
+                if r.returncode == 0:
+                    print(f"    ✓ {cmd[0]} succeeded")
+                else:
+                    print(f"    ⚠ {cmd[0]} returned {r.returncode}: "
+                          f"{(r.stderr or b'').decode(errors='replace').strip()[:80]}")
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+                print(f"    ⚠ {cmd[0]} not available: {e}")
+
+        # kpartx as last resort
+        try:
+            subprocess.run(['kpartx', '-u', nbd_device],
+                           capture_output=True, check=False, timeout=15)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
+        # Give udev time to create /dev/nbdXpN nodes
+        if wait > 0:
+            time.sleep(wait)
+
+    @staticmethod
+    def _layout_from_sfdisk(nbd_device):
+        """Parse partition layout via sfdisk -J (JSON output).
+
+        sfdisk is part of util-linux and is present on every Linux distro.
+        Its JSON output is sector-precise, handles GPT/MBR equally well, and
+        does NOT crash on unusual partition types (MSR, WinRE, BitLocker, etc.).
+
+        Returns a layout dict compatible with get_partition_layout(), or None
+        on failure (so the caller can fall through to the next method).
+        """
+        try:
+            r = subprocess.run(
+                ['sfdisk', '-J', nbd_device],
+                capture_output=True, text=True,
+                check=False, timeout=15
+            )
+            if r.returncode != 0 or not r.stdout.strip():
+                print(f"  sfdisk -J failed (rc={r.returncode}): "
+                      f"{r.stderr.strip()[:120]}")
+                return None
+
+            data = json.loads(r.stdout)
+            ptable = data.get('partitiontable', {})
+            sector_size = int(ptable.get('sectorsize', 512))
+            raw_parts   = ptable.get('partitions', [])
+
+            if not raw_parts:
+                print("  sfdisk returned empty partition list")
+                return None
+
+            partitions   = []
+            max_end_bytes = 0
+
+            for entry in raw_parts:
+                node       = entry.get('node', '')          # e.g. /dev/nbd0p1
+                start_sec  = int(entry.get('start', 0))
+                size_sec   = int(entry.get('size',  0))
+
+                start_bytes = start_sec * sector_size
+                end_bytes   = (start_sec + size_sec) * sector_size
+
+                # Extract partition number from node path
+                m = re.search(r'(?:p)?(\d+)$', node)
+                if not m:
+                    continue
+                part_num = int(m.group(1))
+
+                # Try to get the real kernel size via blockdev (more accurate)
+                blockdev_bytes = None
+                for fmt in (f"{nbd_device}p{part_num}", f"{nbd_device}{part_num}"):
+                    if os.path.exists(fmt):
+                        try:
+                            bv = subprocess.run(
+                                ['blockdev', '--getsize64', fmt],
+                                capture_output=True, text=True,
+                                check=True, timeout=10
+                            )
+                            blockdev_bytes = int(bv.stdout.strip())
+                        except Exception:
+                            pass
+                        break
+
+                partitions.append({
+                    'number':            part_num,
+                    'start':             f'{start_bytes}B',
+                    'end':               f'{end_bytes}B',
+                    'start_bytes':       start_bytes,
+                    'end_bytes':         end_bytes,
+                    'size':              f'{size_sec * sector_size}B',
+                    'blockdev_size_bytes': blockdev_bytes,
+                    'node':              node,
+                    'type':              entry.get('type', ''),
+                    'name':              entry.get('name', ''),
+                })
+                max_end_bytes = max(max_end_bytes, end_bytes)
+
+            partitions.sort(key=lambda p: p['number'])
+
+            if not partitions:
+                print("  sfdisk: partitions parsed but list is empty")
+                return None
+
+            buffer_5pct = int(max_end_bytes * 0.05)
+            required    = max_end_bytes + buffer_5pct
+
+            print(f"  sfdisk found {len(partitions)} partition(s):")
+            for p in partitions:
+                name_hint = f" ({p['name']})" if p.get('name') else ''
+                print(f"    Partition {p['number']}{name_hint}: "
+                      f"{QCow2CloneResizer.format_size(p['start_bytes'])} → "
+                      f"{QCow2CloneResizer.format_size(p['end_bytes'])}")
+
+            print("=" * 60)
+            print("Image size calculation (sfdisk):")
+            print(f"  Last partition ends at: {QCow2CloneResizer.format_size(max_end_bytes)}")
+            print(f"  Safety buffer (5%):     {QCow2CloneResizer.format_size(buffer_5pct)}")
+            print(f"  RECOMMENDED IMAGE SIZE: {QCow2CloneResizer.format_size(required)}")
+            print("=" * 60)
+
+            return {
+                'partitions':              partitions,
+                'last_partition_end_bytes': max_end_bytes,
+                'required_minimum_bytes':  required,
+                'partition_count':         len(partitions),
+            }
+
+        except json.JSONDecodeError as e:
+            print(f"  sfdisk JSON parse error: {e}")
+            return None
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            print(f"  sfdisk not available: {e}")
+            return None
+
+    @staticmethod
+    def _safe_parted_print(device):
+        """Run parted print defensively and tolerate parted crashes."""
+        try:
+            result = subprocess.run(
+                ['parted', '-s', device, 'print'],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                return result.stdout
+            stderr = (result.stderr or '').strip()
+            stdout = (result.stdout or '').strip()
+            combined = f"{stdout}\n{stderr}".strip().lower()
+            if result.returncode == -6 or 'realloc(): invalid next size' in combined:
+                print(f"WARNING: parted crashed on {device}; ignoring unsafe parted output")
+                return None
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                ['parted', '-s', device, 'print'],
+                output=result.stdout,
+                stderr=result.stderr
+            )
+        except FileNotFoundError:
+            print("WARNING: parted command not found")
+            return None
+
+    @staticmethod
+    def _layout_from_lsblk(nbd_device):
+        """Build a usable partition layout using lsblk when parted crashes.
+        Returns None (does NOT raise) when no partitions are visible yet —
+        the caller is responsible for retrying.
+        """
+        result = subprocess.run(
+            ['lsblk', '-b', '-P', '-o', 'NAME,PATH,TYPE,START,SIZE,PARTLABEL,PARTFLAGS', nbd_device],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            print(f"  lsblk returned no output for {nbd_device}")
+            return None
+
+        partitions = []
+        max_end_bytes = 0
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if not line or 'PATH=' not in line:
+                continue
+            fields = dict(re.findall(r'(\w+)="([^"]*)"', line))
+            if fields.get('TYPE') != 'part':
+                continue
+            path = fields.get('PATH', '')
+            start_bytes = int(fields.get('START') or 0)
+            size_bytes = int(fields.get('SIZE') or 0)
+            end_bytes = start_bytes + size_bytes
+            m = re.search(r'(?:p)?(\d+)$', path)
+            if not m:
+                continue
+            partition_num = int(m.group(1))
+            partitions.append({
+                'number': partition_num,
+                'start': f'{start_bytes}B',
+                'end': f'{end_bytes}B',
+                'start_bytes': start_bytes,
+                'end_bytes': end_bytes,
+                'size': f'{size_bytes}B',
+                'blockdev_size_bytes': size_bytes,
+                'path': path,
+                'partlabel': fields.get('PARTLABEL', ''),
+                'partflags': fields.get('PARTFLAGS', ''),
+            })
+            max_end_bytes = max(max_end_bytes, end_bytes)
+
+        partitions.sort(key=lambda p: p['number'])
+        if not partitions:
+            print(f"  lsblk found 0 partitions on {nbd_device} (table not yet visible to kernel)")
+            return None
+
+        buffer_5_percent = int(max_end_bytes * 0.05)
+        required_minimum_bytes = max_end_bytes + buffer_5_percent
+        print("WARNING: using lsblk fallback for partition layout")
+        print("=" * 60)
+        print("Image size calculation (lsblk fallback):")
+        print(f"  Last partition ends at: {QCow2CloneResizer.format_size(max_end_bytes)}")
+        print(f"  Safety buffer (5%): {QCow2CloneResizer.format_size(buffer_5_percent)}")
+        print(f"  RECOMMENDED IMAGE SIZE: {QCow2CloneResizer.format_size(required_minimum_bytes)}")
+        print("=" * 60)
+        return {
+            'partitions': partitions,
+            'last_partition_end_bytes': max_end_bytes,
+            'required_minimum_bytes': required_minimum_bytes,
+            'partition_count': len(partitions)
+        }
+
+    @staticmethod
+    def detect_boot_mode(nbd_device):
+        """Detect boot mode without relying primarily on parted."""
+        try:
+            result = subprocess.run(
+                ['lsblk', '-P', '-o', 'NAME,PATH,PARTTYPE,FSTYPE,PARTLABEL,PARTFLAGS', nbd_device],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                for raw_line in result.stdout.splitlines():
+                    line = raw_line.strip()
+                    if not line or 'PATH=' not in line:
+                        continue
+                    fields = dict(re.findall(r'(\w+)="([^"]*)"', line))
+                    path = fields.get('PATH', '')
+                    if path == nbd_device:
+                        continue
+                    parttype = (fields.get('PARTTYPE', '') or '').lower()
+                    fstype = (fields.get('FSTYPE', '') or '').lower()
+                    partlabel = (fields.get('PARTLABEL', '') or '').lower()
+                    partflags = (fields.get('PARTFLAGS', '') or '').lower()
+                    if parttype == 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b':
+                        return 'uefi'
+                    if 'esp' in partlabel or 'esp' in partflags:
+                        return 'uefi'
+                    if fstype in ('vfat', 'fat16', 'fat32') and ('efi' in partlabel or 'system' in partlabel):
+                        return 'uefi'
+                    if parttype == '21686148-6449-6e6f-744e-656564454649':
+                        return 'bios'
+                    if 'bios_grub' in partflags or 'bios' in partlabel:
+                        return 'bios'
+        except Exception as e:
+            print(f"lsblk-based boot mode detection warning: {e}")
+        try:
+            parted_output = QCow2CloneResizer._safe_parted_print(nbd_device)
+            if parted_output:
+                lowered = parted_output.lower()
+                if 'bios_grub' in lowered or 'bios boot' in lowered:
+                    return 'bios'
+                if 'partition table: gpt' in lowered:
+                    return 'uefi'
+                if 'partition table: msdos' in lowered:
+                    return 'bios'
+        except subprocess.CalledProcessError as e:
+            print(f"parted fallback failed during boot detection: {e}")
+        return 'unknown'
+
+    @staticmethod
     def detect_vm_os(nbd_device):
-        """Detect if VM is Linux or Windows
-        
+        """Detect if VM is Linux or Windows — robust 3-phase strategy.
+
+        Phase 1 (no mount): lsblk PARTTYPE GUID scan.
+            Windows 11 always contains at least one partition with a Microsoft-
+            exclusive GUID (MSR, WinRE).  Linux disks contain Linux-exclusive
+            GUIDs (ext4 data, swap, LVM, RAID).  This is the fastest and most
+            reliable method and works even with BitLocker, hibernation, Fast
+            Startup, dirty NTFS bits.
+
+        Phase 2 (no mount): blkid / lsblk FSTYPE scan.
+            If no conclusive GUID was found, check raw filesystem signatures.
+            blkid reads the superblock directly, bypassing any mount constraints.
+            NTFS → Windows; ext4/xfs/btrfs/… → Linux.
+
+        Phase 3 (mount-based fallback): Only reached when phases 1 & 2 are
+            inconclusive (e.g. fresh/empty disk, unusual layout).
+            Uses improved NTFS mount options (ntfs3 kernel driver with rescue,
+            then ntfs-3g with force) to handle dirty/hibernated Windows volumes.
+
         Returns:
             'linux', 'windows', or 'unknown'
         """
+        # ── Windows-exclusive GPT partition type GUIDs ───────────────────────
+        _WINDOWS_GUIDS = {
+            'e3c9e316-0b5c-4db8-817d-f92df00215ae',  # Microsoft Reserved (MSR)
+            'de94bba4-06d1-4d40-a16a-bfd50179d6ac',  # Windows Recovery (WinRE)
+            'e75caf8f-f680-4cee-afa3-b001e56efc2d',  # Storage Spaces
+        }
+        # ── Linux-exclusive GPT partition type GUIDs ─────────────────────────
+        _LINUX_GUIDS = {
+            '0fc63daf-8483-4772-8e79-3d69d8477de4',  # Linux filesystem data
+            'a19d880f-05fc-4d3b-a006-743f0f84911e',  # Linux RAID
+            '0657fd6d-a4ab-43c4-84e5-0933c84b4f4f',  # Linux swap
+            'e6d6d379-f507-44c2-a23c-238f2a3df928',  # Linux LVM
+            '933ac7e1-2eb4-4f13-b844-0e14e2aef915',  # Linux /home
+            '3b8f8425-20e0-4f3b-907f-1a25a76f98e8',  # Linux /srv
+            '4f68bce3-e8cd-4db1-96e7-fbcaf984b709',  # Linux x86-64 root (/)
+            '69dad710-2ce4-4e3c-b16c-21a1d49abed3',  # Linux ARM root (/)
+        }
+        # ── Linux native filesystem types (blkid/lsblk FSTYPE column) ────────
+        _LINUX_FS = {'ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'f2fs',
+                     'jfs', 'reiserfs', 'reiser4', 'nilfs2', 'ocfs2'}
+        # ── Windows native filesystem types ──────────────────────────────────
+        _WINDOWS_FS = {'ntfs', 'bitlocker'}
+
+        sep = '=' * 60
+        print(f"\n{sep}")
+        print("DETECTING VM OPERATING SYSTEM")
+        print(sep)
+        print(f"NBD Device: {nbd_device}")
+
+        # ════════════════════════════════════════════════════════════════════
+        # PHASE 1 — PARTTYPE GUID scan (no mounting)
+        # ════════════════════════════════════════════════════════════════════
+        print("\n[Phase 1] PARTTYPE GUID scan (no mounting)...")
         try:
-            print(f"\n{'='*60}")
-            print(f"DETECTING VM OPERATING SYSTEM")
-            print(f"{'='*60}")
-            print(f"NBD Device: {nbd_device}")
-            
-            # Find all partitions
-            partitions = []
-            print(f"\nScanning for partitions...")
-            for i in range(1, 16):
-                for path_fmt in [f"{nbd_device}p{i}", f"{nbd_device}{i}"]:
-                    if os.path.exists(path_fmt):
-                        partitions.append((i, path_fmt))
-                        print(f"  Found partition {i}: {path_fmt}")
-                        break
-            
-            if not partitions:
-                print("✗ No partitions found")
-                return 'unknown'
-            
-            print(f"\nTotal partitions found: {len(partitions)}")
-            
-            # Get partition table type
-            print(f"\nChecking partition table type with parted...")
+            lsblk_r = subprocess.run(
+                ['lsblk', '-P', '-o',
+                 'PATH,TYPE,PARTTYPE,FSTYPE,LABEL,PARTLABEL', nbd_device],
+                capture_output=True, text=True, check=False, timeout=15
+            )
+            if lsblk_r.returncode == 0 and lsblk_r.stdout.strip():
+                win_guid_score = 0
+                lin_guid_score = 0
+                ntfs_count     = 0
+                linux_fs_count = 0
+
+                for raw in lsblk_r.stdout.splitlines():
+                    fields = dict(re.findall(r'(\w+)="([^"]*)"', raw))
+                    if fields.get('TYPE') != 'part':
+                        continue
+
+                    parttype  = (fields.get('PARTTYPE')  or '').lower().strip('{}')
+                    fstype    = (fields.get('FSTYPE')    or '').lower()
+                    label     = (fields.get('LABEL')     or '').lower()
+                    partlabel = (fields.get('PARTLABEL') or '').lower()
+
+                    if parttype in _WINDOWS_GUIDS:
+                        win_guid_score += 2          # strong signal
+                        print(f"  → Windows GUID: {parttype} ({partlabel})")
+                    if parttype in _LINUX_GUIDS:
+                        lin_guid_score += 2
+                        print(f"  → Linux GUID: {parttype}")
+
+                    # EBD0A0A2 = Microsoft Basic Data — also used by Linux FAT,
+                    # so only count it when combined with NTFS fstype.
+                    if (parttype == 'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7'
+                            and fstype in _WINDOWS_FS):
+                        win_guid_score += 1
+
+                    if fstype in _WINDOWS_FS:
+                        ntfs_count += 1
+                    if fstype in _LINUX_FS:
+                        linux_fs_count += 1
+
+                    # Partition label heuristics (lower weight)
+                    win_labels = ('microsoft', 'windows', 'winre', 'recovery',
+                                  'system reserved', 'basic data')
+                    lin_labels = ('linux', 'swap', 'root', 'home', 'boot', 'lvm')
+                    if any(x in partlabel for x in win_labels):
+                        win_guid_score += 1
+                    if any(x in partlabel for x in lin_labels):
+                        lin_guid_score += 1
+
+                print(f"  Scores — Windows: {win_guid_score}, Linux: {lin_guid_score}, "
+                      f"NTFS: {ntfs_count}, LinuxFS: {linux_fs_count}")
+
+                # ── Decision rules ──────────────────────────────────────────
+                # 1. Exclusive GUID → definitive answer
+                if win_guid_score >= 2 and lin_guid_score == 0:
+                    print(f"\n✓ DETECTED (Phase 1): Windows (score={win_guid_score})")
+                    print(f"{sep}\n")
+                    return 'windows'
+                if lin_guid_score >= 2 and win_guid_score == 0:
+                    print(f"\n✓ DETECTED (Phase 1): Linux (score={lin_guid_score})")
+                    print(f"{sep}\n")
+                    return 'linux'
+
+                # 2. Filesystem type when no exclusive GUID
+                if ntfs_count > 0 and linux_fs_count == 0 and lin_guid_score == 0:
+                    print(f"\n✓ DETECTED (Phase 1): Windows ({ntfs_count}× NTFS, no Linux fs)")
+                    print(f"{sep}\n")
+                    return 'windows'
+                if linux_fs_count > 0 and ntfs_count == 0 and win_guid_score == 0:
+                    print(f"\n✓ DETECTED (Phase 1): Linux ({linux_fs_count} Linux filesystems)")
+                    print(f"{sep}\n")
+                    return 'linux'
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            print(f"  ⚠ Phase 1 lsblk error: {e}")
+
+        # ════════════════════════════════════════════════════════════════════
+        # PHASE 2 — blkid raw superblock probe (no mounting)
+        # Reads filesystem signatures directly from the block device.
+        # Works on NTFS with dirty bit, hibernation, BitLocker containers.
+        # ════════════════════════════════════════════════════════════════════
+        print("\n[Phase 2] blkid superblock probe (no mounting)...")
+        ntfs_hits    = 0
+        linux_hits   = 0
+        efi_ms_found = False
+
+        partitions = []
+        for i in range(1, 16):
+            for fmt in (f"{nbd_device}p{i}", f"{nbd_device}{i}"):
+                if os.path.exists(fmt):
+                    partitions.append((i, fmt))
+                    break
+
+        print(f"  Partitions found: {[p[1] for p in partitions]}")
+
+        for part_num, part_dev in partitions:
             try:
-                parted_result = subprocess.run(
-                    ['parted', '-s', nbd_device, 'print'],
-                    capture_output=True, text=True, check=True, timeout=10
+                blk = subprocess.run(
+                    ['blkid', '-o', 'export', part_dev],
+                    capture_output=True, text=True,
+                    check=False, timeout=10
                 )
-                
-                print(f"Parted output:\n{parted_result.stdout}\n")
-                
-                parted_output = parted_result.stdout
-                
-                # Check for partition table type
-                if 'gpt' in parted_output.lower():
-                    print("Partition table: GPT (likely UEFI)")
-                elif 'msdos' in parted_output.lower():
-                    print("Partition table: MBR/MSDOS (likely BIOS)")
-                
-            except subprocess.CalledProcessError as parted_e:
-                print(f"⚠ Parted error: {parted_e}")
-            except subprocess.TimeoutExpired:
-                print(f"⚠ Parted timeout")
-            except FileNotFoundError:
-                print(f"⚠ Parted not found")
-            except OSError as e:
-                print(f"⚠ OS error: {e}")
-            
-            # Try to mount each partition and detect OS
-            print(f"\nAttempting to mount and scan partitions...\n")
-            
-            for part_num, part_device in partitions:
-                print(f"Checking partition {part_num}: {part_device}")
-                
-                with tempfile.TemporaryDirectory() as mount_point:
-                    try:
-                        # Try different filesystems (order matters)
-                        mount_success = False
-                        used_fs = None
-                        
-                        for fs_type in ['auto', 'ntfs', 'vfat', 'btrfs', 'xfs', 'ext4', 'ext3', 'ext2']:
-                            print(f"  Trying mount with {fs_type}...", end=' ')
-                            
-                            result = subprocess.run(
-                                ['mount', '-t', fs_type, '-o', 'ro', part_device, mount_point],
-                                capture_output=True, timeout=10, check=False
+                fields = {}
+                for line in blk.stdout.splitlines():
+                    if '=' in line:
+                        k, _, v = line.partition('=')
+                        fields[k.strip()] = v.strip()
+
+                fs   = fields.get('TYPE',  '').lower()
+                lbl  = fields.get('LABEL', '').lower()
+                plbl = fields.get('PARTLABEL', '').lower()
+
+                print(f"  Part {part_num}: TYPE={fs!r} LABEL={lbl!r} PARTLABEL={plbl!r}")
+
+                if fs in _WINDOWS_FS:
+                    ntfs_hits += 1
+                if fs in _LINUX_FS:
+                    linux_hits += 1
+
+                # EFI partition — check if it contains Microsoft boot files
+                if fs in ('vfat', 'fat16', 'fat32'):
+                    efi_win_labels = ('efi system', 'system', 'esp')
+                    if any(x in plbl for x in efi_win_labels) or any(
+                            x in lbl for x in efi_win_labels):
+                        # Quick check: is there an EFI/Microsoft folder?
+                        with tempfile.TemporaryDirectory() as mnt:
+                            r = subprocess.run(
+                                ['mount', '-t', 'vfat', '-o', 'ro', part_dev, mnt],
+                                capture_output=True, check=False, timeout=10
                             )
-                            
-                            if result.returncode == 0:
-                                mount_success = True
-                                used_fs = fs_type
-                                print(f"✓ Mounted")
-                                break
-                            else:
-                                print(f"✗")
-                        
-                        if not mount_success:
-                            print(f"  Could not mount partition {part_num}")
-                            continue
-                        
-                        print(f"  Filesystem type: {used_fs}")
-                        print(f"  Mount point contents (first 15 items):")
+                            if r.returncode == 0:
+                                try:
+                                    efi_dir = os.path.join(mnt, 'EFI')
+                                    if os.path.isdir(efi_dir):
+                                        contents = os.listdir(efi_dir)
+                                        # Case-insensitive check for Microsoft folder
+                                        if any(x.lower() == 'microsoft' for x in contents):
+                                            efi_ms_found = True
+                                            print(f"    → EFI/Microsoft found on part {part_num}")
+                                finally:
+                                    subprocess.run(['umount', mnt],
+                                                   check=False, timeout=10)
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+                print(f"  ⚠ blkid error on {part_dev}: {e}")
+
+        print(f"  blkid scores — NTFS: {ntfs_hits}, Linux FS: {linux_hits}, "
+              f"EFI/Microsoft: {efi_ms_found}")
+
+        if efi_ms_found or (ntfs_hits > 0 and linux_hits == 0):
+            print(f"\n✓ DETECTED (Phase 2): Windows")
+            print(f"{sep}\n")
+            return 'windows'
+        if linux_hits > 0 and ntfs_hits == 0 and not efi_ms_found:
+            print(f"\n✓ DETECTED (Phase 2): Linux")
+            print(f"{sep}\n")
+            return 'linux'
+
+        # ════════════════════════════════════════════════════════════════════
+        # PHASE 3 — Mount-based filesystem content scan (fallback)
+        # Uses improved NTFS mount options to handle dirty/hibernated volumes.
+        # ════════════════════════════════════════════════════════════════════
+        print("\n[Phase 3] Mount-based filesystem content scan (fallback)...")
+
+        def _try_mount_ntfs(device, mount_point):
+            """Try multiple NTFS drivers/options; return (success, driver_used)."""
+            # ntfs3 kernel driver (Linux ≥ 5.15) — handles dirty bit natively
+            for opts in ('ro,rescue', 'ro'):
+                r = subprocess.run(
+                    ['mount', '-t', 'ntfs3', '-o', opts, device, mount_point],
+                    capture_output=True, check=False, timeout=15
+                )
+                if r.returncode == 0:
+                    return True, f'ntfs3 -{opts}'
+
+            # ntfs-3g FUSE driver — use force to bypass dirty-bit refusal
+            for opts in ('ro,ignore_case,remove_hiberfile',
+                         'ro,force',
+                         'ro'):
+                r = subprocess.run(
+                    ['mount', '-t', 'ntfs-3g', '-o', opts, device, mount_point],
+                    capture_output=True, check=False, timeout=15
+                )
+                if r.returncode == 0:
+                    return True, f'ntfs-3g -{opts}'
+
+            # Generic auto (may pick ntfs3 or ntfs-3g depending on distro)
+            r = subprocess.run(
+                ['mount', '-t', 'ntfs', '-o', 'ro', device, mount_point],
+                capture_output=True, check=False, timeout=15
+            )
+            if r.returncode == 0:
+                return True, 'ntfs-generic'
+            return False, None
+
+        _WINDOWS_PATHS = [
+            'Windows', 'WINDOWS', 'windows',
+            'Program Files', 'Program Files (x86)', 'ProgramData',
+            'Users', 'System Volume Information',
+            'bootmgr', 'BOOTMGR', 'pagefile.sys', 'hiberfil.sys',
+            'Boot',
+        ]
+        _LINUX_PATHS = [
+            ('etc/fstab',          'fstab'),
+            ('etc/passwd',         'passwd'),
+            ('etc/hostname',       'hostname'),
+            ('etc/os-release',     'os-release'),
+            ('bin/bash',           'bash'),
+            ('usr/bin',            'usr/bin'),
+            ('var/log',            'var/log'),
+            ('etc/debian_version', 'debian_version'),
+            ('etc/redhat-release', 'redhat-release'),
+        ]
+
+        for part_num, part_dev in partitions:
+            print(f"\n  Checking partition {part_num}: {part_dev}")
+
+            # Determine which filesystem to try first
+            try:
+                blk = subprocess.run(
+                    ['blkid', '-o', 'value', '-s', 'TYPE', part_dev],
+                    capture_output=True, text=True, check=False, timeout=8
+                )
+                detected_fs = blk.stdout.strip().lower()
+            except Exception:
+                detected_fs = ''
+
+            if detected_fs in ('swap',):
+                print(f"    → Swap partition, skipping")
+                continue
+
+            with tempfile.TemporaryDirectory() as mnt:
+                mount_success = False
+                used_driver   = None
+
+                # Priority: detected FS first, then generic fallback list
+                if detected_fs in ('ntfs', 'bitlocker'):
+                    mount_success, used_driver = _try_mount_ntfs(part_dev, mnt)
+                elif detected_fs in _LINUX_FS:
+                    r = subprocess.run(
+                        ['mount', '-t', detected_fs, '-o', 'ro', part_dev, mnt],
+                        capture_output=True, check=False, timeout=15
+                    )
+                    if r.returncode == 0:
+                        mount_success, used_driver = True, detected_fs
+                elif detected_fs in ('vfat', 'fat16', 'fat32'):
+                    r = subprocess.run(
+                        ['mount', '-t', 'vfat', '-o', 'ro', part_dev, mnt],
+                        capture_output=True, check=False, timeout=10
+                    )
+                    if r.returncode == 0:
+                        mount_success, used_driver = True, 'vfat'
+
+                # Generic fallback when blkid was inconclusive
+                if not mount_success:
+                    for fs in ('auto', 'ext4', 'ext3', 'btrfs', 'xfs', 'vfat'):
+                        r = subprocess.run(
+                            ['mount', '-t', fs, '-o', 'ro', part_dev, mnt],
+                            capture_output=True, check=False, timeout=15
+                        )
+                        if r.returncode == 0:
+                            mount_success, used_driver = True, fs
+                            break
+
+                    # NTFS last resort with all options
+                    if not mount_success:
+                        mount_success, used_driver = _try_mount_ntfs(part_dev, mnt)
+
+                if not mount_success:
+                    print(f"    ⚠ Could not mount partition {part_num} with any driver")
+                    continue
+
+                print(f"    Mounted with: {used_driver}")
+                try:
+                    contents = os.listdir(mnt)[:20]
+                    print(f"    Contents: {contents}")
+                except OSError:
+                    contents = []
+
+                try:
+                    # ── Windows content check ────────────────────────────
+                    win_found = [x for x in _WINDOWS_PATHS
+                                 if os.path.exists(os.path.join(mnt, x))]
+                    if win_found:
+                        subprocess.run(['umount', mnt], check=False, timeout=10)
+                        print(f"\n✓ DETECTED (Phase 3): Windows "
+                              f"(found: {win_found[:3]})")
+                        print(f"{sep}\n")
+                        return 'windows'
+
+                    # ── EFI/Microsoft check ──────────────────────────────
+                    efi_dir = os.path.join(mnt, 'EFI')
+                    if os.path.isdir(efi_dir):
                         try:
-                            contents = os.listdir(mount_point)[:15]
-                            for item in contents:
-                                print(f"    - {item}")
-                        except OSError as list_e:
-                            print(f"    Error listing: {list_e}")
-                        
-                        # ===== CHECK FOR WINDOWS FIRST (more specific) =====
-                        print(f"\n  Checking for Windows indicators...")
-                        windows_indicators = [
-                            'Windows',
-                            'WINDOWS',
-                            'windows',
-                            'Program Files',
-                            'Program Files (x86)',
-                            'ProgramData',
-                            'Users',
-                            'System Volume Information',
-                            'Boot',
-                            'bootmgr',
-                            'BOOTMGR',
-                            'pagefile.sys',
-                            'hiberfil.sys',
-                        ]
-                        
-                        windows_found = []
-                        for win_indicator in windows_indicators:
-                            full_path = os.path.join(mount_point, win_indicator)
-                            if os.path.exists(full_path):
-                                windows_found.append(win_indicator)
-                                print(f"    ✓ Found Windows indicator: {win_indicator}")
-                        
-                        if windows_found:
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
-                            print(f"\n✓ DETECTED: Windows (found {len(windows_found)} indicators)")
-                            print(f"{'='*60}\n")
-                            return 'windows'
-                        
-                        # ===== CHECK FOR EFI/BOOT DIRECTORY =====
-                        print(f"\n  Checking for EFI/Boot indicators...")
-                        efi_path = os.path.join(mount_point, 'EFI')
-                        if os.path.exists(efi_path):
-                            try:
-                                efi_contents = os.listdir(efi_path)
-                                print(f"    EFI directory found with: {efi_contents}")
-                                
-                                if 'Microsoft' in efi_contents or 'Boot' in efi_contents:
-                                    subprocess.run(['umount', mount_point], check=False, timeout=10)
-                                    print(f"\n✓ DETECTED: Windows (found EFI/Microsoft or EFI/Boot)")
-                                    print(f"{'='*60}\n")
-                                    return 'windows'
-                            except OSError as efi_e:
-                                print(f"    Error reading EFI: {efi_e}")
-                        
-                        # ===== CHECK FOR LINUX INDICATORS =====
-                        print(f"\n  Checking for Linux indicators...")
-                        linux_indicators = [
-                            ('etc/fstab', 'Linux fstab'),
-                            ('etc/passwd', 'Linux passwd'),
-                            ('etc/hostname', 'Linux hostname'),
-                            ('etc/os-release', 'Linux os-release'),
-                            ('bin/bash', 'Linux bash'),
-                            ('usr/bin', 'Linux usr/bin'),
-                            ('var/log', 'Linux var/log'),
-                            ('root/.bashrc', 'Linux root bashrc'),
-                            ('etc/debian_version', 'Debian version'),
-                            ('etc/redhat-release', 'RedHat release'),
-                        ]
-                        
-                        linux_found = []
-                        for linux_path, description in linux_indicators:
-                            full_path = os.path.join(mount_point, linux_path)
-                            if os.path.exists(full_path):
-                                linux_found.append(description)
-                                print(f"    ✓ Found Linux indicator: {description} ({linux_path})")
-                        
-                        if linux_found:
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
-                            print(f"\n✓ DETECTED: Linux (found {len(linux_found)} indicators)")
-                            print(f"  Indicators: {', '.join(linux_found)}")
-                            print(f"{'='*60}\n")
+                            efi_contents_lower = [x.lower()
+                                                  for x in os.listdir(efi_dir)]
+                            if 'microsoft' in efi_contents_lower:
+                                subprocess.run(['umount', mnt],
+                                               check=False, timeout=10)
+                                print(f"\n✓ DETECTED (Phase 3): Windows (EFI/Microsoft)")
+                                print(f"{sep}\n")
+                                return 'windows'
+                        except OSError:
+                            pass
+
+                    # ── Linux content check ──────────────────────────────
+                    lin_found = [(d, n) for d, n in _LINUX_PATHS
+                                 if os.path.exists(os.path.join(mnt, d))]
+                    if lin_found:
+                        subprocess.run(['umount', mnt], check=False, timeout=10)
+                        print(f"\n✓ DETECTED (Phase 3): Linux "
+                              f"({', '.join(n for _, n in lin_found[:3])})")
+                        print(f"{sep}\n")
+                        return 'linux'
+
+                    # ── /boot or /grub ───────────────────────────────────
+                    for dname in ('boot', 'grub'):
+                        if os.path.isdir(os.path.join(mnt, dname)):
+                            subprocess.run(['umount', mnt],
+                                           check=False, timeout=10)
+                            print(f"\n✓ DETECTED (Phase 3): Linux (/{dname} found)")
+                            print(f"{sep}\n")
                             return 'linux'
-                        
-                        # ===== CHECK BOOT/GRUB DIRECTORY =====
-                        print(f"\n  Checking for GRUB/Boot directory...")
-                        boot_path = os.path.join(mount_point, 'boot')
-                        grub_path = os.path.join(mount_point, 'grub')
-                        
-                        if os.path.exists(boot_path):
-                            print(f"    ✓ Found /boot directory")
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
-                            print(f"\n✓ DETECTED: Linux (found /boot)")
-                            print(f"{'='*60}\n")
-                            return 'linux'
-                        
-                        if os.path.exists(grub_path):
-                            print(f"    ✓ Found /grub directory")
-                            subprocess.run(['umount', mount_point], check=False, timeout=10)
-                            print(f"\n✓ DETECTED: Linux (found /grub)")
-                            print(f"{'='*60}\n")
-                            return 'linux'
-                        
-                        # Cleanup
-                        subprocess.run(['umount', mount_point], check=False, timeout=10)
-                        
-                    except subprocess.TimeoutExpired as mount_timeout:
-                        print(f"  ✗ Timeout: {mount_timeout}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
-                    except subprocess.CalledProcessError as mount_e:
-                        print(f"  ✗ Mount failed: {mount_e}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
-                    except FileNotFoundError as mount_file:
-                        print(f"  ✗ Command not found: {mount_file}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
-                    except PermissionError as mount_perm:
-                        print(f"  ✗ Permission denied: {mount_perm}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
-                    except OSError as mount_os:
-                        print(f"  ✗ OS error: {mount_os}")
-                        subprocess.run(['umount', mount_point], check=False, timeout=5)
-            
-            print(f"\n✗ DETECTED: Unknown (could not determine OS)")
-            print(f"{'='*60}\n")
-            return 'unknown'
-            
-        except FileNotFoundError as e:
-            print(f"\n✗ ERROR: File not found: {e}")
-            print(f"{'='*60}\n")
-            return 'unknown'
-        except PermissionError as e:
-            print(f"\n✗ ERROR: Permission denied: {e}")
-            print(f"{'='*60}\n")
-            return 'unknown'
-        except OSError as e:
-            print(f"\n✗ ERROR: OS error: {e}")
-            print(f"{'='*60}\n")
-            return 'unknown'
-        except ValueError as e:
-            print(f"\n✗ ERROR: Value error: {e}")
-            print(f"{'='*60}\n")
+                finally:
+                    subprocess.run(['umount', mnt], check=False, timeout=10)
+
+        print(f"\n✗ DETECTED: Unknown (all 3 phases inconclusive)")
+        print(f"{sep}\n")
+        return 'unknown'
+
+    @staticmethod
+    def _detect_vm_os_safe(nbd_device):
+        """Public wrapper around detect_vm_os that always returns a string."""
+        try:
+            return QCow2CloneResizer.detect_vm_os(nbd_device)
+        except Exception as e:
+            print(f"detect_vm_os unexpected error: {type(e).__name__}: {e}")
             return 'unknown'
