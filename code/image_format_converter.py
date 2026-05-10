@@ -220,7 +220,7 @@ class ImageFormatConverter:
                                         style="TLabelframe")
         progress_frame.pack(fill="x", pady=(0, 16))
 
-        self.progress = ttk.Progressbar(progress_frame, mode='indeterminate', length=400)
+        self.progress = ttk.Progressbar(progress_frame, mode='determinate', maximum=100, length=400)
         self.progress.pack(fill="x", pady=(0, 8))
 
         self.progress_label = ttk.Label(progress_frame, text="Prêt à convertir",
@@ -484,13 +484,26 @@ class ImageFormatConverter:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=0
             )
 
-            for line in process.stdout:
-                line = line.strip()
-                if line and ('%' in line or '/' in line):
-                    self.update_progress(True, f"Conversion : {line}")
+            import re
+            buf = ""
+            while True:
+                ch = process.stdout.read(1)
+                if not ch:
+                    break
+                if ch in ('\r', '\n'):
+                    token = buf.strip()
+                    buf = ""
+                    if not token:
+                        continue
+                    match = re.search(r'\(\s*(\d+(?:\.\d+)?)\s*/\s*100%\)', token)
+                    if match:
+                        percent = float(match.group(1))
+                        self.update_progress(True, f"Conversion : {percent:.0f} %", percent)
+                else:
+                    buf += ch
 
             process.wait()
 
@@ -572,12 +585,12 @@ class ImageFormatConverter:
                 f"La conversion de l'image est terminée avec succès !\n\nFichier cible : {target_path}"
             )
 
-    def update_progress(self, active, status):
+    def update_progress(self, active, status, percent=None):
         def update():
             if active:
-                self.progress.start(10)
+                self.progress['value'] = percent if percent is not None else 0
             else:
-                self.progress.stop()
+                self.progress['value'] = 0
             self.progress_label.config(text=status)
             if not active:
                 self.status_label.config(text="Prêt - Sélectionnez une image pour commencer")
@@ -592,6 +605,6 @@ class ImageFormatConverter:
     def reset_ui(self):
         self.operation_active = False
         self.convert_btn.config(state="normal")
-        self.progress.stop()
+        self.progress['value'] = 0
         self.progress_label.config(text="Opération terminée")
         self.status_label.config(text="Opération terminée - Prêt pour une nouvelle conversion")
