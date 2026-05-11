@@ -5,6 +5,7 @@ Interface basée sur la disposition compacte de la fenêtre de chiffrement LUKS
 Logique et fonctionnalités reprises de image_format_converter
 """
 
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import os
@@ -508,7 +509,8 @@ class ImageFormatConverter:
             process.wait()
 
             if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, cmd, "Conversion failed")
+                raise subprocess.CalledProcessError(process.returncode, cmd, "Échec de la conversion")
+
 
             if not os.path.exists(target_path):
                 raise FileNotFoundError(f"Le fichier cible n'a pas été créé : {target_path}")
