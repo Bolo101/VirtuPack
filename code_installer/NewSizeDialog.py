@@ -1,326 +1,337 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from QCow2CloneResizer import QCow2CloneResizer
 import theme
 
+
 class NewSizeDialog:
-    """Dialog to enter new image size based on final partition layout"""
-    
+    """Boîte de dialogue pour saisir la nouvelle taille de l'image selon la disposition finale des partitions"""
+
+
     def __init__(self, parent, final_layout_info, original_size, partition_changes):
         self.parent = parent
         self.final_layout_info = final_layout_info
         self.original_size = original_size
         self.partition_changes = partition_changes
         self.result = None
-        
+
         try:
-            # Create dialog with better sizing
             self.dialog = tk.Toplevel(parent)
             self.dialog.title("Nouvelle taille d'image — Disposition finale des partitions")
-            theme.apply_theme(self.dialog)
-            
-            # Make dialog modal and ensure it stays on top
+
             self.dialog.transient(parent)
             self.dialog.grab_set()
             self.dialog.focus_force()
-            
-            # Get screen dimensions for proper sizing
-            screen_width = self.dialog.winfo_screenwidth()
+
+
+            # Appliquer le thème sombre
+            self._style = theme.apply_theme(self.dialog)
+
+            screen_width  = self.dialog.winfo_screenwidth()
             screen_height = self.dialog.winfo_screenheight()
-            
-            # Set dialog size to 80% of screen height, max 800px wide
-            dialog_width = min(800, int(screen_width * 0.6))
-            dialog_height = min(700, int(screen_height * 0.8))
-            
-            # Center on screen
-            x = (screen_width - dialog_width) // 2
+
+            dialog_width  = min(800, int(screen_width  * 0.6))
+            dialog_height = min(720, int(screen_height * 0.8))
+
+            x = (screen_width  - dialog_width)  // 2
             y = (screen_height - dialog_height) // 2
             self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
-            
-            # Make dialog resizable
             self.dialog.resizable(True, True)
-            self.dialog.minsize(600, 500)
-            
-            # Ensure dialog is properly displayed before continuing
+            self.dialog.minsize(600, 520)
             self.dialog.update_idletasks()
-            
+
             self.setup_ui()
-            
-            # Add proper dialog close handling
+
             self.dialog.protocol("WM_DELETE_WINDOW", self.skip_cloning)
-            
-            # CRITICAL: Use wait_window instead of custom event handling
-            # This is safe when called from root.after(0, ...) in the worker thread
+
             try:
                 self.dialog.lift()
-                self.dialog.attributes('-topmost', True)
-                self.dialog.after_idle(lambda: self.dialog.attributes('-topmost', False))
-                
-                # Wait for the dialog to complete
+                self.dialog.attributes("-topmost", True)
+                self.dialog.after_idle(lambda: self.dialog.attributes("-topmost", False))
                 self.dialog.wait_window()
-            except tk.TclError as tcl_e:
-                print(f"Dialog wait TCL error: {tcl_e}")
+            except tk.TclError as e:
+                print(f"Erreur TCL pendant l'attente de la boîte de dialogue : {e}")
                 self.result = None
-            except AttributeError as attr_e:
-                print(f"Dialog attribute error during wait: {attr_e}")
+            except AttributeError as e:
+                print(f"Erreur d'attribut de la boîte de dialogue pendant l'attente : {e}")
                 self.result = None
-            
-        except tk.TclError as tcl_e:
-            print(f"Tkinter error during dialog initialization: {tcl_e}")
-            self.result = None
-        except TypeError as type_e:
-            print(f"Type error during dialog initialization: {type_e}")
-            self.result = None
-        except AttributeError as attr_e:
-            print(f"Attribute error during dialog initialization: {attr_e}")
+
+        except (tk.TclError, TypeError, AttributeError) as e:
+            print(f"Erreur pendant l'initialisation de la boîte de dialogue : {e}")
             self.result = None
 
-
+    # ─────────────────────────────────────────────────────────
     def setup_ui(self):
-        """Setup dialog UI with scrollable content"""
+        """Configurer l'interface de la boîte de dialogue avec contenu défilable"""
         try:
-            # Create main container
-            main_container = ttk.Frame(self.dialog)
-            main_container.pack(fill="both", expand=True, padx=10, pady=10)
-            
-            # Create scrollable frame
-            canvas = tk.Canvas(main_container, bg=theme.BG, highlightthickness=0)
+            C = theme  # alias
+
+
+            # ── Arrière-plan racine ───────────────────────
+            self.dialog.configure(bg=C.BG)
+
+
+            # ── Conteneur externe ─────────────────────────
+            main_container = ttk.Frame(self.dialog, style="TFrame")
+            main_container.pack(fill="both", expand=True, padx=14, pady=14)
+
+
+            # ── Zone défilable ────────────────────────────
+            canvas = tk.Canvas(main_container)
+            theme.style_canvas(canvas)
             scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
-            scrollable_frame = ttk.Frame(canvas)
-            
+            scrollable_frame = ttk.Frame(canvas, style="TFrame")
+
             scrollable_frame.bind(
                 "<Configure>",
                 lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
             )
-            
             canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-            theme.style_canvas(canvas)
-            canvas.configure(yscrollcommand=scrollbar.set)
-            
+            canvas.configure(yscrollcommand=scrollbar.set, bg=C.BG, highlightthickness=0)
+
             canvas.pack(side="left", fill="both", expand=True)
             scrollbar.pack(side="right", fill="y")
-            
+
             def _on_mousewheel(event):
                 try:
-                    canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
                 except (AttributeError, ZeroDivisionError, TypeError):
                     pass
-            
+
             canvas.bind_all("<MouseWheel>", _on_mousewheel)
-            
-            # Main content in scrollable frame
-            content_frame = ttk.Frame(scrollable_frame, padding="15")
-            content_frame.pack(fill="both", expand=True)
-            
-            # Title
-            title = ttk.Label(content_frame, text="Créer une nouvelle image — sélection de la taille finale",
-                            font=theme.FONT_TITLE)
-            title.pack(pady=(0, 15))
-            
-            # GParted Changes Summary
-            changes_frame = ttk.LabelFrame(content_frame, text="Modifications des partitions GParted", padding="10")
-            changes_frame.pack(fill="x", pady=(0, 15))
-            
-            changes_info = "GParted operations completed successfully!\n\n"
-            changes_info += f"Partition modifications: {self.partition_changes}\n\n"
-            
-            if self.final_layout_info['partitions']:
-                changes_info += "Final partition layout:\n"
-                for i, part in enumerate(self.final_layout_info['partitions']):
-                    changes_info += f"  Partition {part['number']}: {part['start']} - {part['end']} ({part['size']})\n"
-            
-            changes_label = ttk.Label(changes_frame, text=changes_info, justify="left", font=("Arial", 9))
-            changes_label.pack()
-            
-            # Size Requirements
-            status_frame = ttk.LabelFrame(content_frame, text="Exigences de taille", padding="10")
-            status_frame.pack(fill="x", pady=(0, 15))
-            
-            last_partition_end = self.final_layout_info['last_partition_end_bytes']
-            min_size_with_buffer = self.final_layout_info['required_minimum_bytes']
-            
-            current_info = f"Original Image Size: {QCow2CloneResizer.format_size(self.original_size)}\n"
-            current_info += f"Last Partition Ends At: {QCow2CloneResizer.format_size(last_partition_end)}\n"
-            current_info += f"Required New Size: {QCow2CloneResizer.format_size(min_size_with_buffer)} (partition end + 200MB buffer)\n\n"
-            
-            if min_size_with_buffer < self.original_size:
-                saved = self.original_size - min_size_with_buffer
-                current_info += f"Space Savings: {QCow2CloneResizer.format_size(saved)} "
-                current_info += f"({(saved/self.original_size*100):.1f}% reduction)"
-            elif min_size_with_buffer > self.original_size:
-                added = min_size_with_buffer - self.original_size
-                current_info += f"Additional Space Needed: {QCow2CloneResizer.format_size(added)}"
+
+            content = ttk.Frame(scrollable_frame, style="TFrame", padding=(8, 8, 8, 8))
+            content.pack(fill="both", expand=True)
+
+
+            # ── En-tête ───────────────────────────────────
+            header = ttk.Frame(content, style="TFrame")
+            header.pack(fill="x", pady=(0, 18))
+
+            ttk.Label(header,
+                      text="Créer une nouvelle image",
+                      style="Title.TLabel"
+                      ).pack(anchor="w")
+            ttk.Label(header,
+                      text="Sélectionnez la taille finale de l'image QCOW2 optimisée",
+                      style="Subtitle.TLabel"
+                      ).pack(anchor="w", pady=(2, 0))
+
+
+            # ── Séparateur ────────────────────────────────
+            ttk.Separator(content, orient="horizontal").pack(fill="x", pady=(0, 18))
+
+
+            # ── Carte des modifications GParted ───────────
+            chg = ttk.LabelFrame(content, text="Modifications des partitions GParted", style="TLabelframe")
+            chg.pack(fill="x", pady=(0, 12))
+
+            chg_text = "Opérations GParted effectuées avec succès.\n\n"
+            chg_text += f"Modifications des partitions : {self.partition_changes}\n"
+            if self.final_layout_info.get("partitions"):
+                chg_text += "\nDisposition finale des partitions :\n"
+                for p in self.final_layout_info["partitions"]:
+                    chg_text += (
+                        f"  Partition {p['number']} :  "
+                        f"{p['start']} → {p['end']}  ({p['size']})\n"
+                    )
+
+            lbl_chg = ttk.Label(chg, text=chg_text, justify="left",
+                                 font=C.FONT_NORMAL, style="Card.TLabel")
+            lbl_chg.pack(anchor="w")
+
+
+            # ── Carte des exigences de taille ─────────────
+            req = ttk.LabelFrame(content, text="Exigences de taille", style="TLabelframe")
+            req.pack(fill="x", pady=(0, 12))
+
+            last_end    = self.final_layout_info["last_partition_end_bytes"]
+            min_size    = self.final_layout_info["required_minimum_bytes"]
+
+            grid = ttk.Frame(req, style="Card.TFrame")
+            grid.pack(fill="x")
+
+            rows = [
+                ("Taille originale de l'image",
+                 QCow2CloneResizer.format_size(self.original_size), "Card.TLabel"),
+                ("Fin de la dernière partition",
+                 QCow2CloneResizer.format_size(last_end), "Card.TLabel"),
+                ("Nouvelle taille requise (+ tampon de 200 Mo)",
+                 QCow2CloneResizer.format_size(min_size), "Card.TLabel"),
+            ]
+            for r, (lbl, val, sty) in enumerate(rows):
+                ttk.Label(grid, text=lbl, style="Card.Muted.TLabel").grid(
+                    row=r, column=0, sticky="w", pady=2)
+                ttk.Label(grid, text=val, style=sty, font=C.FONT_NORMAL).grid(
+                    row=r, column=1, sticky="w", padx=(20, 0), pady=2)
+
+
+            # Économie / espace supplémentaire
+            delta_frame = ttk.Frame(req, style="Card.TFrame")
+            delta_frame.pack(fill="x", pady=(8, 0))
+            if min_size < self.original_size:
+                saved = self.original_size - min_size
+                ttk.Label(delta_frame,
+                          text=f"Espace économisé : {QCow2CloneResizer.format_size(saved)} "
+                               f"({saved / self.original_size * 100:.1f}% de réduction)",
+                          style="Success.TLabel"
+                          ).pack(anchor="w")
+            elif min_size > self.original_size:
+                extra = min_size - self.original_size
+                ttk.Label(delta_frame,
+                          text=f"Espace supplémentaire requis : {QCow2CloneResizer.format_size(extra)}",
+                          style="Warning.TLabel"
+                          ).pack(anchor="w")
             else:
-                current_info += f"Same space requirements as original"
-            
-            status_label = ttk.Label(status_frame, text=current_info, justify="left", font=("Arial", 9))
-            status_label.pack()
-            
-            # Size Selection
-            size_frame = ttk.LabelFrame(content_frame, text="Sélection de la nouvelle taille", padding="10")
-            size_frame.pack(fill="x", pady=(0, 15))
-            
+                ttk.Label(delta_frame,
+                          text="Même espace requis que l'original",
+                          style="Info.TLabel"
+                          ).pack(anchor="w")
+
+
+            # ── Carte de sélection de la taille ───────────
+            sel = ttk.LabelFrame(content, text="Sélection de la nouvelle taille", style="TLabelframe")
+            sel.pack(fill="x", pady=(0, 12))
+
             self.choice = tk.StringVar(value="calculated")
-            
-            # Option 1: Use calculated size (recommended)
-            calc_frame = ttk.Frame(size_frame)
-            calc_frame.pack(fill="x", pady=2)
-            calc_radio = ttk.Radiobutton(calc_frame, text=f"Use Calculated Size: {QCow2CloneResizer.format_size(min_size_with_buffer)}", 
-                                        variable=self.choice, value="calculated")
-            calc_radio.pack(side="left")
-            ttk.Label(calc_frame, text="(RECOMMANDÉ)", font=theme.FONT_SMALL, foreground=theme.SUCCESS).pack(side="left", padx=(5, 0))
-            
-            # Option 2: Same as original (if sufficient)
-            if self.original_size >= min_size_with_buffer:
-                ttk.Radiobutton(size_frame, text=f"Keep Original Size: {QCow2CloneResizer.format_size(self.original_size)} (no space savings)", 
-                            variable=self.choice, value="original").pack(anchor="w", pady=2)
+
+
+            # Option 1 – calculée (recommandée)
+            row1 = ttk.Frame(sel, style="Card.TFrame")
+            row1.pack(fill="x", pady=4)
+            ttk.Radiobutton(
+                row1,
+                text=f"Utiliser la taille calculée : {QCow2CloneResizer.format_size(min_size)}",
+                variable=self.choice,
+                value="calculated",
+                style="TRadiobutton",
+            ).pack(side="left")
+            ttk.Label(row1, text="RECOMMANDÉ", style="Success.TLabel",
+                      font=("Segoe UI", 8, "bold")).pack(side="left", padx=(10, 0))
+
+
+            # Option 2 – taille d'origine (si suffisante)
+            if self.original_size >= min_size:
+                ttk.Radiobutton(
+                    sel,
+                    text=(f"Conserver la taille originale : "
+                          f"{QCow2CloneResizer.format_size(self.original_size)} "
+                          f"(aucune économie d'espace)"),
+                    variable=self.choice,
+                    value="original",
+                    style="TRadiobutton",
+                ).pack(anchor="w", pady=4)
             else:
-                shortage = min_size_with_buffer - self.original_size
-                ttk.Label(size_frame, text=f"Taille originale insuffisante — il manque {QCow2CloneResizer.format_size(shortage)}",
-                        foreground=theme.ERROR, font=theme.FONT_SMALL).pack(anchor="w", pady=2)
-            
-            # Option 3: Custom size
-            custom_frame = ttk.Frame(size_frame)
-            custom_frame.pack(fill="x", pady=(8, 0))
-            
-            ttk.Radiobutton(custom_frame, text="Custom size:", 
-                        variable=self.choice, value="custom").pack(side="left")
-            
-            default_gb = max(1, int(min_size_with_buffer / (1024**3)) + 1)
+                shortage = min_size - self.original_size
+                ttk.Label(sel,
+                          text=(f"Taille originale insuffisante — "
+                                f"{QCow2CloneResizer.format_size(shortage)} supplémentaire(s) nécessaire(s)"),
+                          style="Error.TLabel"
+                          ).pack(anchor="w", pady=4)
+
+
+            # Option 3 – personnalisée
+            row3 = ttk.Frame(sel, style="Card.TFrame")
+            row3.pack(fill="x", pady=4)
+            ttk.Radiobutton(row3, text="Taille personnalisée :", variable=self.choice,
+                             value="custom", style="TRadiobutton").pack(side="left")
+
+            default_gb = max(1, int(min_size / (1024 ** 3)) + 1)
             self.custom_size = tk.StringVar(value=f"{default_gb}G")
-            custom_entry = ttk.Entry(custom_frame, textvariable=self.custom_size, width=12, font=("Arial", 9))
-            custom_entry.pack(side="left", padx=(10, 10))
-            
-            ttk.Label(custom_frame, text="(e.g. 100G, 512M, 2T)", font=("Arial", 8)).pack(side="left")
-            
-            # Show minimum size warning
-            warning_frame = ttk.Frame(size_frame)
-            warning_frame.pack(fill="x", pady=(8, 0))
-            ttk.Label(warning_frame, text=f"⚠  Taille minimale requise : {QCow2CloneResizer.format_size(min_size_with_buffer)}",
-                    font=theme.FONT_SMALL, foreground=theme.WARNING).pack(anchor="w")
-            
-            # What Happens Next
-            exp_frame = ttk.LabelFrame(content_frame, text="Prochaines étapes", padding="10")
-            exp_frame.pack(fill="x", pady=(0, 20))
-            
-            explanation = ("1. Create new empty image with selected size (using preallocation=metadata)\n"
-                        "2. Copy partition table structure from current image\n"
-                        "3. Clone each partition with all your GParted changes\n"
-                        "4. Preserve bootloader and all modifications\n\n"
-                        "All your partition resizing and changes will be preserved.")
-            
-            exp_label = ttk.Label(exp_frame, text=explanation, wraplength=500, justify="left", font=("Arial", 9))
-            exp_label.pack()
-            
-            # Label d'erreur inline (remplace messagebox)
-            self._error_lbl = tk.Label(main_container, text="", bg=theme.BG,
-                                       fg=theme.ERROR, font=theme.FONT_SMALL,
-                                       wraplength=500, justify="left")
-            self._error_lbl.pack(anchor="w", padx=4, pady=(0, 2))
+            entry = ttk.Entry(row3, textvariable=self.custom_size, width=12,
+                               font=C.FONT_NORMAL, style="TEntry")
+            entry.pack(side="left", padx=(12, 8))
+            ttk.Label(row3, text="ex. 100G · 512M · 2T",
+                       style="Card.Muted.TLabel").pack(side="left")
 
-            # Buttons outside scrollable area
-            button_container = ttk.Frame(main_container)
-            button_container.pack(fill="x", pady=(10, 0))
-            
-            separator = ttk.Separator(button_container, orient="horizontal")
-            separator.pack(fill="x", pady=(0, 10))
-            
-            button_frame = ttk.Frame(button_container)
-            button_frame.pack(fill="x")
-            
-            create_btn = ttk.Button(button_frame, text="Créer la nouvelle image optimisée",
-                                style="Primary.TButton",
-                                command=self.create_new)
-            create_btn.pack(side="right", padx=(10, 0), pady=5)
-            
-            cancel_btn = ttk.Button(button_frame, text="Ignorer le clonage",
-                                command=self.skip_cloning)
-            cancel_btn.pack(side="right", pady=5)
-            
-            self.dialog.bind('<Return>', lambda e: self.create_new())
-            self.dialog.bind('<Escape>', lambda e: self.skip_cloning())
-            
+
+            # Avertissement minimum
+            warn = ttk.Frame(sel, style="Card.TFrame")
+            warn.pack(fill="x", pady=(8, 0))
+            ttk.Label(warn,
+                      text=f"⚠  Minimum requis : {QCow2CloneResizer.format_size(min_size)}",
+                      style="Warning.TLabel"
+                      ).pack(anchor="w")
+
+
+            # ── Carte des prochaines étapes ───────────────
+            nxt = ttk.LabelFrame(content, text="Prochaines étapes", style="TLabelframe")
+            nxt.pack(fill="x", pady=(0, 20))
+
+            steps = [
+                "1.  Créer une nouvelle image vide avec la taille sélectionnée (preallocation=metadata)",
+                "2.  Copier la structure de la table de partitions de l'image source",
+                "3.  Cloner chaque partition avec toutes les modifications GParted",
+                "4.  Préserver le chargeur de démarrage et toutes les modifications",
+            ]
+            for step in steps:
+                ttk.Label(nxt, text=step, style="Card.TLabel",
+                           font=C.FONT_NORMAL).pack(anchor="w", pady=1)
+
+            ttk.Label(nxt, text="\nToutes les modifications de partitionnement seront conservées.",
+                       style="Info.TLabel").pack(anchor="w", pady=(4, 0))
+
+
+            # ── Barre de boutons fixe ─────────────────────
+            bar = ttk.Frame(main_container, style="TFrame")
+            bar.pack(fill="x", pady=(12, 0))
+
+            ttk.Separator(bar, orient="horizontal").pack(fill="x", pady=(0, 10))
+
+            btn_row = ttk.Frame(bar, style="TFrame")
+            btn_row.pack(fill="x")
+
+            skip_btn = ttk.Button(btn_row, text="Ignorer le clonage",
+                                   command=self.skip_cloning, style="TButton")
+            skip_btn.pack(side="right", padx=(8, 0))
+
+            create_btn = ttk.Button(btn_row, text="Créer la nouvelle image optimisée",
+                                     command=self.create_new, style="Primary.TButton")
+            create_btn.pack(side="right")
+
+            self.dialog.bind("<Return>",  lambda e: self.create_new())
+            self.dialog.bind("<Escape>",  lambda e: self.skip_cloning())
             create_btn.focus_set()
-            
-        except tk.TclError as tcl_e:
-            print(f"Tkinter error during UI setup: {tcl_e}")
-            self._create_fallback_ui()
-        except KeyError as key_e:
-            print(f"Missing key in layout_info during UI setup: {key_e}")
-            self._create_fallback_ui()
-        except TypeError as type_e:
-            print(f"Type error in UI setup: {type_e}")
-            self._create_fallback_ui()
-        except AttributeError as attr_e:
-            print(f"Attribute error during UI setup: {attr_e}")
-            self._create_fallback_ui()
-        except ValueError as val_e:
-            print(f"Value error during UI setup: {val_e}")
-            self._create_fallback_ui()
-    
-    def _show_error(self, message: str):
-        """Affiche un message d'erreur inline sans pop-up."""
-        try:
-            self._error_lbl.config(text=f"⚠  {message}")
-        except AttributeError:
-            print(f"Dialog error: {message}")
 
+        except (tk.TclError, KeyError, TypeError, AttributeError, ValueError) as e:
+            print(f"Erreur pendant la configuration de l'interface : {e}")
+            self._create_fallback_ui()
+
+    # ─────────────────────────────────────────────────────────
     def _create_fallback_ui(self):
-        """Create minimal fallback UI if main UI setup fails"""
+        """Interface minimale de secours"""
         try:
-            fallback_frame = ttk.Frame(self.dialog, padding="20")
-            fallback_frame.pack(fill="both", expand=True)
-            
-            ttk.Label(fallback_frame, text="Dialog Error - Using Fallback Interface", 
-                    font=("Arial", 12, "bold"), foreground="red").pack(pady=(0, 20))
-            
-            ttk.Label(fallback_frame, text="Use calculated minimum size?", 
-                    font=("Arial", 10)).pack(pady=(0, 20))
-            
-            button_frame = ttk.Frame(fallback_frame)
-            button_frame.pack(fill="x")
-            
-            ttk.Button(button_frame, text="Yes - Create New Image", 
-                    command=self._fallback_create).pack(side="right", padx=(10, 0))
-            ttk.Button(button_frame, text="No - Skip Cloning", 
-                    command=self.skip_cloning).pack(side="right")
-            
-        except tk.TclError as tcl_e:
-            print(f"Tkinter error in fallback UI: {tcl_e}")
-            self.result = None
-        except AttributeError as attr_e:
-            print(f"Attribute error in fallback UI: {attr_e}")
-            self.result = None
-        except TypeError as type_e:
-            print(f"Type error in fallback UI: {type_e}")
+            frame = ttk.Frame(self.dialog, padding="20")
+            frame.pack(fill="both", expand=True)
+            ttk.Label(frame, text="Erreur de dialogue — Interface de secours",
+                       font=theme.FONT_LABEL, foreground=theme.ERROR).pack(pady=(0, 20))
+            ttk.Label(frame, text="Utiliser la taille minimale calculée ?",
+                       font=theme.FONT_NORMAL).pack(pady=(0, 20))
+            bf = ttk.Frame(frame)
+            bf.pack(fill="x")
+            ttk.Button(bf, text="Oui — Créer la nouvelle image",
+                        command=self._fallback_create, style="Primary.TButton").pack(side="right", padx=(10, 0))
+            ttk.Button(bf, text="Non — Ignorer le clonage",
+                        command=self.skip_cloning).pack(side="right")
+        except (tk.TclError, AttributeError, TypeError) as e:
+            print(f"Erreur dans l'interface de secours : {e}")
             self.result = None
 
-    
     def _fallback_create(self):
-        """Fallback create method using minimum size"""
         try:
-            self.result = self.final_layout_info['required_minimum_bytes']
-            # CRITICAL: Just destroy, don't call quit()
+            self.result = self.final_layout_info["required_minimum_bytes"]
             self.dialog.destroy()
-        except KeyError as key_e:
-            print(f"Missing 'required_minimum_bytes' key in fallback create: {key_e}")
+        except (KeyError, tk.TclError, AttributeError) as e:
+            print(f"Erreur dans la création de secours : {e}")
             self.result = None
             self.skip_cloning()
-        except tk.TclError as tcl_e:
-            print(f"Tkinter error in fallback create: {tcl_e}")
-            self.result = None
-            self.skip_cloning()
-        except AttributeError as attr_e:
-            print(f"Attribute error in fallback create: {attr_e}")
-            self.result = None
-            self.skip_cloning()
-    
+
+    # ─────────────────────────────────────────────────────────
     def create_new(self):
-        """Create new image with selected size"""
         try:
-            choice = self.choice.get()
-            min_size = self.final_layout_info['required_minimum_bytes']
-            
+            choice   = self.choice.get()
+            min_size = self.final_layout_info["required_minimum_bytes"]
+
             if choice == "calculated":
                 new_size = min_size
             elif choice == "original":
@@ -328,48 +339,44 @@ class NewSizeDialog:
             elif choice == "custom":
                 new_size = QCow2CloneResizer.parse_size(self.custom_size.get())
             else:
-                raise ValueError("Invalid choice")
-            
-            # Validate size
+                raise ValueError("Choix invalide")
+
+
             if new_size < min_size:
                 shortage = min_size - new_size
-                self._show_error(
-                    f"Taille insuffisante — minimum : {QCow2CloneResizer.format_size(min_size)}, "
-                    f"sélection : {QCow2CloneResizer.format_size(new_size)}, "
-                    f"manque : {QCow2CloneResizer.format_size(shortage)}")
+                messagebox.showerror(
+                    "Taille insuffisante",
+                    f"Taille insuffisante !\n\n"
+                    f"Minimum requis : {QCow2CloneResizer.format_size(min_size)}\n"
+                    f"Votre sélection : {QCow2CloneResizer.format_size(new_size)}\n"
+                    f"Il manque {QCow2CloneResizer.format_size(shortage)}.",
+                    parent=self.dialog,
+                )
                 return
-            
+
             self.result = new_size
-            print(f"NewSizeDialog: User selected size {new_size} bytes")
-            
+            print(f"NewSizeDialog : l'utilisateur a sélectionné une taille de {new_size} octets")
             self.dialog.destroy()
-            
-        except KeyError as key_e:
-            print(f"Missing key in dialog data: {key_e}")
-            self._show_error(f"Donnée de configuration manquante : {key_e}")
-        except ValueError as val_e:
-            self._show_error(f"Taille invalide — {val_e}")
-        except tk.TclError as tcl_e:
-            print(f"Tkinter error during create: {tcl_e}")
+
+        except KeyError as e:
+            messagebox.showerror("Erreur de données", f"Donnée de configuration manquante : {e}", parent=self.dialog)
+        except ValueError as e:
+            messagebox.showerror("Taille invalide", f"Erreur d'analyse de la taille : {e}", parent=self.dialog)
+        except tk.TclError as e:
+            print(f"Erreur Tkinter pendant la création : {e}")
             try:
-                self.result = self.final_layout_info['required_minimum_bytes']
+                self.result = self.final_layout_info["required_minimum_bytes"]
                 self.dialog.destroy()
             except (KeyError, tk.TclError):
                 self.result = None
-        except AttributeError as attr_e:
-            print(f"Attribute error: {attr_e}")
-            self._show_error(f"Attribut de configuration manquant : {attr_e}")
-    
+        except AttributeError as e:
+            messagebox.showerror("Erreur", f"Attribut de configuration manquant : {e}", parent=self.dialog)
+
     def skip_cloning(self):
-        """Skip cloning - keep original image with changes"""
         try:
             self.result = None
-            print("NewSizeDialog: User skipped cloning")
-            # CRITICAL: Just destroy, don't call quit()
+            print("NewSizeDialog : l'utilisateur a ignoré le clonage")
             self.dialog.destroy()
-        except tk.TclError as tcl_e:
-            print(f"Tkinter error destroying dialog on skip: {tcl_e}")
-            self.result = None
-        except AttributeError as attr_e:
-            print(f"Attribute error destroying dialog on skip: {attr_e}")
+        except (tk.TclError, AttributeError) as e:
+            print(f"Erreur lors de la destruction de la boîte de dialogue pendant l'annulation : {e}")
             self.result = None
