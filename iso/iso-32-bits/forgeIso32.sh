@@ -11,7 +11,7 @@
 set -e
 
 # Variables
-ISO_NAME="$(pwd)/VirtuPack-v3.0-32bits.iso"
+ISO_NAME="$(pwd)/VirtuPack-v3.1-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../../code"
 

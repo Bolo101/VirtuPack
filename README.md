@@ -76,11 +76,11 @@ Toutes les fonctionnalités sont disponibles pour l’utilisateur, à l’except
 ## Démarrage rapide
 
 ### Télécharger l’ISO précompilée (recommandé)
-**[Télécharger l’ISO VirtuPack](https://archive.org/details/virtu-pack-v-3.0)**
+**[Télécharger l’ISO VirtuPack](https://archive.org/details/virtu-pack-v-3.1)**
 
 ```txt
-- VirtuPack-v3.0-64bits.iso : 6151a14ca7a9595abd7f858226113e61aeef4c0ad9039a8332ba9f5b803387b2
-- VirtuPack-v3.0-32bits.iso : 9cfea2fd1059d3d3fbed6ba27480cbb91517bbe145f9bdb960a55d7b839c9c39
+- VirtuPack-v3.1-64bits.iso : 6151a14ca7a9595abd7f858226113e61aeef4c0ad9039a8332ba9f5b803387b2
+- VirtuPack-v3.1-32bits.iso : 9cfea2fd1059d3d3fbed6ba27480cbb91517bbe145f9bdb960a55d7b839c9c39
 ```
 
 Choisissez la version d’ISO souhaitée : 32 bits ou 64 bits.
