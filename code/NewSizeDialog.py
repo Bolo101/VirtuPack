@@ -5,7 +5,8 @@ import theme
 
 
 class NewSizeDialog:
-    """Dialog to enter new image size based on final partition layout"""
+    """Boîte de dialogue pour saisir la nouvelle taille de l'image selon la disposition finale des partitions"""
+
 
     def __init__(self, parent, final_layout_info, original_size, partition_changes):
         self.parent = parent
@@ -22,7 +23,8 @@ class NewSizeDialog:
             self.dialog.grab_set()
             self.dialog.focus_force()
 
-            # Apply dark theme
+
+            # Appliquer le thème sombre
             self._style = theme.apply_theme(self.dialog)
 
             screen_width  = self.dialog.winfo_screenwidth()
@@ -48,30 +50,33 @@ class NewSizeDialog:
                 self.dialog.after_idle(lambda: self.dialog.attributes("-topmost", False))
                 self.dialog.wait_window()
             except tk.TclError as e:
-                print(f"Dialog wait TCL error: {e}")
+                print(f"Erreur TCL pendant l'attente de la boîte de dialogue : {e}")
                 self.result = None
             except AttributeError as e:
-                print(f"Dialog attribute error during wait: {e}")
+                print(f"Erreur d'attribut de la boîte de dialogue pendant l'attente : {e}")
                 self.result = None
 
         except (tk.TclError, TypeError, AttributeError) as e:
-            print(f"Error during dialog initialization: {e}")
+            print(f"Erreur pendant l'initialisation de la boîte de dialogue : {e}")
             self.result = None
 
     # ─────────────────────────────────────────────────────────
     def setup_ui(self):
-        """Setup dialog UI with scrollable content"""
+        """Configurer l'interface de la boîte de dialogue avec contenu défilable"""
         try:
             C = theme  # alias
 
-            # ── Root background ───────────────────────────
+
+            # ── Arrière-plan racine ───────────────────────
             self.dialog.configure(bg=C.BG)
 
-            # ── Outer container ───────────────────────────
+
+            # ── Conteneur externe ─────────────────────────
             main_container = ttk.Frame(self.dialog, style="TFrame")
             main_container.pack(fill="both", expand=True, padx=14, pady=14)
 
-            # ── Scrollable area ───────────────────────────
+
+            # ── Zone défilable ────────────────────────────
             canvas = tk.Canvas(main_container)
             theme.style_canvas(canvas)
             scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
@@ -98,7 +103,8 @@ class NewSizeDialog:
             content = ttk.Frame(scrollable_frame, style="TFrame", padding=(8, 8, 8, 8))
             content.pack(fill="both", expand=True)
 
-            # ── Header ────────────────────────────────────
+
+            # ── En-tête ───────────────────────────────────
             header = ttk.Frame(content, style="TFrame")
             header.pack(fill="x", pady=(0, 18))
 
@@ -111,10 +117,12 @@ class NewSizeDialog:
                       style="Subtitle.TLabel"
                       ).pack(anchor="w", pady=(2, 0))
 
-            # ── Divider ───────────────────────────────────
+
+            # ── Séparateur ────────────────────────────────
             ttk.Separator(content, orient="horizontal").pack(fill="x", pady=(0, 18))
 
-            # ── GParted Changes card ──────────────────────
+
+            # ── Carte des modifications GParted ───────────
             chg = ttk.LabelFrame(content, text="Modifications des partitions GParted", style="TLabelframe")
             chg.pack(fill="x", pady=(0, 12))
 
@@ -132,7 +140,8 @@ class NewSizeDialog:
                                  font=C.FONT_NORMAL, style="Card.TLabel")
             lbl_chg.pack(anchor="w")
 
-            # ── Size Requirements card ────────────────────
+
+            # ── Carte des exigences de taille ─────────────
             req = ttk.LabelFrame(content, text="Exigences de taille", style="TLabelframe")
             req.pack(fill="x", pady=(0, 12))
 
@@ -147,7 +156,7 @@ class NewSizeDialog:
                  QCow2CloneResizer.format_size(self.original_size), "Card.TLabel"),
                 ("Fin de la dernière partition",
                  QCow2CloneResizer.format_size(last_end), "Card.TLabel"),
-                ("Nouvelle taille requise (+ tampon 200 Mo)",
+                ("Nouvelle taille requise (+ tampon de 200 Mo)",
                  QCow2CloneResizer.format_size(min_size), "Card.TLabel"),
             ]
             for r, (lbl, val, sty) in enumerate(rows):
@@ -156,7 +165,8 @@ class NewSizeDialog:
                 ttk.Label(grid, text=val, style=sty, font=C.FONT_NORMAL).grid(
                     row=r, column=1, sticky="w", padx=(20, 0), pady=2)
 
-            # Savings / extra space
+
+            # Économie / espace supplémentaire
             delta_frame = ttk.Frame(req, style="Card.TFrame")
             delta_frame.pack(fill="x", pady=(8, 0))
             if min_size < self.original_size:
@@ -178,13 +188,15 @@ class NewSizeDialog:
                           style="Info.TLabel"
                           ).pack(anchor="w")
 
-            # ── Size selection card ───────────────────────
+
+            # ── Carte de sélection de la taille ───────────
             sel = ttk.LabelFrame(content, text="Sélection de la nouvelle taille", style="TLabelframe")
             sel.pack(fill="x", pady=(0, 12))
 
             self.choice = tk.StringVar(value="calculated")
 
-            # Option 1 – calculated (recommended)
+
+            # Option 1 – calculée (recommandée)
             row1 = ttk.Frame(sel, style="Card.TFrame")
             row1.pack(fill="x", pady=4)
             ttk.Radiobutton(
@@ -197,7 +209,8 @@ class NewSizeDialog:
             ttk.Label(row1, text="RECOMMANDÉ", style="Success.TLabel",
                       font=("Segoe UI", 8, "bold")).pack(side="left", padx=(10, 0))
 
-            # Option 2 – original size (if sufficient)
+
+            # Option 2 – taille d'origine (si suffisante)
             if self.original_size >= min_size:
                 ttk.Radiobutton(
                     sel,
@@ -212,11 +225,12 @@ class NewSizeDialog:
                 shortage = min_size - self.original_size
                 ttk.Label(sel,
                           text=(f"Taille originale insuffisante — "
-                                f"nécessite {QCow2CloneResizer.format_size(shortage)} supplémentaires"),
+                                f"{QCow2CloneResizer.format_size(shortage)} supplémentaire(s) nécessaire(s)"),
                           style="Error.TLabel"
                           ).pack(anchor="w", pady=4)
 
-            # Option 3 – custom
+
+            # Option 3 – personnalisée
             row3 = ttk.Frame(sel, style="Card.TFrame")
             row3.pack(fill="x", pady=4)
             ttk.Radiobutton(row3, text="Taille personnalisée :", variable=self.choice,
@@ -230,7 +244,8 @@ class NewSizeDialog:
             ttk.Label(row3, text="ex. 100G · 512M · 2T",
                        style="Card.Muted.TLabel").pack(side="left")
 
-            # Minimum warning
+
+            # Avertissement minimum
             warn = ttk.Frame(sel, style="Card.TFrame")
             warn.pack(fill="x", pady=(8, 0))
             ttk.Label(warn,
@@ -238,7 +253,8 @@ class NewSizeDialog:
                       style="Warning.TLabel"
                       ).pack(anchor="w")
 
-            # ── What happens next card ────────────────────
+
+            # ── Carte des prochaines étapes ───────────────
             nxt = ttk.LabelFrame(content, text="Prochaines étapes", style="TLabelframe")
             nxt.pack(fill="x", pady=(0, 20))
 
@@ -255,7 +271,8 @@ class NewSizeDialog:
             ttk.Label(nxt, text="\nToutes les modifications de partitionnement seront conservées.",
                        style="Info.TLabel").pack(anchor="w", pady=(4, 0))
 
-            # ── Fixed button bar ───────────────────────────
+
+            # ── Barre de boutons fixe ─────────────────────
             bar = ttk.Frame(main_container, style="TFrame")
             bar.pack(fill="x", pady=(12, 0))
 
@@ -277,12 +294,12 @@ class NewSizeDialog:
             create_btn.focus_set()
 
         except (tk.TclError, KeyError, TypeError, AttributeError, ValueError) as e:
-            print(f"Error during UI setup: {e}")
+            print(f"Erreur pendant la configuration de l'interface : {e}")
             self._create_fallback_ui()
 
     # ─────────────────────────────────────────────────────────
     def _create_fallback_ui(self):
-        """Minimal fallback UI"""
+        """Interface minimale de secours"""
         try:
             frame = ttk.Frame(self.dialog, padding="20")
             frame.pack(fill="both", expand=True)
@@ -297,7 +314,7 @@ class NewSizeDialog:
             ttk.Button(bf, text="Non — Ignorer le clonage",
                         command=self.skip_cloning).pack(side="right")
         except (tk.TclError, AttributeError, TypeError) as e:
-            print(f"Error in fallback UI: {e}")
+            print(f"Erreur dans l'interface de secours : {e}")
             self.result = None
 
     def _fallback_create(self):
@@ -305,7 +322,7 @@ class NewSizeDialog:
             self.result = self.final_layout_info["required_minimum_bytes"]
             self.dialog.destroy()
         except (KeyError, tk.TclError, AttributeError) as e:
-            print(f"Error in fallback create: {e}")
+            print(f"Erreur dans la création de secours : {e}")
             self.result = None
             self.skip_cloning()
 
@@ -322,7 +339,8 @@ class NewSizeDialog:
             elif choice == "custom":
                 new_size = QCow2CloneResizer.parse_size(self.custom_size.get())
             else:
-                raise ValueError("Invalid choice")
+                raise ValueError("Choix invalide")
+
 
             if new_size < min_size:
                 shortage = min_size - new_size
@@ -337,7 +355,7 @@ class NewSizeDialog:
                 return
 
             self.result = new_size
-            print(f"NewSizeDialog: User selected size {new_size} bytes")
+            print(f"NewSizeDialog : l'utilisateur a sélectionné une taille de {new_size} octets")
             self.dialog.destroy()
 
         except KeyError as e:
@@ -345,7 +363,7 @@ class NewSizeDialog:
         except ValueError as e:
             messagebox.showerror("Taille invalide", f"Erreur d'analyse de la taille : {e}", parent=self.dialog)
         except tk.TclError as e:
-            print(f"Tkinter error during create: {e}")
+            print(f"Erreur Tkinter pendant la création : {e}")
             try:
                 self.result = self.final_layout_info["required_minimum_bytes"]
                 self.dialog.destroy()
@@ -357,8 +375,8 @@ class NewSizeDialog:
     def skip_cloning(self):
         try:
             self.result = None
-            print("NewSizeDialog: User skipped cloning")
+            print("NewSizeDialog : l'utilisateur a ignoré le clonage")
             self.dialog.destroy()
         except (tk.TclError, AttributeError) as e:
-            print(f"Error destroying dialog on skip: {e}")
+            print(f"Erreur lors de la destruction de la boîte de dialogue pendant l'annulation : {e}")
             self.result = None

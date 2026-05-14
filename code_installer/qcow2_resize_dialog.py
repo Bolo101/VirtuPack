@@ -92,8 +92,8 @@ class QCow2CloneResizerGUI:
             
             # Description
             desc_label = ttk.Label(main_frame,
-                                text="The following temporary files were created during the cloning operation.\n"
-                                    "Select which files to delete. The original image will be preserved.",
+                                text="Les fichiers temporaires suivants ont été créés lors de l'opération de clonage.\n"
+                                    "Sélectionnez les fichiers à supprimer. L'image originale sera conservée.",
                                 font=("Arial", 10),
                                 wraplength=600,
                                 justify="left")
@@ -122,7 +122,7 @@ class QCow2CloneResizerGUI:
                     size_str = self._format_size_compact(size)
                     display_text = f"{file_path.name} ({size_str})"
                 except OSError:
-                    display_text = f"{file_path.name} (size unknown)"
+                    display_text = f"{file_path.name} (taille inconnue)"
                 
                 file_listbox.insert("end", display_text)
                 file_info.append((file_path, display_text))
@@ -168,7 +168,7 @@ class QCow2CloneResizerGUI:
             info_frame.pack(fill="x", pady=(0, 15))
             
             info_label = ttk.Label(info_frame,
-                                text="⚠ WARNING: Files will be permanently deleted\n"
+                                text="⚠ ATTENTION : Les fichiers seront supprimés définitivement\n"
                                     "Image originale : " + original_path.name + " (sera conservée)",
                                 font=("Arial", 9),
                                 foreground="red",
@@ -260,9 +260,9 @@ class QCow2CloneResizerGUI:
         """Handle window close event - forcefully stop operations"""
         if self.operation_active:
             result = messagebox.askyesno("Opération en cours", 
-                                    "An operation is currently running.\n\n"
-                                    "This will STOP the operation immediately.\n"
-                                    "Temporary files will be handled appropriately.\n\n"
+                                    "Une opération est en cours d'exécution.\n\n"
+                                    "Cela VA ARRÊTER l'opération immédiatement.\n"
+                                    "Les fichiers temporaires seront gérés de façon appropriée.\n\n"
                                     "Continuer ?")
             if not result:
                 return
@@ -491,7 +491,7 @@ class QCow2CloneResizerGUI:
         if missing:
             text = f"Outils manquants : {', '.join(missing)}\n"
             
-            install_msg = "Required tools missing!\n\n"
+            install_msg = "Outils requis manquants !\n\n"
             install_msg += "Ubuntu/Debian:\n"
             install_msg += "sudo apt install qemu-utils parted gparted\n\n"
             install_msg += "Fedora/RHEL:\n"
@@ -502,7 +502,7 @@ class QCow2CloneResizerGUI:
             messagebox.showerror("Outils manquants", install_msg)
             
         else:
-            text = "All required tools available\n"
+            text = "Tous les outils requis sont disponibles\n"
         
         if optional:
             text += f"Outils optionnels : {', '.join(optional)}\n"
@@ -517,7 +517,7 @@ class QCow2CloneResizerGUI:
         """Browse for QCOW2 file"""
         file_path = filedialog.askopenfilename(
             title="Sélectionner un fichier image QCOW2",
-            filetypes=[("Fichiers QCOW2", "*.qcow2"), ("All files", "*.*")]
+            filetypes=[("Fichiers QCOW2", "*.qcow2"), ("Tous les fichiers", "*.*")]
         )
         if file_path:
             self.image_path.set(file_path)
@@ -531,11 +531,11 @@ class QCow2CloneResizerGUI:
             return
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", "Le fichier sélectionné n'existe pas")
+            messagebox.showerror("Fichier introuvable", "Le fichier sélectionné n'existe pas")
             return
         
         try:
-            self.update_progress(10, "Analyzing image file...")
+            self.update_progress(10, "Analyse du fichier image...")
             self.image_info = QCow2CloneResizer.get_image_info(path)
             self.display_image_info()
             
@@ -546,20 +546,20 @@ class QCow2CloneResizerGUI:
             self.status_label.config(text="Image analysée — Prêt à démarrer GParted + Clonage")
             
         except FileNotFoundError:
-            messagebox.showerror("File Not Found", f"Image file not found: {path}")
-            self.update_progress(0, "Analysis failed - file not found")
+            messagebox.showerror("Fichier introuvable", f"Fichier image introuvable : {path}")
+            self.update_progress(0, "Analyse échouée - fichier introuvable")
         except PermissionError:
-            messagebox.showerror("Permission Denied", f"Permission denied accessing image file: {path}")
-            self.update_progress(0, "Analysis failed - permission denied")
+            messagebox.showerror("Accès refusé", f"Accès refusé au fichier image : {path}")
+            self.update_progress(0, "Analyse échouée - accès refusé")
         except subprocess.CalledProcessError as e:
-            messagebox.showerror("Command Failed", f"qemu-img analysis failed:\n\n{e}")
-            self.update_progress(0, "Analysis failed - command error")
+            messagebox.showerror("Commande échouée", f"Échec de l'analyse qemu-img :\n\n{e}")
+            self.update_progress(0, "Analyse échouée - erreur de commande")
         except json.JSONDecodeError:
-            messagebox.showerror("Parse Error", f"Failed to parse image analysis results")
-            self.update_progress(0, "Analysis failed - parse error")
+            messagebox.showerror("Erreur d'analyse", f"Impossible d'analyser les résultats de l'analyse image")
+            self.update_progress(0, "Analyse échouée - erreur d'analyse")
         except OSError as e:
-            messagebox.showerror("System Error", f"System error during image analysis:\n\n{e}")
-            self.update_progress(0, "Analysis failed - system error")
+            messagebox.showerror("Erreur système", f"Erreur système lors de l'analyse de l'image :\n\n{e}")
+            self.update_progress(0, "Analyse échouée - erreur système")
     
     def display_image_info(self):
         """Display image information"""
@@ -569,39 +569,39 @@ class QCow2CloneResizerGUI:
         self.info_text.config(state="normal")
         self.info_text.delete(1.0, "end")
         
-        info = f"FILE INFORMATION\n"
+        info = f"INFORMATIONS SUR LE FICHIER\n"
         info += f"{'='*50}\n"
-        info += f"Path: {self.image_path.get()}\n"
-        info += f"Name: {os.path.basename(self.image_path.get())}\n"
-        info += f"Format: {self.image_info['format'].upper()}\n\n"
+        info += f"Chemin : {self.image_path.get()}\n"
+        info += f"Nom : {os.path.basename(self.image_path.get())}\n"
+        info += f"Format : {self.image_info['format'].upper()}\n\n"
         
-        info += f"SIZE INFORMATION\n"
+        info += f"INFORMATIONS SUR LA TAILLE\n"
         info += f"{'='*50}\n"
-        info += f"Virtual Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
-        info += f"File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n"
+        info += f"Taille virtuelle : {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
+        info += f"Taille du fichier : {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n"
         
         if self.image_info['virtual_size'] > 0:
             ratio = self.image_info['actual_size'] / self.image_info['virtual_size']
-            info += f"Usage: {ratio*100:.1f}% of virtual size\n"
+            info += f"Utilisation : {ratio*100:.1f}% de la taille virtuelle\n"
             
             if ratio < 0.5:
-                info += f"INFO: Sparse allocation detected (efficient storage)\n"
+                info += f"INFO : Allocation éparse détectée (stockage efficace)\n"
         
-        info += f"\nPROCESS WORKFLOW\n"
+        info += f"\nDÉROULEMENT DU PROCESSUS\n"
         info += f"{'='*50}\n"
-        info += f"1. Mount image as NBD device\n"
-        info += f"2. Launch GParted for manual partition editing\n"
-        info += f"3. Resize/modify partitions as needed\n"
-        info += f"4. Apply changes and close GParted\n"
-        info += f"5. Select optimal size for new image\n"
-        info += f"6. Clone all partitions to new optimized image\n\n"
+        info += f"1. Monter l'image en tant que périphérique NBD\n"
+        info += f"2. Lancer GParted pour l'édition manuelle des partitions\n"
+        info += f"3. Redimensionner/modifier les partitions selon les besoins\n"
+        info += f"4. Appliquer les modifications et fermer GParted\n"
+        info += f"5. Choisir la taille optimale pour la nouvelle image\n"
+        info += f"6. Cloner toutes les partitions vers la nouvelle image optimisée\n\n"
         
-        info += f"IMPORTANT REQUIREMENTS:\n"
-        info += f"• Virtual machine MUST be completely shut down\n"
-        info += f"• Apply ALL changes in GParted before closing\n"
-        info += f"• Backup recommended before starting\n"
-        info += f"• New image will use preallocation=metadata\n"
-        info += f"\nReady for GParted + Clone process!"
+        info += f"PRÉREQUIS IMPORTANTS :\n"
+        info += f"• La machine virtuelle DOIT être complètement éteinte\n"
+        info += f"• Appliquer TOUTES les modifications dans GParted avant de fermer\n"
+        info += f"• Sauvegarde recommandée avant de commencer\n"
+        info += f"• La nouvelle image utilisera preallocation=metadata\n"
+        info += f"\nPrêt pour le processus GParted + Clonage !"
         
         self.info_text.insert(1.0, info)
         self.info_text.config(state="disabled")
@@ -633,21 +633,21 @@ class QCow2CloneResizerGUI:
             backup_thread.start()
             
         except OSError as e:
-            error_msg = f"System error preparing backup: {str(e)}"
+            error_msg = f"Erreur système lors de la préparation de la sauvegarde : {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("System Error", error_msg)
+            messagebox.showerror("Erreur système", error_msg)
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
         except PermissionError as e:
-            error_msg = f"Permission denied preparing backup: {str(e)}"
+            error_msg = f"Accès refusé lors de la préparation de la sauvegarde : {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Permission Error", error_msg)
+            messagebox.showerror("Accès refusé", error_msg)
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
         except ValueError as e:
-            error_msg = f"Invalid path for backup: {str(e)}"
+            error_msg = f"Chemin invalide pour la sauvegarde : {str(e)}"
             log_error(error_msg)
-            messagebox.showerror("Value Error", error_msg)
+            messagebox.showerror("Valeur invalide", error_msg)
             self.backup_btn.config(state="normal")
             self.main_action_btn.config(state="normal")
 
@@ -655,7 +655,7 @@ class QCow2CloneResizerGUI:
         """Worker thread for rsync backup with progress tracking"""
         try:
             log_info(f"Starting backup: {source_path} -> {backup_path}")
-            self.update_progress(5, "Initializing backup...")
+            self.update_progress(5, "Initialisation de la sauvegarde...")
             
             source_size = os.path.getsize(source_path)
             
@@ -667,7 +667,7 @@ class QCow2CloneResizerGUI:
                 backup_path
             ]
             
-            self.update_progress(10, "Starting file transfer...")
+            self.update_progress(10, "Démarrage du transfert de fichiers...")
             
             process = subprocess.Popen(
                 rsync_cmd,
@@ -690,7 +690,7 @@ class QCow2CloneResizerGUI:
                                     scaled_percent = 10 + (percent * 0.8)
                                     self.update_progress(
                                         int(scaled_percent),
-                                        f"Backing up: {percent:.1f}%"
+                                        f"Sauvegarde : {percent:.1f}%"
                                     )
                                     break
                         except (ValueError, IndexError):
@@ -710,55 +710,55 @@ class QCow2CloneResizerGUI:
                     f"Backup size mismatch: source={source_size}, backup={backup_size}"
                 )
             
-            self.update_progress(100, "Backup completed successfully")
+            self.update_progress(100, "Sauvegarde terminée avec succès")
             log_info(f"Backup created successfully: {backup_path}")
             
-            backup_msg = f"BACKUP CREATED SUCCESSFULLY!\n\n"
-            backup_msg += f"Original: {os.path.basename(source_path)}\n"
-            backup_msg += f"Backup: {os.path.basename(backup_path)}\n"
-            backup_msg += f"Size: {QCow2CloneResizer.format_size(backup_size)}\n\n"
-            backup_msg += f"Location: {backup_path}\n\n"
-            backup_msg += f"The backup is a complete copy of your virtual disk.\n"
+            backup_msg = f"SAUVEGARDE CRÉÉE AVEC SUCCÈS !\n\n"
+            backup_msg += f"Original : {os.path.basename(source_path)}\n"
+            backup_msg += f"Sauvegarde : {os.path.basename(backup_path)}\n"
+            backup_msg += f"Taille : {QCow2CloneResizer.format_size(backup_size)}\n\n"
+            backup_msg += f"Emplacement : {backup_path}\n\n"
+            backup_msg += f"La sauvegarde est une copie complète de votre disque virtuel.\n"
             backup_msg += f"Vous pouvez maintenant procéder au redimensionnement en toute sécurité."
             
             self.root.after(0, lambda: messagebox.showinfo("Sauvegarde terminée", backup_msg))
-            self.root.after(100, lambda: self.update_progress(0, "Backup complete"))
+            self.root.after(100, lambda: self.update_progress(0, "Sauvegarde terminée"))
             
         except FileNotFoundError as fnf_e:
-            error_msg = f"Backup failed - file not found: {str(fnf_e)}"
+            error_msg = f"Sauvegarde échouée - fichier introuvable : {str(fnf_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("File Not Found", error_msg))
-            self.update_progress(0, "Backup failed")
+            self.root.after(0, lambda: messagebox.showerror("Fichier introuvable", error_msg))
+            self.update_progress(0, "Sauvegarde échouée")
         except PermissionError as perm_e:
-            error_msg = f"Backup failed - permission denied: {str(perm_e)}"
+            error_msg = f"Sauvegarde échouée - accès refusé : {str(perm_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Permission Denied", error_msg))
-            self.update_progress(0, "Backup failed")
+            self.root.after(0, lambda: messagebox.showerror("Accès refusé", error_msg))
+            self.update_progress(0, "Sauvegarde échouée")
         except subprocess.CalledProcessError as cpe:
-            error_msg = f"Backup failed - rsync error (code {cpe.returncode})"
+            error_msg = f"Sauvegarde échouée - erreur rsync (code {cpe.returncode})"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Backup Failed", error_msg))
-            self.update_progress(0, "Backup failed")
+            self.root.after(0, lambda: messagebox.showerror("Sauvegarde échouée", error_msg))
+            self.update_progress(0, "Sauvegarde échouée")
         except subprocess.TimeoutExpired as timeout_e:
-            error_msg = f"Backup failed - operation timed out"
+            error_msg = f"Sauvegarde échouée - délai d'attente dépassé"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Timeout", error_msg))
-            self.update_progress(0, "Backup failed")
+            self.root.after(0, lambda: messagebox.showerror("Délai dépassé", error_msg))
+            self.update_progress(0, "Sauvegarde échouée")
         except ValueError as val_e:
-            error_msg = f"Backup failed - verification error: {str(val_e)}"
+            error_msg = f"Sauvegarde échouée - erreur de vérification : {str(val_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("Verification Failed", error_msg))
-            self.update_progress(0, "Backup failed")
+            self.root.after(0, lambda: messagebox.showerror("Vérification échouée", error_msg))
+            self.update_progress(0, "Sauvegarde échouée")
         except OSError as os_e:
-            error_msg = f"Backup failed - system error: {str(os_e)}"
+            error_msg = f"Sauvegarde échouée - erreur système : {str(os_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("System Error", error_msg))
-            self.update_progress(0, "Backup failed")
+            self.root.after(0, lambda: messagebox.showerror("Erreur système", error_msg))
+            self.update_progress(0, "Sauvegarde échouée")
         except IOError as io_e:
-            error_msg = f"Backup failed - I/O error: {str(io_e)}"
+            error_msg = f"Sauvegarde échouée - erreur E/S : {str(io_e)}"
             log_error(error_msg)
-            self.root.after(0, lambda: messagebox.showerror("I/O Error", error_msg))
-            self.update_progress(0, "Backup failed")
+            self.root.after(0, lambda: messagebox.showerror("Erreur E/S", error_msg))
+            self.update_progress(0, "Sauvegarde échouée")
         finally:
             self.root.after(0, lambda: self.backup_btn.config(state="normal"))
             self.root.after(0, lambda: self.main_action_btn.config(state="normal"))
@@ -775,25 +775,25 @@ class QCow2CloneResizerGUI:
         self.created_temp_files = []  # Reset list
         
         # Detailed confirmation dialog
-        msg = f"GPARTED + CLONE OPERATION\n\n"
-        msg += f"File: {os.path.basename(path)}\n"
-        msg += f"Current Size: {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
-        msg += f"File Size: {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n\n"
+        msg = f"OPÉRATION GPARTED + CLONAGE\n\n"
+        msg += f"Fichier : {os.path.basename(path)}\n"
+        msg += f"Taille actuelle : {QCow2CloneResizer.format_size(self.image_info['virtual_size'])}\n"
+        msg += f"Taille du fichier : {QCow2CloneResizer.format_size(self.image_info['actual_size'])}\n\n"
         
-        msg += f"PROCESS STEPS:\n"
-        msg += f"1. Mount image as NBD device\n"
-        msg += f"2. Launch GParted for manual partition editing\n"
-        msg += f"3. Resize/move/modify partitions in GParted\n"
-        msg += f"4. Apply changes and close GParted\n"
-        msg += f"5. Select optimal size for new image\n"
-        msg += f"6. Create new optimized image (with preallocation=metadata)\n"
-        msg += f"7. Clone all modified partitions safely\n\n"
+        msg += f"ÉTAPES DU PROCESSUS :\n"
+        msg += f"1. Monter l'image en tant que périphérique NBD\n"
+        msg += f"2. Lancer GParted pour l'édition manuelle des partitions\n"
+        msg += f"3. Redimensionner/déplacer/modifier les partitions dans GParted\n"
+        msg += f"4. Appliquer les modifications et fermer GParted\n"
+        msg += f"5. Choisir la taille optimale pour la nouvelle image\n"
+        msg += f"6. Créer une nouvelle image optimisée (avec preallocation=metadata)\n"
+        msg += f"7. Cloner toutes les partitions modifiées en toute sécurité\n\n"
         
-        msg += f"CRITICAL REQUIREMENTS:\n"
-        msg += f"• Virtual machine MUST be completely shut down\n"
-        msg += f"• Root privileges required for NBD operations\n"
-        msg += f"• APPLY ALL CHANGES in GParted before closing\n"
-        msg += f"• Backup recommended before operation\n\n"
+        msg += f"PRÉREQUIS CRITIQUES :\n"
+        msg += f"• La machine virtuelle DOIT être complètement éteinte\n"
+        msg += f"• Privilèges root requis pour les opérations NBD\n"
+        msg += f"• APPLIQUER TOUTES LES MODIFICATIONS dans GParted avant de fermer\n"
+        msg += f"• Sauvegarde recommandée avant l'opération\n\n"
         
         msg += f"Continuer avec le processus GParted + Clonage ?"
         
@@ -802,11 +802,11 @@ class QCow2CloneResizerGUI:
         
         # Check root privileges
         if os.geteuid() != 0:
-            root_msg = ("ROOT PRIVILEGES REQUIRED\n\n"
-                    "This operation requires root privileges for NBD device management.\n\n"
-                    "The application will attempt to use privilege escalation (pkexec, sudo) "
-                    "when launching GParted.\n\n"
-                    "For best experience, run entire application with:\n"
+            root_msg = ("PRIVILÈGES ROOT REQUIS\n\n"
+                    "Cette opération nécessite des privilèges root pour la gestion des périphériques NBD.\n\n"
+                    "L'application tentera d'utiliser une élévation de privilèges (pkexec, sudo) "
+                    "lors du lancement de GParted.\n\n"
+                    "Pour une meilleure expérience, lancez toute l'application avec :\n"
                     "sudo python3 qcow2_clone_resizer.py\n\n"
                     "Continuer quand même ?")
             
@@ -859,13 +859,13 @@ class QCow2CloneResizerGUI:
             log_info(f"Temporary files will be created: {[Path(p).name for p in self.created_temp_files]}")
             
             # Setup NBD device for GParted
-            self.update_progress(10, "Setting up NBD device for GParted...")
+            self.update_progress(10, "Configuration du périphérique NBD pour GParted...")
             log_info("Setting up NBD device for GParted...")
             source_nbd = QCow2CloneResizer.setup_nbd_device(image_path, self.update_progress)
             log_info(f"NBD device setup complete: {source_nbd}")
             
             # Detect OS type
-            self.update_progress(15, "Detecting VM operating system...")
+            self.update_progress(15, "Détection du système d'exploitation de la VM...")
             log_info("Detecting VM operating system...")
             os_type = QCow2CloneResizer._detect_vm_os_safe(source_nbd)
             log_info(f"Detected OS type: {os_type}")
@@ -875,7 +875,7 @@ class QCow2CloneResizerGUI:
             log_info(f"Boot mode detected: {boot_mode.upper()}")
             
             # Get initial partition layout
-            self.update_progress(20, "Analyzing initial partition layout...")
+            self.update_progress(20, "Analyse du schéma de partitions initial...")
             log_info("Analyzing initial partition layout...")
             initial_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
             log_info(f"Initial partition count: {len(initial_layout['partitions'])}")
@@ -883,50 +883,50 @@ class QCow2CloneResizerGUI:
                 log_info(f"  Partition {part['number']}: {part['start']} - {part['end']} ({part['size']})")
             
             # Launch GParted
-            self.update_progress(30, "Launching GParted for manual partition editing...")
+            self.update_progress(30, "Lancement de GParted pour l'édition manuelle des partitions...")
             log_info("Preparing to launch GParted...")
             
-            initial_info = f"Initial partition layout:\n"
+            initial_info = f"Schéma de partitions initial :\n"
             for part in initial_layout['partitions']:
                 initial_info += f"  Partition {part['number']}: {part['start']} - {part['end']} ({part['size']})\n"
             
             instructions = (
-                f"GPARTED LAUNCHED FOR MANUAL PARTITION EDITING\n\n"
-                f"Device: {source_nbd}\n"
-                f"OS Type: {os_type.upper()}\n"
-                f"Boot Mode: {boot_mode.upper()}\n\n"
-                f"CURRENT PARTITIONS:\n{initial_info}\n"
-                f"INSTRUCTIONS FOR GPARTED:\n"
-                f"1. Resize partitions (shrink to save space or expand)\n"
-                f"2. Move partitions if needed\n"
-                f"3. CRITICAL: Click 'Apply' to execute all changes\n"
-                f"4. Wait for all operations to complete\n"
-                f"5. Close GParted when finished\n\n"
+                f"GPARTED LANCÉ POUR L'ÉDITION MANUELLE DES PARTITIONS\n\n"
+                f"Périphérique : {source_nbd}\n"
+                f"Type d'OS : {os_type.upper()}\n"
+                f"Mode de démarrage : {boot_mode.upper()}\n\n"
+                f"PARTITIONS ACTUELLES :\n{initial_info}\n"
+                f"INSTRUCTIONS POUR GPARTED :\n"
+                f"1. Redimensionner les partitions (réduire pour économiser de l'espace ou agrandir)\n"
+                f"2. Déplacer les partitions si nécessaire\n"
+                f"3. CRITIQUE : Cliquer sur 'Appliquer' pour exécuter toutes les modifications\n"
+                f"4. Attendre que toutes les opérations se terminent\n"
+                f"5. Fermer GParted une fois terminé\n\n"
             )
             
             if os_type == 'linux' and boot_mode == 'uefi':
                 instructions += (
-                    f"After GParted closes, the EFI boot entry will be automatically\n"
-                    f"set for automatic access and the image will be cloned to an optimized version."
+                    f"Après la fermeture de GParted, l'entrée de démarrage EFI sera automatiquement\n"
+                    f"configurée et l'image sera clonée vers une version optimisée."
                 )
             elif os_type == 'linux' and boot_mode == 'bios':
                 instructions += (
-                    f"After GParted closes, the image will be resized to optimal size\n"
-                    f"and compressed to save disk space."
+                    f"Après la fermeture de GParted, l'image sera redimensionnée à la taille optimale\n"
+                    f"et compressée pour économiser de l'espace disque."
                 )
             elif os_type == 'windows':
                 instructions += (
-                    f"After GParted closes, the image will be resized to optimal size\n"
-                    f"and compressed to save disk space."
+                    f"Après la fermeture de GParted, l'image sera redimensionnée à la taille optimale\n"
+                    f"et compressée pour économiser de l'espace disque."
                 )
             else:
                 instructions += (
-                    f"After GParted closes, the operation will proceed based on\n"
-                    f"detected OS type."
+                    f"Après la fermeture de GParted, l'opération se poursuivra selon\n"
+                    f"le type d'OS détecté."
                 )
             
             # Show instructions and wait for OK
-            self._show_message_and_wait("GParted Session Starting", instructions)
+            self._show_message_and_wait("Démarrage de la session GParted", instructions)
             
             log_info("Launching GParted for user partition editing...")
             QCow2CloneResizer.launch_gparted(source_nbd)
@@ -947,7 +947,7 @@ class QCow2CloneResizerGUI:
                 log_info("LINUX UEFI VM DETECTED - PERFORMING FULL CLONING")
                 log_info("="*60)
                 
-                self.update_progress(35, "Configuring EFI boot entries for automatic boot...")
+                self.update_progress(35, "Configuration des entrées de démarrage EFI...")
                 log_info("Configuring EFI boot entries for automatic boot...")
                 
                 bootloader_fixed = QCow2CloneResizerGUI.setup_efi_boot_entries(
@@ -958,24 +958,24 @@ class QCow2CloneResizerGUI:
                 if bootloader_fixed:
                     log_info("✓ EFI boot entry set up for automatic boot")
                     self._show_message_and_wait(
-                        "EFI boot entry Fixed",
-                        "✓ EFI boot entry set up for automatic boot.\n\n"
-                        "Your VM will boot correctly with the resized partitions."
+                        "Entrée de démarrage EFI corrigée",
+                        "✓ Entrée de démarrage EFI configurée pour le démarrage automatique.\n\n"
+                        "Votre VM démarrera correctement avec les partitions redimensionnées."
                     )
                 else:
                     log_warning("Could not automatically reconfigure EFI boot entry")
                     warning_msg = (
-                        "⚠ Could not automatically reconfigure EFI boot entry.\n\n"
-                        "VM might need to create manual boot option creation to boot\n"
-                        "Continue with cloning?"
+                        "⚠ Impossible de reconfigurer automatiquement l'entrée de démarrage EFI.\n\n"
+                        "La VM devra peut-être créer une option de démarrage manuellement\n"
+                        "Continuer avec le clonage ?"
                     )
                     
-                    if not self._show_yesno_and_wait("Bootloader Warning", warning_msg):
+                    if not self._show_yesno_and_wait("Avertissement chargeur de démarrage", warning_msg):
                         log_warning("User cancelled operation after bootloader warning")
                         raise RuntimeError("Operation cancelled by user after bootloader warning")
                 
                 # Analyze final partition layout
-                self.update_progress(40, "GParted completed - analyzing partition changes...")
+                self.update_progress(40, "GParted terminé - analyse des modifications de partitions...")
                 log_info("Analyzing partition changes after GParted...")
                 final_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
                 log_info(f"Final partition count: {len(final_layout['partitions'])}")
@@ -992,7 +992,7 @@ class QCow2CloneResizerGUI:
                     log_info(partition_changes)
                 
                 # Show size selection dialog
-                self.update_progress(45, "Select size for new optimized image...")
+                self.update_progress(45, "Choisir la taille pour la nouvelle image optimisée...")
                 log_info("Showing size selection dialog to user...")
                 
                 self.dialog_result_event.clear()
@@ -1013,7 +1013,7 @@ class QCow2CloneResizerGUI:
                     log_info(f"Starting clone operation to intermediate image: {Path(intermediate_path).name}")
                     
                     # Clone to intermediate image
-                    self.update_progress(55, "Cloning modified partitions to intermediate image...")
+                    self.update_progress(55, "Clonage des partitions modifiées vers l'image intermédiaire...")
                     
                     self._clone_to_new_image_with_existing_nbd(
                         image_path,
@@ -1028,14 +1028,14 @@ class QCow2CloneResizerGUI:
                     log_info("✓ Clone operation completed successfully")
                     
                     # Compress intermediate image to create final image
-                    self.update_progress(90, "Preparing final compression...")
+                    self.update_progress(90, "Préparation de la compression finale...")
                     log_info(f"Starting compression: {Path(intermediate_path).name} -> {Path(final_path).name}")
 
                     try:
                         # Copy intermediate to final
                         log_info("Copying intermediate image to final location...")
                         shutil.copy2(intermediate_path, final_path)
-                        self.update_progress(92, "Copy complete, starting compression...")
+                        self.update_progress(92, "Copie terminée, démarrage de la compression...")
                         log_info("Copy complete, starting QCOW2 compression...")
                         
                         # Compress final image
@@ -1121,7 +1121,7 @@ class QCow2CloneResizerGUI:
                 log_info("LINUX BIOS VM DETECTED - CLONING TO NEW IMAGE")
                 log_info("="*60)
                 
-                self.update_progress(40, "Analyzing final BIOS partition layout...")
+                self.update_progress(40, "Analyse du schéma de partitions BIOS final...")
                 log_info("Analyzing final partition layout for BIOS...")
                 final_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
                 
@@ -1135,7 +1135,7 @@ class QCow2CloneResizerGUI:
                     partition_changes = f"Partition space changed: {old_size} → {new_size_str}"
                     log_info(partition_changes)
 
-                self.update_progress(45, "Select size for new optimized image...")
+                self.update_progress(45, "Choisir la taille pour la nouvelle image optimisée...")
                 log_info("Showing size selection dialog for BIOS Linux...")
 
                 self.dialog_result_event.clear()
@@ -1156,7 +1156,7 @@ class QCow2CloneResizerGUI:
                     log_info(f"Starting BIOS clone to intermediate image: {Path(intermediate_path).name}")
 
                     # Clone to intermediate image (same path as UEFI – no EFI setup needed)
-                    self.update_progress(55, "Cloning modified partitions to new image...")
+                    self.update_progress(55, "Clonage des partitions modifiées vers la nouvelle image...")
 
                     self._clone_to_new_image_with_existing_nbd(
                         image_path,
@@ -1171,13 +1171,13 @@ class QCow2CloneResizerGUI:
                     log_info("✓ BIOS clone operation completed successfully")
 
                     # Compress intermediate → final
-                    self.update_progress(90, "Preparing final compression...")
+                    self.update_progress(90, "Préparation de la compression finale...")
                     log_info(f"Starting compression: {Path(intermediate_path).name} -> {Path(final_path).name}")
 
                     try:
                         log_info("Copying intermediate image to final location...")
                         shutil.copy2(intermediate_path, final_path)
-                        self.update_progress(92, "Copy complete, starting compression...")
+                        self.update_progress(92, "Copie terminée, démarrage de la compression...")
                         log_info("Copy complete, starting QCOW2 compression...")
 
                         compression_stats = QCow2CloneResizer.compress_qcow2_image(
@@ -1226,7 +1226,7 @@ class QCow2CloneResizerGUI:
                 log_info("WINDOWS VM DETECTED - RESIZING AND COMPRESSING")
                 log_info("="*60)
                 
-                self.update_progress(40, "Finalizing Windows partition changes...")
+                self.update_progress(40, "Finalisation des modifications de partitions Windows...")
                 log_info("Waiting for partitions to stabilize after GParted...")
                 
                 # Don't disconnect yet - analyze with NBD still mounted
@@ -1234,7 +1234,7 @@ class QCow2CloneResizerGUI:
                 subprocess.run(['partprobe', source_nbd], check=False, timeout=30)
                 time.sleep(3)
                 
-                self.update_progress(45, "Analyzing final partition layout...")
+                self.update_progress(45, "Analyse du schéma de partitions final...")
                 log_info("Analyzing final Windows partition layout...")
                 # Use source_nbd (still mounted), NOT image_path
                 final_layout = QCow2CloneResizer.get_partition_layout(source_nbd)
@@ -1249,7 +1249,7 @@ class QCow2CloneResizerGUI:
                     partition_changes = f"Partition space changed: {old_size} → {new_size}"
                     log_info(partition_changes)
                 
-                self.update_progress(50, "Select size for optimized image...")
+                self.update_progress(50, "Choisir la taille pour l'image optimisée...")
                 log_info("Showing size selection dialog for Windows...")
                 
                 self.dialog_result_event.clear()
@@ -1273,21 +1273,21 @@ class QCow2CloneResizerGUI:
                     if aligned_new_size != new_size:
                         log_info(f"Windows size alignment required: {new_size} -> {aligned_new_size} bytes")
                         alignment_msg = (
-                            f"SIZE ALIGNMENT REQUIRED FOR WINDOWS\n\n"
-                            f"Windows images must use 512-byte sector alignment.\n\n"
-                            f"Original selected size: {QCow2CloneResizer.format_size(new_size)}\n"
-                            f"Aligned size:           {QCow2CloneResizer.format_size(aligned_new_size)}\n"
-                            f"Difference:             {aligned_new_size - new_size} bytes\n\n"
-                            f"The image will be resized to the aligned size for compatibility."
+                            f"ALIGNEMENT DE TAILLE REQUIS POUR WINDOWS\n\n"
+                            f"Les images Windows doivent utiliser un alignement secteur de 512 octets.\n\n"
+                            f"Taille sélectionnée originale : {QCow2CloneResizer.format_size(new_size)}\n"
+                            f"Taille alignée :        {QCow2CloneResizer.format_size(aligned_new_size)}\n"
+                            f"Différence :            {aligned_new_size - new_size} octets\n\n"
+                            f"L'image sera redimensionnée à la taille alignée pour la compatibilité."
                         )
-                        self._show_message_and_wait("Windows Size Alignment", alignment_msg)
+                        self._show_message_and_wait("Alignement de taille Windows", alignment_msg)
                         new_size = aligned_new_size
                         log_info(f"Using aligned size: {QCow2CloneResizer.format_size(new_size)}")
                     
                     log_info(f"Resizing Windows image to: {QCow2CloneResizer.format_size(new_size)}")
                     
                     # Perform safe sync while NBD is still mounted
-                    self.update_progress(55, "Finalizing Windows partition changes...")
+                    self.update_progress(55, "Finalisation des modifications de partitions Windows...")
                     log_info("Performing final sync before NBD disconnect...")
                     self._perform_safe_sync("Windows pre-resize sync")
                     
@@ -1300,7 +1300,7 @@ class QCow2CloneResizerGUI:
                     time.sleep(10)
                     
                     # RESIZE the image
-                    self.update_progress(60, "Resizing image...")
+                    self.update_progress(60, "Redimensionnement de l'image...")
                     log_info(f"Executing qemu-img resize to {QCow2CloneResizer.format_size(new_size)}")
                     
                     resize_cmd = [
@@ -1327,7 +1327,7 @@ class QCow2CloneResizerGUI:
                     log_info("✓ Windows Image resized successfully")
                     
                     # COMPRESS the resized image
-                    self.update_progress(75, "Compressing optimized image...")
+                    self.update_progress(75, "Compression de l'image optimisée...")
                     log_info("Starting compression for Windows image...")
                     
                     compression_stats = QCow2CloneResizer.compress_qcow2_image(
@@ -1339,7 +1339,7 @@ class QCow2CloneResizerGUI:
                     
                     log_info(f"✓ Windows Image compression completed: {compression_stats['compression_ratio']:.1f}% space saved")
                     
-                    self.update_progress(95, "Finalizing...")
+                    self.update_progress(95, "Finalisation...")
                     log_info("Analyzing final Windows image...")
                     
                     final_image_info = QCow2CloneResizer.get_image_info(image_path)
@@ -1374,12 +1374,12 @@ class QCow2CloneResizerGUI:
                     QCow2CloneResizer.cleanup_nbd_device(source_nbd)
                     source_nbd = None
                 
-                self._show_message_and_wait("Unknown OS Type",
-                    f"Could not determine if this is a Linux or Windows VM.\n\n"
-                    f"GParted changes have been applied but no resize/compression was performed.\n\n"
-                    f"Your original image has been modified in place:\n"
+                self._show_message_and_wait("Type d'OS inconnu",
+                    f"Impossible de déterminer si cette VM est Linux ou Windows.\n\n"
+                    f"Les modifications GParted ont été appliquées mais aucun redimensionnement/compression n'a été effectué.\n\n"
+                    f"Votre image originale a été modifiée sur place :\n"
                     f"{image_path}\n\n"
-                    f"If you want to optimize the image, please run the operation again.")
+                    f"Si vous souhaitez optimiser l'image, veuillez relancer l'opération.")
                 
                 # Clear temp files list on completion
                 self.created_temp_files = []
@@ -1743,8 +1743,8 @@ class QCow2CloneResizerGUI:
             title_label.pack(fill="x", pady=(0, 10))
             
             desc_label = ttk.Label(main_frame,
-                                text="The following temporary files were created during the cloning operation.\n"
-                                    "Select which files to delete. The original image will be preserved.",
+                                text="Les fichiers temporaires suivants ont été créés lors de l'opération de clonage.\n"
+                                    "Sélectionnez les fichiers à supprimer. L'image originale sera conservée.",
                                 font=("Arial", 10),
                                 wraplength=600,
                                 justify="left")
@@ -1771,7 +1771,7 @@ class QCow2CloneResizerGUI:
                     size_str = self._format_size_compact(size)
                     display_text = f"{file_path.name} ({size_str})"
                 except OSError:
-                    display_text = f"{file_path.name} (size unknown)"
+                    display_text = f"{file_path.name} (taille inconnue)"
                 
                 file_listbox.insert("end", display_text)
                 file_info.append((file_path, display_text))
@@ -1814,7 +1814,7 @@ class QCow2CloneResizerGUI:
             info_frame.pack(fill="x", pady=(0, 15))
             
             info_label = ttk.Label(info_frame,
-                                text="⚠ WARNING: Files will be permanently deleted\n"
+                                text="⚠ ATTENTION : Les fichiers seront supprimés définitivement\n"
                                     "Image originale : " + original_path.name + " (sera conservée)",
                                 font=("Arial", 9),
                                 foreground="red",
@@ -1946,54 +1946,54 @@ class QCow2CloneResizerGUI:
             original_virtual_size = original_info['virtual_size']
             final_virtual_size = final_image_info['virtual_size']
             
-            success_msg = f"WINDOWS IMAGE COMPRESSION COMPLETED!\n\n"
-            success_msg += f"OPERATION RESULTS:\n"
+            success_msg = f"COMPRESSION DE L'IMAGE WINDOWS TERMINÉE !\n\n"
+            success_msg += f"RÉSULTATS DE L'OPÉRATION :\n"
             success_msg += f"{'='*50}\n"
-            success_msg += f"Image: {os.path.basename(image_path)}\n\n"
+            success_msg += f"Image : {os.path.basename(image_path)}\n\n"
             
-            success_msg += f"IMAGE COMPRESSION RESULTS:\n"
-            success_msg += f"Original file size: {QCow2CloneResizer.format_size(original_source_size)}\n"
-            success_msg += f"Compressed file size: {QCow2CloneResizer.format_size(final_image_size)}\n"
+            success_msg += f"RÉSULTATS DE LA COMPRESSION :\n"
+            success_msg += f"Taille du fichier original : {QCow2CloneResizer.format_size(original_source_size)}\n"
+            success_msg += f"Taille du fichier compressé : {QCow2CloneResizer.format_size(final_image_size)}\n"
             
             if final_image_size < original_source_size:
                 file_saved = original_source_size - final_image_size
                 file_ratio = file_saved / original_source_size * 100
-                success_msg += f"\n✓ Space optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
+                success_msg += f"\n✓ Espace optimisé : {QCow2CloneResizer.format_size(file_saved)} de moins ({file_ratio:.1f}% de réduction)\n"
             
             if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
-                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
+                success_msg += f"✓ Compression appliquée : {compression_stats['compression_ratio']:.1f}% d'espace économisé\n"
             
-            success_msg += f"\n✓ All partition changes preserved\n"
-            success_msg += f"✓ Windows system intact\n"
-            success_msg += f"✓ Ready for VM use\n\n"
+            success_msg += f"\n✓ Toutes les modifications de partitions préservées\n"
+            success_msg += f"✓ Système Windows intact\n"
+            success_msg += f"✓ Prêt à l'emploi dans la VM\n\n"
             
-            success_msg += f"Your Windows image has been optimized for storage.\n"
-            success_msg += f"No cloning was performed - the image was compressed in place."
+            success_msg += f"Votre image Windows a été optimisée pour le stockage.\n"
+            success_msg += f"Aucun clonage n'a été effectué - l'image a été compressée sur place."
             
-            self._show_message_and_wait("Compression Complete", success_msg)
+            self._show_message_and_wait("Compression terminée", success_msg)
             
         except KeyError as e:
             log_error(f"Windows completion dialog error - missing key: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"Windows image compression completed!\n\n"
-                f"Original: {original_source_size / (1024**3):.2f} GB\n"
-                f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
-                f"Note: Some statistics unavailable.")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Windows terminée !\n\n"
+                f"Original : {original_source_size / (1024**3):.2f} Go\n"
+                f"Compressé : {final_image_size / (1024**3):.2f} Go\n\n"
+                f"Remarque : Certaines statistiques indisponibles.")
         except ZeroDivisionError as e:
             log_error(f"Windows completion dialog error - division by zero: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"Windows image compression completed!\n\n"
-                f"Cannot calculate compression ratio (zero size detected).")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Windows terminée !\n\n"
+                f"Impossible de calculer le ratio de compression (taille nulle détectée).")
         except TypeError as e:
             log_error(f"Windows completion dialog error - type error: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"Windows image compression completed!\n\n"
-                f"Some statistics could not be calculated.")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Windows terminée !\n\n"
+                f"Certaines statistiques n'ont pas pu être calculées.")
         except ValueError as e:
             log_error(f"Windows completion dialog error - value error: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"Windows image compression completed!\n\n"
-                f"Invalid values encountered in statistics.")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Windows terminée !\n\n"
+                f"Valeurs invalides rencontrées dans les statistiques.")
 
 
     def _show_bios_completion_dialog(self, image_path, original_info, original_source_size,
@@ -2003,55 +2003,55 @@ class QCow2CloneResizerGUI:
             original_virtual_size = original_info['virtual_size']
             final_virtual_size = final_image_info['virtual_size']
             
-            success_msg = f"BIOS LINUX IMAGE COMPRESSION COMPLETED!\n\n"
-            success_msg += f"OPERATION RESULTS:\n"
+            success_msg = f"COMPRESSION DE L'IMAGE LINUX BIOS TERMINÉE !\n\n"
+            success_msg += f"RÉSULTATS DE L'OPÉRATION :\n"
             success_msg += f"{'='*50}\n"
-            success_msg += f"Image: {os.path.basename(image_path)}\n\n"
+            success_msg += f"Image : {os.path.basename(image_path)}\n\n"
             
-            success_msg += f"IMAGE COMPRESSION RESULTS:\n"
-            success_msg += f"Original file size: {QCow2CloneResizer.format_size(original_source_size)}\n"
-            success_msg += f"Compressed file size: {QCow2CloneResizer.format_size(final_image_size)}\n"
+            success_msg += f"RÉSULTATS DE LA COMPRESSION :\n"
+            success_msg += f"Taille originale : {QCow2CloneResizer.format_size(original_source_size)}\n"
+            success_msg += f"Taille compressée : {QCow2CloneResizer.format_size(final_image_size)}\n"
             
             if final_image_size < original_source_size:
                 file_saved = original_source_size - final_image_size
                 file_ratio = file_saved / original_source_size * 100
-                success_msg += f"\n✓ Space optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
+                success_msg += f"\n✓ Espace optimisé : {QCow2CloneResizer.format_size(file_saved)} de moins ({file_ratio:.1f}% de réduction)\n"
             
             if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
-                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
+                success_msg += f"✓ Compression appliquée : {compression_stats['compression_ratio']:.1f}% d'espace économisé\n"
             
-            success_msg += f"\n✓ All partition changes preserved\n"
-            success_msg += f"✓ BIOS bootloader intact\n"
-            success_msg += f"✓ Ready for VM use\n\n"
+            success_msg += f"\n✓ Toutes les modifications de partitions préservées\n"
+            success_msg += f"✓ Chargeur de démarrage BIOS intact\n"
+            success_msg += f"✓ Prêt à l'emploi dans la VM\n\n"
             
-            success_msg += f"Your BIOS Linux image has been optimized for storage.\n"
-            success_msg += f"No cloning was performed - the image was compressed in place.\n"
-            success_msg += f"The bootloader remains unchanged and should boot normally."
+            success_msg += f"Votre image Linux BIOS a été optimisée pour le stockage.\n"
+            success_msg += f"Aucun clonage n'a été effectué - l'image a été compressée sur place.\n"
+            success_msg += f"Le chargeur de démarrage reste inchangé et devrait démarrer normalement."
             
-            self._show_message_and_wait("Compression Complete", success_msg)
+            self._show_message_and_wait("Compression terminée", success_msg)
             
         except KeyError as e:
             log_error(f"BIOS completion dialog error - missing key: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"BIOS Linux image compression completed!\n\n"
-                f"Original: {original_source_size / (1024**3):.2f} GB\n"
-                f"Compressed: {final_image_size / (1024**3):.2f} GB\n\n"
-                f"Note: Some statistics unavailable.")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Linux BIOS terminée !\n\n"
+                f"Original : {original_source_size / (1024**3):.2f} Go\n"
+                f"Compressé : {final_image_size / (1024**3):.2f} Go\n\n"
+                f"Remarque : Certaines statistiques indisponibles.")
         except ZeroDivisionError as e:
             log_error(f"BIOS completion dialog error - division by zero: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"BIOS Linux image compression completed!\n\n"
-                f"Cannot calculate compression ratio (zero size detected).")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Linux BIOS terminée !\n\n"
+                f"Impossible de calculer le ratio de compression (taille nulle détectée).")
         except TypeError as e:
             log_error(f"BIOS completion dialog error - type error: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"BIOS Linux image compression completed!\n\n"
-                f"Some statistics could not be calculated.")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Linux BIOS terminée !\n\n"
+                f"Certaines statistiques n'ont pas pu être calculées.")
         except ValueError as e:
             log_error(f"BIOS completion dialog error - value error: {e}")
-            self._show_message_and_wait("Operation Complete",
-                f"BIOS Linux image compression completed!\n\n"
-                f"Invalid values encountered in statistics.")
+            self._show_message_and_wait("Opération terminée",
+                f"Compression de l'image Linux BIOS terminée !\n\n"
+                f"Valeurs invalides rencontrées dans les statistiques.")
             
 
     def _show_completion_and_replacement_dialog(self, source_path, final_path, intermediate_path,
@@ -2064,57 +2064,57 @@ class QCow2CloneResizerGUI:
             final_virtual_size = final_image_info['virtual_size']
             
             # Build success message comparing SOURCE vs FINAL
-            success_msg = f"QCOW2 RESIZE & COMPRESSION COMPLETED SUCCESSFULLY!\n\n"
-            success_msg += f"OPERATION RESULTS:\n"
+            success_msg = f"REDIMENSIONNEMENT ET COMPRESSION QCOW2 TERMINÉS AVEC SUCCÈS !\n\n"
+            success_msg += f"RÉSULTATS DE L'OPÉRATION :\n"
             success_msg += f"{'='*50}\n"
-            success_msg += f"Original image: {os.path.basename(source_path)}\n"
-            success_msg += f"Final optimized image: {os.path.basename(final_path)}\n\n"
+            success_msg += f"Image originale : {os.path.basename(source_path)}\n"
+            success_msg += f"Image finale optimisée : {os.path.basename(final_path)}\n\n"
             
-            success_msg += f"IMAGE COMPARISON (SOURCE vs FINAL):\n"
-            success_msg += f"Original source image:\n"
-            success_msg += f"  Virtual size: {QCow2CloneResizer.format_size(original_virtual_size)}\n"
-            success_msg += f"  File size: {QCow2CloneResizer.format_size(original_source_size)}\n\n"
-            success_msg += f"Final optimized image:\n"
-            success_msg += f"  Virtual size: {QCow2CloneResizer.format_size(final_virtual_size)}\n"
-            success_msg += f"  File size: {QCow2CloneResizer.format_size(final_image_size)}\n\n"
+            success_msg += f"COMPARAISON D'IMAGES (SOURCE vs FINALE) :\n"
+            success_msg += f"Image source originale :\n"
+            success_msg += f"  Taille virtuelle : {QCow2CloneResizer.format_size(original_virtual_size)}\n"
+            success_msg += f"  Taille du fichier : {QCow2CloneResizer.format_size(original_source_size)}\n\n"
+            success_msg += f"Image finale optimisée :\n"
+            success_msg += f"  Taille virtuelle : {QCow2CloneResizer.format_size(final_virtual_size)}\n"
+            success_msg += f"  Taille du fichier : {QCow2CloneResizer.format_size(final_image_size)}\n\n"
             
             # Calculate improvements
             if final_virtual_size < original_virtual_size:
                 saved = original_virtual_size - final_virtual_size
-                success_msg += f"✓ Virtual space optimized: {QCow2CloneResizer.format_size(saved)} smaller "
-                success_msg += f"({(saved/original_virtual_size*100):.1f}% reduction)\n"
+                success_msg += f"✓ Espace virtuel optimisé : {QCow2CloneResizer.format_size(saved)} de moins "
+                success_msg += f"({(saved/original_virtual_size*100):.1f}% de réduction)\n"
             elif final_virtual_size > original_virtual_size:
                 added = final_virtual_size - original_virtual_size
-                success_msg += f"✓ Virtual space expanded: {QCow2CloneResizer.format_size(added)} larger "
-                success_msg += f"({(added/original_virtual_size*100):.1f}% increase)\n"
+                success_msg += f"✓ Espace virtuel agrandi : {QCow2CloneResizer.format_size(added)} de plus "
+                success_msg += f"({(added/original_virtual_size*100):.1f}% d'augmentation)\n"
             
             if final_image_size < original_source_size:
                 file_saved = original_source_size - final_image_size
                 file_ratio = file_saved / original_source_size * 100
-                success_msg += f"✓ File size optimized: {QCow2CloneResizer.format_size(file_saved)} smaller ({file_ratio:.1f}% reduction)\n"
+                success_msg += f"✓ Taille du fichier optimisée : {QCow2CloneResizer.format_size(file_saved)} de moins ({file_ratio:.1f}% de réduction)\n"
             
             if compression_stats and compression_stats.get('compression_ratio', 0) > 0:
-                success_msg += f"✓ Compression applied: {compression_stats['compression_ratio']:.1f}% space saved\n"
+                success_msg += f"✓ Compression appliquée : {compression_stats['compression_ratio']:.1f}% d'espace économisé\n"
             
-            success_msg += f"\n✓ All partition changes preserved\n"
-            success_msg += f"✓ Bootloader intact\n"
-            success_msg += f"✓ Ready for VM use\n\n"
+            success_msg += f"\n✓ Toutes les modifications de partitions préservées\n"
+            success_msg += f"✓ Chargeur de démarrage intact\n"
+            success_msg += f"✓ Prêt à l'emploi dans la VM\n\n"
             
-            success_msg += f"NEXT STEP - CLEANUP:\n"
+            success_msg += f"PROCHAINE ÉTAPE - NETTOYAGE :\n"
             success_msg += f"{'='*50}\n"
-            success_msg += f"REPLACE - Delete original and intermediate, keep final:\n"
-            success_msg += f"  • Original image DELETED: {os.path.basename(source_path)}\n"
-            success_msg += f"  • Intermediate DELETED: {os.path.basename(intermediate_path)}\n"
-            success_msg += f"  • Final becomes main: {os.path.basename(final_path)}\n"
-            success_msg += f"  • Maximum space savings\n"
-            success_msg += f"  • WARNING: Cannot be undone\n\n"
-            success_msg += f"KEEP ALL - Preserve all files for manual cleanup:\n"
-            success_msg += f"  • All three files preserved\n"
-            success_msg += f"  • Manual cleanup required\n"
+            success_msg += f"REMPLACER - Supprimer l'original et l'intermédiaire, conserver le final :\n"
+            success_msg += f"  • Image originale SUPPRIMÉE : {os.path.basename(source_path)}\n"
+            success_msg += f"  • Image intermédiaire SUPPRIMÉE : {os.path.basename(intermediate_path)}\n"
+            success_msg += f"  • Le final devient le fichier principal : {os.path.basename(final_path)}\n"
+            success_msg += f"  • Économies d'espace maximales\n"
+            success_msg += f"  • ATTENTION : Action irréversible\n\n"
+            success_msg += f"TOUT CONSERVER - Préserver tous les fichiers pour un nettoyage manuel :\n"
+            success_msg += f"  • Les trois fichiers sont conservés\n"
+            success_msg += f"  • Nettoyage manuel requis\n"
             
             # Show dialog using event-based system
             replace_result = self._show_yesnocancel_and_wait(
-                "Cleanup - Replace or Keep All?", 
+                "Nettoyage - Remplacer ou tout conserver ?", 
                 success_msg
             )
             
@@ -2122,38 +2122,38 @@ class QCow2CloneResizerGUI:
                 self._perform_final_cleanup(source_path, intermediate_path, final_path, 
                                         original_source_size, final_image_size)
             elif replace_result is False:  # KEEP ALL
-                self._show_message_and_wait("All Files Preserved", 
-                    f"Operation completed successfully!\n\n"
-                    f"FILES AVAILABLE:\n"
-                    f"• Original: {source_path}\n"
-                    f"• Intermediate: {intermediate_path}\n"
-                    f"• Final optimized: {final_path}\n\n"
-                    f"Manual cleanup required.")
+                self._show_message_and_wait("Tous les fichiers conservés", 
+                    f"Opération terminée avec succès !\n\n"
+                    f"FICHIERS DISPONIBLES :\n"
+                    f"• Original : {source_path}\n"
+                    f"• Intermédiaire : {intermediate_path}\n"
+                    f"• Final optimisé : {final_path}\n\n"
+                    f"Nettoyage manuel requis.")
             else:  # Cancel
-                self._show_message_and_wait("Operation Complete", 
-                    f"QCOW2 resize completed!\n\n"
-                    f"Final optimized image: {final_path}")
+                self._show_message_and_wait("Opération terminée", 
+                    f"Redimensionnement QCOW2 terminé !\n\n"
+                    f"Image finale optimisée : {final_path}")
             
         except KeyError as e:
             log_error(f"Completion dialog error - missing data: {e}")
-            self._show_message_and_wait("Operation Complete", 
-                f"QCOW2 resize completed!\n\n"
-                f"Original: {source_path}\n"
-                f"Final: {final_path}\n\n"
-                f"Note: Some statistics unavailable.")
+            self._show_message_and_wait("Opération terminée", 
+                f"Redimensionnement QCOW2 terminé !\n\n"
+                f"Original : {source_path}\n"
+                f"Final : {final_path}\n\n"
+                f"Remarque : Certaines statistiques indisponibles.")
         except ZeroDivisionError as e:
             log_error(f"Completion dialog error - division by zero: {e}")
-            self._show_message_and_wait("Operation Complete", 
-                f"QCOW2 resize completed!\n\n"
-                f"Cannot calculate some ratios (zero size detected).")
+            self._show_message_and_wait("Opération terminée", 
+                f"Redimensionnement QCOW2 terminé !\n\n"
+                f"Impossible de calculer certains ratios (taille nulle détectée).")
         except TypeError as e:
             log_error(f"Completion dialog error - type error: {e}")
-            self._show_message_and_wait("Operation Complete", 
-                f"QCOW2 resize completed - check console for details.")
+            self._show_message_and_wait("Opération terminée", 
+                f"Redimensionnement QCOW2 terminé - voir la console pour les détails.")
         except ValueError as e:
             log_error(f"Completion dialog error - value error: {e}")
-            self._show_message_and_wait("Operation Complete", 
-                f"QCOW2 resize completed - invalid values in statistics.")
+            self._show_message_and_wait("Opération terminée", 
+                f"Redimensionnement QCOW2 terminé - valeurs invalides dans les statistiques.")
 
     def _perform_final_cleanup(self, source_path, intermediate_path, final_path,
                         original_size, final_size):
@@ -2164,26 +2164,26 @@ class QCow2CloneResizerGUI:
             total_space_saved = original_size - final_size
             
             # Final confirmation
-            confirm_msg = f"FINAL CONFIRMATION - CLEANUP AND REPLACEMENT\n\n"
-            confirm_msg += f"Files to DELETE:\n"
-            confirm_msg += f"1. Original: {source_path}\n"
-            confirm_msg += f"   Size: {QCow2CloneResizer.format_size(original_size)}\n"
-            confirm_msg += f"2. Intermediate: {intermediate_path}\n\n"
-            confirm_msg += f"Final optimized image will become main file:\n"
+            confirm_msg = f"CONFIRMATION FINALE - NETTOYAGE ET REMPLACEMENT\n\n"
+            confirm_msg += f"Fichiers à SUPPRIMER :\n"
+            confirm_msg += f"1. Original : {source_path}\n"
+            confirm_msg += f"   Taille : {QCow2CloneResizer.format_size(original_size)}\n"
+            confirm_msg += f"2. Intermédiaire : {intermediate_path}\n\n"
+            confirm_msg += f"L'image finale optimisée deviendra le fichier principal :\n"
             confirm_msg += f"   {final_path} -> {source_path}\n"
-            confirm_msg += f"   Size: {QCow2CloneResizer.format_size(final_size)}\n\n"
-            confirm_msg += f"Total space saved: {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
-            confirm_msg += f"WARNING: This action CANNOT be undone!\n\n"
-            confirm_msg += f"Proceed with cleanup?"
+            confirm_msg += f"   Taille : {QCow2CloneResizer.format_size(final_size)}\n\n"
+            confirm_msg += f"Espace total économisé : {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
+            confirm_msg += f"ATTENTION : Cette action est IRRÉVERSIBLE !\n\n"
+            confirm_msg += f"Procéder au nettoyage ?"
             
             final_confirm = self._show_yesno_and_wait(
-                "DELETE ORIGINAL AND INTERMEDIATE?", 
+                "SUPPRIMER L'ORIGINAL ET L'INTERMÉDIAIRE ?", 
                 confirm_msg
             )
             
             if not final_confirm:
-                self._show_message_and_wait("Cleanup Cancelled", 
-                    f"Cleanup cancelled.\n\nAll files preserved for manual handling.")
+                self._show_message_and_wait("Nettoyage annulé", 
+                    f"Nettoyage annulé.\n\nTous les fichiers ont été conservés pour une gestion manuelle.")
                 return
             
             print(f"User confirmed cleanup - proceeding")
@@ -2210,52 +2210,52 @@ class QCow2CloneResizerGUI:
             print(f"Cleanup completed successfully")
             
             # Success message
-            self._show_message_and_wait("Cleanup Complete", 
-                f"✓ CLEANUP SUCCESSFUL!\n\n"
-                f"FINAL STATUS:\n"
-                f"✓ Active file: {source_path}\n"
-                f"  (Now the optimized version)\n"
-                f"  Size: {QCow2CloneResizer.format_size(final_size)}\n\n"
-                f"✓ Original file: DELETED\n"
-                f"✓ Intermediate file: DELETED\n"
-                f"✓ Total disk space freed: {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
-                f"The optimized image is ready for use!")
+            self._show_message_and_wait("Nettoyage terminé", 
+                f"✓ NETTOYAGE RÉUSSI !\n\n"
+                f"ÉTAT FINAL :\n"
+                f"✓ Fichier actif : {source_path}\n"
+                f"  (Désormais la version optimisée)\n"
+                f"  Taille : {QCow2CloneResizer.format_size(final_size)}\n\n"
+                f"✓ Fichier original : SUPPRIMÉ\n"
+                f"✓ Fichier intermédiaire : SUPPRIMÉ\n"
+                f"✓ Espace disque total libéré : {QCow2CloneResizer.format_size(total_space_saved)}\n\n"
+                f"L'image optimisée est prête à l'emploi !")
             
         except FileNotFoundError as e:
             log_error(f"Cleanup failed - file not found: {e}")
-            error_msg = f"Could not find file during cleanup:\n{e}\n\n"
-            error_msg += f"Files may have been moved or deleted.\n"
-            error_msg += f"Check file locations manually:\n"
-            error_msg += f"• Original: {source_path}\n"
-            error_msg += f"• Intermediate: {intermediate_path}\n"
-            error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - File Not Found", error_msg))
+            error_msg = f"Fichier introuvable lors du nettoyage :\n{e}\n\n"
+            error_msg += f"Les fichiers ont peut-être été déplacés ou supprimés.\n"
+            error_msg += f"Vérifiez les emplacements des fichiers manuellement :\n"
+            error_msg += f"• Original : {source_path}\n"
+            error_msg += f"• Intermédiaire : {intermediate_path}\n"
+            error_msg += f"• Final : {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Nettoyage échoué - Fichier introuvable", error_msg))
         except PermissionError as e:
             log_error(f"Cleanup failed - permission denied: {e}")
-            error_msg = f"Permission denied during file cleanup:\n{e}\n\n"
-            error_msg += f"Check file permissions or run as administrator.\n\n"
-            error_msg += f"Manual cleanup may be required for:\n"
-            error_msg += f"• Original: {source_path}\n"
-            error_msg += f"• Intermediate: {intermediate_path}\n"
-            error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - Permission Denied", error_msg))
+            error_msg = f"Accès refusé lors du nettoyage des fichiers :\n{e}\n\n"
+            error_msg += f"Vérifiez les permissions des fichiers ou exécutez en tant qu'administrateur.\n\n"
+            error_msg += f"Un nettoyage manuel peut être nécessaire pour :\n"
+            error_msg += f"• Original : {source_path}\n"
+            error_msg += f"• Intermédiaire : {intermediate_path}\n"
+            error_msg += f"• Final : {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Nettoyage échoué - Accès refusé", error_msg))
         except OSError as e:
             log_error(f"Cleanup failed - system error: {e}")
-            error_msg = f"System error during file cleanup:\n{e}\n\n"
-            error_msg += f"Check disk space and file system status.\n\n"
-            error_msg += f"Manual cleanup may be required for:\n"
-            error_msg += f"• Original: {source_path}\n"
-            error_msg += f"• Intermediate: {intermediate_path}\n"
-            error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed - System Error", error_msg))
+            error_msg = f"Erreur système lors du nettoyage des fichiers :\n{e}\n\n"
+            error_msg += f"Vérifiez l'espace disque et l'état du système de fichiers.\n\n"
+            error_msg += f"Un nettoyage manuel peut être nécessaire pour :\n"
+            error_msg += f"• Original : {source_path}\n"
+            error_msg += f"• Intermédiaire : {intermediate_path}\n"
+            error_msg += f"• Final : {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Nettoyage échoué - Erreur système", error_msg))
         except Exception as e:
             log_error(f"Cleanup failed - unexpected error: {e}")
-            error_msg = f"Unexpected error during cleanup:\n{e}\n\n"
-            error_msg += f"Check file status manually:\n"
-            error_msg += f"• Original: {source_path}\n"
-            error_msg += f"• Intermediate: {intermediate_path}\n"
-            error_msg += f"• Final: {final_path}"
-            self.root.after(0, lambda: messagebox.showerror("Cleanup Failed", error_msg))
+            error_msg = f"Erreur inattendue lors du nettoyage :\n{e}\n\n"
+            error_msg += f"Vérifiez l'état des fichiers manuellement :\n"
+            error_msg += f"• Original : {source_path}\n"
+            error_msg += f"• Intermédiaire : {intermediate_path}\n"
+            error_msg += f"• Final : {final_path}"
+            self.root.after(0, lambda: messagebox.showerror("Nettoyage échoué", error_msg))
 
 
     def _show_message_and_wait(self, title, message):
@@ -3195,13 +3195,13 @@ class QCow2CloneResizerGUI:
             return False
         
         if not os.path.exists(path):
-            messagebox.showerror("File Not Found", 
+            messagebox.showerror("Fichier introuvable", 
                                 "Le fichier sélectionné n'existe pas")
             return False
         
         if not self.image_info:
-            messagebox.showwarning("Image Not Analyzed", 
-                                  "Please analyze the image first by clicking 'Analyze'")
+            messagebox.showwarning("Image non analysée", 
+                                  "Veuillez d'abord analyser l'image en cliquant sur 'Analyser'")
             return False
         
         return True
@@ -3382,41 +3382,41 @@ class QCow2CloneResizerGUI:
 def main():
     """Main entry point"""
     print("=" * 75)
-    print("QCOW2 CLONE RESIZER - GPARTED + SAFE CLONING METHOD")
+    print("QCOW2 CLONE RESIZER - MÉTHODE GPARTED + CLONAGE SÉCURISÉ")
     print("=" * 75)
     
     # Check tools
     missing, optional = QCow2CloneResizer.check_tools()
     if missing:
-        print(f"ERROR: Missing required tools: {', '.join(missing)}")
-        print("\nINSTALL REQUIRED PACKAGES:")
+        print(f"ERREUR : Outils requis manquants : {', '.join(missing)}")
+        print("\nINSTALLER LES PAQUETS REQUIS :")
         print("Ubuntu/Debian: sudo apt install qemu-utils parted gparted")
         print("Fedora/RHEL: sudo dnf install qemu-img parted gparted") 
         print("Arch Linux: sudo pacman -S qemu parted gparted")
-        input("\nPress Enter to exit...")
+        input("\nAppuyez sur Entrée pour quitter...")
         sys.exit(1)
     
-    print("All required tools are available")
+    print("Tous les outils requis sont disponibles")
     
     if optional:
-        print(f"Optional recommended tools: {', '.join(optional)}")
-        print("   These tools can speed up certain cloning operations")
+        print(f"Outils optionnels recommandés : {', '.join(optional)}")
+        print("   Ces outils peuvent accélérer certaines opérations de clonage")
     
     # Check if running as root
     if os.geteuid() != 0:
-        print("WARNING: Not running as root")
-        print("   Some operations will require privilege escalation")
-        print("   For best experience, run with: sudo python3 qcow2_clone_resizer.py")
+        print("ATTENTION : Exécution sans les droits root")
+        print("   Certaines opérations nécessiteront une élévation de privilèges")
+        print("   Pour une meilleure expérience, lancez avec : sudo python3 qcow2_clone_resizer.py")
     else:
-        print("Running with root privileges")
+        print("Exécution avec les privilèges root")
     
-    print("\nLaunching GUI...")
-    print("PROCESS OVERVIEW:")
-    print("   1. Select QCOW2 image file")
-    print("   2. Launch GParted for manual partition editing")
-    print("   3. Apply partition changes in GParted")
-    print("   4. Choose optimal size for new image")
-    print("   5. Safe cloning to new optimized image (with preallocation=metadata)")
+    print("\nLancement de l'interface graphique...")
+    print("APERÇU DU PROCESSUS :")
+    print("   1. Sélectionner le fichier image QCOW2")
+    print("   2. Lancer GParted pour l'édition manuelle des partitions")
+    print("   3. Appliquer les modifications de partitions dans GParted")
+    print("   4. Choisir la taille optimale pour la nouvelle image")
+    print("   5. Clonage sécurisé vers la nouvelle image optimisée (avec preallocation=metadata)")
     print("=" * 75)
     
     # Launch GUI
@@ -3426,18 +3426,18 @@ def main():
     try:
         root.mainloop()
     except KeyboardInterrupt:
-        print("\nApplication interrupted by user")
+        print("\nApplication interrompue par l'utilisateur")
     except ImportError as e:
         print(f"\nImport error: {e}")
-        print("Please ensure all required Python modules are installed")
+        print("Veuillez vous assurer que tous les modules Python requis sont installés")
     except OSError as e:
         print(f"\nSystem error: {e}")
-        print("Check system resources and permissions")
+        print("Vérifiez les ressources système et les permissions")
     except RuntimeError as e:
         print(f"\nRuntime error: {e}")
-        print("Application encountered an internal error")
+        print("L'application a rencontré une erreur interne")
     
-    print("Application closed - Goodbye!")
+    print("Application fermée - Au revoir !")
 
 
 if __name__ == "__main__":

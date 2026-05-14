@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Virt-Manager Launcher Module
-Handles launching virt-manager with proper privilege escalation and permission management
-for virtual machine images on system storage or external drives.
+Module de lancement de Virt-Manager
+Gère le lancement de virt-manager avec une élévation de privilèges appropriée et une bonne gestion
+des permissions pour les images de machines virtuelles stockées sur le système ou sur des disques externes.
 """
 
 import os
@@ -12,11 +12,11 @@ from pathlib import Path
 
 
 class VirtManagerLauncher:
-    """Launcher class for virt-manager with privilege management"""
+    """Classe de lancement de virt-manager avec gestion des privilèges"""
     
     @staticmethod
     def check_virt_manager():
-        """Check if virt-manager and required tools are available"""
+        """Vérifier si virt-manager et les outils requis sont disponibles"""
         required_tools = {
             'virt-manager': 'virt-manager',
             'virsh': 'libvirt-clients',
@@ -33,75 +33,75 @@ class VirtManagerLauncher:
     @staticmethod
     def fix_image_permissions(image_path, log_callback=None):
         """
-        Fix permissions on VM image for libvirt access
-        Ensures proper ownership and permissions for QEMU/KVM access
-        Works with external drives through libvirt configuration
+        Corriger les permissions de l'image de VM pour l'accès via libvirt
+        Assure une propriété et des permissions correctes pour l'accès QEMU/KVM
+        Fonctionne avec les disques externes via la configuration de libvirt
         
         Args:
-            image_path: Path to the VM image file
-            log_callback: Optional callback function for logging (log_info function)
+            image_path: Chemin du fichier image de la VM
+            log_callback: Fonction de rappel optionnelle pour la journalisation (fonction log_info)
             
         Returns:
-            bool: True if permissions were verified successfully
+            bool: True si les permissions ont été vérifiées avec succès
             
         Raises:
-            FileNotFoundError: If image file doesn't exist
-            OSError: If filesystem operations fail
+            FileNotFoundError: Si le fichier image n'existe pas
+            OSError: Si les opérations sur le système de fichiers échouent
         """
         try:
             if not os.path.exists(image_path):
-                error_msg = f"Image file not found: {image_path}"
+                error_msg = f"Fichier image introuvable : {image_path}"
                 if log_callback:
                     log_callback(error_msg)
                 raise FileNotFoundError(error_msg)
             
             if log_callback:
-                log_callback(f"Verifying image access: {image_path}")
+                log_callback(f"Vérification de l'accès à l'image : {image_path}")
             
-            # Get current file stats
+            # Obtenir les statistiques actuelles du fichier
             file_stat = os.stat(image_path)
             current_perms = oct(file_stat.st_mode)[-3:]
             
             if log_callback:
-                log_callback(f"Image permissions: {current_perms}")
+                log_callback(f"Permissions de l'image : {current_perms}")
             
-            # Check if file is readable
+            # Vérifier si le fichier est lisible
             if not os.access(image_path, os.R_OK):
                 if log_callback:
-                    log_callback("Warning: Image file not readable")
+                    log_callback("Avertissement : le fichier image n'est pas lisible")
             
-            # Since libvirt daemon runs as root (configured in qemu.conf),
-            # file accessibility is less of a concern
+            # Comme le démon libvirt s'exécute en tant que root (configuré dans qemu.conf),
+            # l'accessibilité du fichier est moins problématique
             if log_callback:
-                log_callback(f"Image is accessible for libvirt (daemon runs as root)")
+                log_callback("L'image est accessible pour libvirt (le démon s'exécute en tant que root)")
             
             return True
             
         except (FileNotFoundError, OSError) as e:
             if log_callback:
-                log_callback(f"Error verifying image: {str(e)}")
+                log_callback(f"Erreur lors de la vérification de l'image : {str(e)}")
             raise
     
     @staticmethod
     def _is_external_drive(path):
         """
-        Check if a path is on an external drive
+        Vérifier si un chemin se trouve sur un disque externe
         
         Args:
-            path: File path to check
+            path: Chemin du fichier à vérifier
             
         Returns:
-            bool: True if appears to be on external drive
+            bool: True si le chemin semble être sur un disque externe
         """
         try:
-            # Get filesystem type
+            # Obtenir le type de système de fichiers
             import subprocess
             result = subprocess.run(['df', path], capture_output=True, text=True)
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')
                 if len(lines) > 1:
                     fs_line = lines[1]
-                    # Check for common external drive mount points and filesystem types
+                    # Vérifier les points de montage et types de systèmes de fichiers externes courants
                     if any(x in fs_line for x in ['/mnt', '/media', 'ntfs', 'vfat', 'exfat']):
                         return True
         except (OSError, subprocess.SubprocessError):
@@ -154,7 +154,8 @@ class VirtManagerLauncher:
                 return True
             time.sleep(0.5)
 
-        # 4. Fallback : vérifier via virsh
+
+        # 4. Repli : vérifier via virsh
         try:
             result = subprocess.run(
                 ["virsh", "-c", "qemu:///system", "list"],
@@ -174,26 +175,26 @@ class VirtManagerLauncher:
     @staticmethod
     def launch_virt_manager(image_path=None, log_callback=None):
         """
-        Launch virt-manager with proper privilege escalation
+        Lancer virt-manager avec une élévation de privilèges appropriée
         
         Args:
-            image_path: Optional path to VM image to open in virt-manager
-            log_callback: Optional callback function for logging (log_info function)
+            image_path: Chemin optionnel vers l'image de VM à ouvrir dans virt-manager
+            log_callback: Fonction de rappel optionnelle pour la journalisation (fonction log_info)
             
         Returns:
-            int: Return code from virt-manager (0 on success)
+            int: Code de retour de virt-manager (0 en cas de succès)
             
         Raises:
-            FileNotFoundError: If virt-manager not found
-            PermissionError: If permission denied
-            OSError: If system error occurs
-            subprocess.CalledProcessError: If virt-manager fails
-            subprocess.TimeoutExpired: If operation times out
+            FileNotFoundError: Si virt-manager est introuvable
+            PermissionError: Si la permission est refusée
+            OSError: En cas d'erreur système
+            subprocess.CalledProcessError: Si virt-manager échoue
+            subprocess.TimeoutExpired: Si l'opération expire
         """
         try:
-            # Check if virt-manager is available
+            # Vérifier si virt-manager est disponible
             if not shutil.which('virt-manager'):
-                error_msg = "virt-manager not found - please install the virt-manager package"
+                error_msg = "virt-manager introuvable - veuillez installer le paquet virt-manager"
                 if log_callback:
                     log_callback(error_msg)
                 raise FileNotFoundError(error_msg)
@@ -201,48 +202,49 @@ class VirtManagerLauncher:
             # S'assurer que libvirtd tourne avant de lancer virt-manager
             VirtManagerLauncher.ensure_libvirtd_running(log_callback)
 
-            # Fix image permissions if path provided
+
+            # Corriger les permissions de l'image si un chemin est fourni
             if image_path:
                 if not os.path.exists(image_path):
-                    error_msg = f"VM image not found: {image_path}"
+                    error_msg = f"Image de VM introuvable : {image_path}"
                     if log_callback:
                         log_callback(error_msg)
                     raise FileNotFoundError(error_msg)
                 
                 if log_callback:
-                    log_callback(f"Preparing VM image: {image_path}")
+                    log_callback(f"Préparation de l'image de VM : {image_path}")
                 
-                # Fix permissions for libvirt access
+                # Corriger les permissions pour l'accès via libvirt
                 try:
                     VirtManagerLauncher.fix_image_permissions(image_path, log_callback)
                 except (FileNotFoundError, PermissionError, OSError) as e:
-                    error_msg = f"Failed to fix image permissions: {str(e)}"
+                    error_msg = f"Échec de la correction des permissions de l'image : {str(e)}"
                     if log_callback:
                         log_callback(error_msg)
-                    # Continue anyway - virt-manager might still work with proper escalation
+                    # Continuer quand même - virt-manager peut encore fonctionner avec une élévation appropriée
             
             if log_callback:
-                log_callback("Launching virt-manager...")
+                log_callback("Lancement de virt-manager...")
             
-            # Prepare environment
+            # Préparer l'environnement
             env = os.environ.copy()
             env['DISPLAY'] = env.get('DISPLAY', ':0')
             
-            # Build command
+            # Construire la commande
             cmd = ['virt-manager']
             
             if image_path:
                 cmd.extend(['--connect', 'qemu:///system', '--show-domain-console'])
             
-            # Check if running as root
+            # Vérifier si l'exécution se fait en tant que root
             if os.geteuid() == 0:
-                # Running as root - can launch directly
+                # Exécution en tant que root - lancement direct possible
                 if log_callback:
-                    log_callback("Launching virt-manager (running as root)")
+                    log_callback("Lancement de virt-manager (exécution en tant que root)")
                 
-                print(f"Launching virt-manager: {' '.join(cmd)}")
+                print(f"Lancement de virt-manager : {' '.join(cmd)}")
                 
-                # Launch without timeout - let user control when to close
+                # Lancer sans délai global - laisser l'utilisateur décider quand fermer
                 try:
                     process = subprocess.Popen(
                         cmd,
@@ -250,34 +252,34 @@ class VirtManagerLauncher:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         universal_newlines=True,
-                        preexec_fn=None  # Already root
+                        preexec_fn=None  # Déjà root
                     )
                     
-                    # Wait for process with a reasonable timeout for initial startup
+                    # Attendre le processus avec un délai raisonnable pour le démarrage initial
                     try:
                         stdout, stderr = process.communicate(timeout=5)
-                        # If it exits within 5 seconds, something went wrong
+                        # Si le programme quitte en moins de 5 secondes, quelque chose s'est mal passé
                         if process.returncode != 0:
-                            error_msg = f"virt-manager exited with code {process.returncode}"
+                            error_msg = f"virt-manager s'est arrêté avec le code {process.returncode}"
                             if stderr:
                                 error_msg += f"\n{stderr}"
                             if log_callback:
                                 log_callback(error_msg)
                             raise subprocess.CalledProcessError(process.returncode, cmd)
                     except subprocess.TimeoutExpired:
-                        # This is expected - virt-manager is running
+                        # C'est attendu - virt-manager est en cours d'exécution
                         if log_callback:
-                            log_callback("virt-manager launched successfully (running in background)")
+                            log_callback("virt-manager lancé avec succès (exécution en arrière-plan)")
                         return 0
                 
                 except subprocess.CalledProcessError as e:
-                    error_msg = f"virt-manager launch failed: {str(e)}"
+                    error_msg = f"Échec du lancement de virt-manager : {str(e)}"
                     if log_callback:
                         log_callback(error_msg)
                     raise
             
             else:
-                # Not running as root - need privilege escalation
+                # Pas exécuté en tant que root - élévation de privilèges nécessaire
                 escalation_commands = [
                     ['pkexec', 'virt-manager'] + ([] if not image_path else ['--connect', 'qemu:///system']),
                     ['gksudo', 'virt-manager'] + ([] if not image_path else ['--connect', 'qemu:///system']),
@@ -292,9 +294,9 @@ class VirtManagerLauncher:
                         escalation_found = True
                         
                         if log_callback:
-                            log_callback(f"Launching virt-manager with {escalation_cmd[0]}")
+                            log_callback(f"Lancement de virt-manager avec {escalation_cmd[0]}")
                         
-                        print(f"Launching virt-manager: {' '.join(escalation_cmd)}")
+                        print(f"Lancement de virt-manager : {' '.join(escalation_cmd)}")
                         
                         try:
                             process = subprocess.Popen(
@@ -305,32 +307,32 @@ class VirtManagerLauncher:
                                 universal_newlines=True
                             )
                             
-                            # Wait for process with timeout for initial startup
+                            # Attendre le processus avec délai pour le démarrage initial
                             try:
                                 stdout, stderr = process.communicate(timeout=5)
                                 if process.returncode != 0:
-                                    error_msg = f"virt-manager exited with code {process.returncode}"
+                                    error_msg = f"virt-manager s'est arrêté avec le code {process.returncode}"
                                     if stderr:
                                         error_msg += f"\n{stderr}"
                                     if log_callback:
                                         log_callback(error_msg)
                                     last_error = error_msg
-                                    continue  # Try next escalation method
+                                    continue  # Essayer la méthode d'élévation suivante
                             except subprocess.TimeoutExpired:
-                                # This is expected - virt-manager is running
+                                # C'est attendu - virt-manager est en cours d'exécution
                                 if log_callback:
-                                    log_callback("virt-manager launched successfully (running in background)")
+                                    log_callback("virt-manager lancé avec succès (exécution en arrière-plan)")
                                 return 0
                         
                         except subprocess.CalledProcessError as e:
-                            error_msg = f"Failed with {escalation_cmd[0]}: {str(e)}"
+                            error_msg = f"Échec avec {escalation_cmd[0]} : {str(e)}"
                             if log_callback:
                                 log_callback(error_msg)
                             last_error = error_msg
                             continue
                         
                         except FileNotFoundError as e:
-                            error_msg = f"Escalation command not found: {escalation_cmd[0]}"
+                            error_msg = f"Commande d'élévation introuvable : {escalation_cmd[0]}"
                             if log_callback:
                                 log_callback(error_msg)
                             last_error = error_msg
@@ -338,15 +340,15 @@ class VirtManagerLauncher:
                 
                 if not escalation_found:
                     error_msg = (
-                        "No privilege escalation method found.\n"
-                        "Please install one of: pkexec (polkit-1), gksudo (gksu), or sudo\n"
-                        "Or run the application with sudo"
+                        "Aucune méthode d'élévation de privilèges trouvée.\n"
+                        "Veuillez installer l'un des outils suivants : pkexec (polkit-1), gksudo (gksu) ou sudo\n"
+                        "Ou exécuter l'application avec sudo"
                     )
                     if log_callback:
                         log_callback(error_msg)
                     raise PermissionError(error_msg)
                 
-                error_msg = "All privilege escalation methods failed"
+                error_msg = "Toutes les méthodes d'élévation de privilèges ont échoué"
                 if last_error:
                     error_msg += f"\n{last_error}"
                 if log_callback:
@@ -355,76 +357,76 @@ class VirtManagerLauncher:
         
         except FileNotFoundError as e:
             if log_callback:
-                log_callback(f"File not found error: {str(e)}")
+                log_callback(f"Erreur fichier introuvable : {str(e)}")
             raise
         except PermissionError as e:
             if log_callback:
-                log_callback(f"Permission error: {str(e)}")
+                log_callback(f"Erreur de permission : {str(e)}")
             raise
         except OSError as e:
             if log_callback:
-                log_callback(f"System error: {str(e)}")
+                log_callback(f"Erreur système : {str(e)}")
             raise
         except subprocess.CalledProcessError as e:
             if log_callback:
-                log_callback(f"Command error: {str(e)}")
+                log_callback(f"Erreur de commande : {str(e)}")
             raise
         except subprocess.SubprocessError as e:
             if log_callback:
-                log_callback(f"Subprocess error: {str(e)}")
+                log_callback(f"Erreur de sous-processus : {str(e)}")
             raise
         except (AttributeError, TypeError) as e:
             if log_callback:
-                log_callback(f"Internal error: {str(e)}")
+                log_callback(f"Erreur interne : {str(e)}")
             raise
     
     @staticmethod
     def launch_virt_manager_with_image(image_path, log_callback=None):
         """
-        Launch virt-manager and optionally open/import a VM image
-        Works with images on external drives thanks to libvirt configuration
+        Lancer virt-manager et éventuellement ouvrir/importer une image de VM
+        Fonctionne avec les images sur disques externes grâce à la configuration de libvirt
         
         Args:
-            image_path: Path to VM image file to work with
-            log_callback: Optional callback function for logging
+            image_path: Chemin du fichier image de la VM à utiliser
+            log_callback: Fonction de rappel optionnelle pour la journalisation
             
         Returns:
-            int: Return code (0 on success)
+            int: Code de retour (0 en cas de succès)
             
         Raises:
-            Various exceptions from launch_virt_manager
+            Diverses exceptions issues de launch_virt_manager
         """
         try:
             if log_callback:
-                log_callback(f"Preparing to launch virt-manager for image: {image_path}")
+                log_callback(f"Préparation du lancement de virt-manager pour l'image : {image_path}")
             
-            # Verify image exists
+            # Vérifier que l'image existe
             if not os.path.exists(image_path):
-                error_msg = f"Image file not found: {image_path}"
+                error_msg = f"Fichier image introuvable : {image_path}"
                 if log_callback:
                     log_callback(error_msg)
                 raise FileNotFoundError(error_msg)
             
-            # Get file info
+            # Obtenir les informations sur le fichier
             file_size = os.path.getsize(image_path)
             file_path_obj = Path(image_path)
             
             if log_callback:
-                log_callback(f"Image file: {file_path_obj.name}")
-                log_callback(f"File size: {VirtManagerLauncher.format_size(file_size)}")
-                log_callback(f"Full path: {image_path}")
+                log_callback(f"Fichier image : {file_path_obj.name}")
+                log_callback(f"Taille du fichier : {VirtManagerLauncher.format_size(file_size)}")
+                log_callback(f"Chemin complet : {image_path}")
             
-            # Launch virt-manager with the image
+            # Lancer virt-manager avec l'image
             return VirtManagerLauncher.launch_virt_manager(image_path, log_callback)
         
         except (FileNotFoundError, OSError) as e:
             if log_callback:
-                log_callback(f"Error launching virt-manager: {str(e)}")
+                log_callback(f"Erreur lors du lancement de virt-manager : {str(e)}")
             raise
     
     @staticmethod
     def format_size(bytes_val):
-        """Format bytes to human readable size"""
+        """Formater des octets en taille lisible par un humain"""
         if bytes_val == 0:
             return "0 B"
         

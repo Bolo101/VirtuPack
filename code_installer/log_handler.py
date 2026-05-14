@@ -1,345 +1,775 @@
-"""
-log_handler.py – Logging with volume-based rotation.
-
-Rotation: when disk2qcow2.log exceeds MAX_LOG_SIZE it is renamed
-          disk2qcow2.log.YYYYMMDD_HHMMSS and a new file is started.
-          The oldest files beyond MAX_ROTATED_FILES are deleted.
-
-Paths:
-  /var/log/p2v_converter/disk2qcow2.log        <- current log
-  /var/log/p2v_converter/disk2qcow2.log.*      <- rotated logs
-"""
-
-import glob
 import logging
-import os
 import sys
-import textwrap
+import os
 from datetime import datetime
 from typing import List
-
-# ── Constants ──────────────────────────────────────────────────────────────────
-LOG_DIR           = "/var/log/p2v_converter"
-log_file          = os.path.join(LOG_DIR, "disk2qcow2.log")
-MAX_LOG_SIZE      = 10 * 1024 * 1024   # 10 MB
-MAX_ROTATED_FILES = 10
-
-# ── Session state ──────────────────────────────────────────────────────────────
-_session_logs: List[str] = []
-_session_active: bool    = False
+import textwrap
 
 
-# ── Session-capturing handler ──────────────────────────────────────────────────
+# Définir le chemin du fichier de log
+log_file = "/var/log/disk2qcow2.log"
+
+
+# Suivi de session - capturer tous les logs pendant la session en cours
+_session_logs = []
+_session_active = False
+
 class SessionCapturingHandler(logging.Handler):
-    """Captures all log records while a session is active."""
-    def emit(self, record: logging.LogRecord) -> None:
+    """Gestionnaire personnalisé pour capturer les logs de session"""
+    def emit(self, record):
         global _session_logs, _session_active
         if _session_active:
-            ts  = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
-            msg = f"[{ts}] {record.levelname}: {record.getMessage()}"
-            _session_logs.append(msg)
+            # Formater le message de la même manière que le gestionnaire de fichier
+            timestamp = datetime.fromtimestamp(record.created).strftime('%Y-%m-%d %H:%M:%S')
+            formatted_message = f"[{timestamp}] {record.levelname}: {record.getMessage()}"
+            _session_logs.append(formatted_message)
 
 
-# ── Rotation ───────────────────────────────────────────────────────────────────
-def _rotate_if_needed() -> None:
-    """Rotate current log if it exceeds MAX_LOG_SIZE."""
-    if not os.path.isfile(log_file):
-        return
-    if os.path.getsize(log_file) < MAX_LOG_SIZE:
-        return
+# Configurer la journalisation avec un format de base
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
-    rotated = f"{log_file}.{ts}"
-    try:
-        os.rename(log_file, rotated)
-    except OSError as e:
-        print(f"[log_handler] Cannot rotate log: {e}", file=sys.stderr)
-        return
-
-    # Purge oldest beyond quota
-    existing = sorted(glob.glob(f"{log_file}.*"))
-    while len(existing) > MAX_ROTATED_FILES:
-        oldest = existing.pop(0)
-        try:
-            os.remove(oldest)
-        except OSError:
-            pass
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
-def _setup_file_handler() -> None:
-    """(Re-)attach a FileHandler after rotation or on startup."""
-    global _file_handler
-    try:
-        if _file_handler:
-            _logger.removeHandler(_file_handler)
-            _file_handler.close()
-    except NameError:
-        pass
+# Ajouter le gestionnaire de capture de session
+session_handler = SessionCapturingHandler()
+logger.addHandler(session_handler)
 
-    try:
-        h = logging.FileHandler(log_file)
-        h.setLevel(logging.INFO)
-        h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        _logger.addHandler(h)
-        _file_handler = h
-    except (PermissionError, OSError) as e:
-        print(f"[log_handler] Cannot open log file: {e}", file=sys.stderr)
-
-
-# ── Logger initialisation ──────────────────────────────────────────────────────
-os.makedirs(LOG_DIR, mode=0o750, exist_ok=True)
-
-_logger = logging.getLogger("p2v_converter")
-_logger.setLevel(logging.INFO)
-_logger.propagate = False
-
-_console = logging.StreamHandler(sys.stdout)
-_console.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-_logger.addHandler(_console)
-
-_session_handler = SessionCapturingHandler()
-_logger.addHandler(_session_handler)
-
-_file_handler = None
-_rotate_if_needed()
-_setup_file_handler()
+try:
+    log_handler = logging.FileHandler(log_file)
+    log_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    log_handler.setFormatter(formatter)
+    logger.addHandler(log_handler)
+except PermissionError:
+    print("Erreur : permission refusée. Veuillez exécuter le script avec sudo.", file=sys.stderr)
+    sys.exit(1)  # Quitter le script pour imposer l'utilisation de sudo
+except FileNotFoundError:
+    print(f"Erreur : le répertoire de logs n'existe pas : {os.path.dirname(log_file)}", file=sys.stderr)
+    sys.exit(1)
+except OSError as e:
+    print(f"Erreur : impossible de créer le gestionnaire de logs : {e}", file=sys.stderr)
+    sys.exit(1)
 
 
-# ── Public logging API ─────────────────────────────────────────────────────────
 def log_info(message: str) -> None:
-    _logger.info(message)
-
+    """Journaliser une information générale à la fois dans la console et dans le fichier de log."""
+    logger.info(message)
 
 def log_error(message: str) -> None:
-    _logger.error(message)
-
+    """Journaliser un message d'erreur à la fois dans la console et dans le fichier de log."""
+    logger.error(message)
 
 def log_warning(message: str) -> None:
-    _logger.warning(message)
+    """Journaliser un message d'avertissement à la fois dans la console et dans le fichier de log."""
+    logger.warning(message)
 
 
-# ── Session management ─────────────────────────────────────────────────────────
 def session_start() -> None:
+    """Journaliser le début de session avec un séparateur clair et démarrer la capture des logs de session"""
     global _session_logs, _session_active
-    _session_logs   = []
+    
+    # Effacer les logs de la session précédente et commencer la capture
+    _session_logs = []
     _session_active = True
-
-    _rotate_if_needed()
-    _setup_file_handler()
-
-    sep = "=" * 80
-    ts  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    separator = "=" * 80
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     try:
         with open(log_file, "a") as f:
-            f.write(f"\n{sep}\nSESSION START: {ts}\n{sep}\n")
+            f.write(f"\n{separator}\n")
+            f.write(f"SESSION START: {timestamp}\n")
+            f.write(f"{separator}\n")
+    except PermissionError:
+        log_error("Permission refusée lors de l'écriture du début de session dans le fichier de log")
+        return
     except OSError as e:
-        _logger.error(f"Cannot write session start: {e}")
-
-    log_info(f"New session started at {ts}")
+        log_error(f"Erreur système lors de l'écriture du début de session : {e}")
+        return
+    except IOError as e:
+        log_error(f"Erreur d'E/S lors de l'écriture du début de session : {e}")
+        return
+    
+    # Ceci sera également capturé dans les logs de session
+    log_info(f"Nouvelle session démarrée à {timestamp}")
 
 
 def session_end() -> None:
+    """Journaliser la fin de session avec un séparateur clair et arrêter la capture des logs de session"""
     global _session_active
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_info(f"Session ended at {ts}")
+    
+    separator = "=" * 80
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Journaliser la fin de session (cela sera capturé avant l'arrêt)
+    log_info(f"Session terminée à {timestamp}")
+    
+    # Arrêter la capture des logs de session
     _session_active = False
-
-    sep = "=" * 80
+    
     try:
         with open(log_file, "a") as f:
-            f.write(f"\n{sep}\nSESSION END: {ts}\n{sep}\n\n")
+            f.write(f"\n{separator}\n")
+            f.write(f"SESSION END: {timestamp}\n")
+            f.write(f"{separator}\n\n")
+    except PermissionError:
+        log_error("Permission refusée lors de l'écriture de la fin de session dans le fichier de log")
     except OSError as e:
-        _logger.error(f"Cannot write session end: {e}")
+        log_error(f"Erreur système lors de l'écriture de la fin de session : {e}")
+    except IOError as e:
+        log_error(f"Erreur d'E/S lors de l'écriture de la fin de session : {e}")
 
 
-def log_application_exit(exit_method: str = "Exit button") -> None:
-    log_info(f"Application closed via {exit_method}")
+def log_application_exit(exit_method: str = "Bouton Quitter") -> None:
+    """Journaliser la fermeture de l'application et terminer correctement la session."""
+    log_info(f"Application fermée par l'utilisateur via {exit_method}")
     session_end()
 
-
 def get_current_session_logs() -> List[str]:
+    """Récupérer tous les logs de la session en cours"""
+    global _session_logs
     return _session_logs.copy()
 
-
 def is_session_active() -> bool:
+    """Vérifier si une session de journalisation est actuellement active"""
+    global _session_active
     return _session_active
 
-
-def get_all_log_files() -> List[str]:
-    """Return all log files (current + rotated), newest first."""
-    files = []
-    if os.path.isfile(log_file):
-        files.append(log_file)
-    files.extend(sorted(glob.glob(f"{log_file}.*"), reverse=True))
-    return files
-
-
-def purge_logs() -> None:
-    """Delete all log files (current + rotated). Reserved for admin use."""
-    for f in get_all_log_files():
-        try:
-            os.remove(f)
-        except OSError as e:
-            _logger.error(f"Cannot delete {f}: {e}")
-    # Re-open a fresh file handler
-    _setup_file_handler()
-    log_info("Logs purged by administrator.")
-
-
-# ── PDF generation (stdlib only) ───────────────────────────────────────────────
 def generate_session_pdf(output_path: str = None) -> str:
-    """Generate a PDF from the current session logs. Returns path to PDF."""
-    logs = get_current_session_logs()
-    if not logs:
-        raise ValueError("No session logs available to generate PDF")
+    """
+    Générer un PDF à partir des logs de la session en cours en utilisant uniquement les bibliothèques intégrées.
 
-    if output_path is None:
-        ts           = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path  = f"/tmp/p2v_session_{ts}.pdf"
 
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    _create_simple_pdf(
-        output_path,
-        "P2V Converter - Session Log Report",
-        logs,
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"Total entries: {len(logs)}",
-    )
-    log_info(f"Session PDF generated: {output_path}")
-    return output_path
+    Args:
+        output_path (str, optional): Chemin complet du fichier PDF de sortie.
+                                     Si None, un chemin par défaut dans /tmp est utilisé.
 
+
+    Returns:
+        str: Chemin du fichier PDF généré
+
+
+    Raises:
+        ValueError: Si aucun log de session n'est disponible
+        PermissionError: Si l'écriture dans le répertoire de sortie est impossible
+        OSError: Si les opérations sur le système de fichiers échouent
+    """
+    # Récupérer les logs de la session en cours
+    session_logs = get_current_session_logs()
+
+    if not session_logs:
+        raise ValueError("Aucun log de session disponible pour générer le PDF")
+
+
+    if output_path:
+        pdf_path = output_path
+        output_dir = os.path.dirname(pdf_path)
+        if output_dir:
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+            except PermissionError:
+                error_msg = f"Permission refusée lors de la création du répertoire : {output_dir}"
+                log_error(error_msg)
+                raise PermissionError(error_msg)
+            except OSError as e:
+                error_msg = f"Erreur système lors de la création du répertoire {output_dir} : {str(e)}"
+                log_error(error_msg)
+                raise OSError(error_msg)
+    else:
+        output_dir = "/tmp/disk2qcow2_logs"
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except PermissionError:
+            error_msg = f"Permission refusée lors de la création du répertoire : {output_dir}"
+            log_error(error_msg)
+            raise PermissionError(error_msg)
+        except OSError as e:
+            error_msg = f"Erreur système lors de la création du répertoire {output_dir} : {str(e)}"
+            log_error(error_msg)
+            raise OSError(error_msg)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pdf_filename = f"disk2qcow2_session_{timestamp}.pdf"
+        pdf_path = os.path.join(output_dir, pdf_filename)
+    
+    try:
+        # Créer le PDF à l'aide d'une structure PDF basique
+        _create_simple_pdf(
+            pdf_path,
+            "Disk Cloner - Rapport de logs de session",
+            session_logs,
+            f"Rapport généré : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Nombre total d'entrées de log : {len(session_logs)}"
+        )
+        
+        log_info(f"PDF des logs de session généré avec succès : {pdf_path}")
+        return pdf_path
+        
+    except PermissionError:
+        error_msg = f"Permission refusée lors de l'écriture du PDF vers {pdf_path}"
+        log_error(error_msg)
+        raise
+    except OSError as e:
+        error_msg = f"Erreur système pendant la génération du PDF : {str(e)}"
+        log_error(error_msg)
+        raise
+    except IOError as e:
+        error_msg = f"Erreur d'E/S pendant la génération du PDF : {str(e)}"
+        log_error(error_msg)
+        raise IOError(error_msg)
 
 def generate_log_file_pdf(output_path: str = None) -> str:
-    """Generate a PDF from all log files (current + rotated). Returns path to PDF."""
-    all_lines: List[str] = []
-    for lf in get_all_log_files():
+    """
+    Générer un PDF à partir du fichier de log complet en utilisant uniquement les bibliothèques intégrées.
+
+
+    Args:
+        output_path (str, optional): Chemin complet du fichier PDF de sortie.
+                                     Si None, un chemin par défaut dans /tmp est utilisé.
+
+
+    Returns:
+        str: Chemin du fichier PDF généré
+
+
+    Raises:
+        FileNotFoundError: Si le fichier de log n'existe pas
+        PermissionError: Si la lecture du fichier de log ou l'écriture du PDF est impossible
+        UnicodeDecodeError: Si le fichier de log a des problèmes d'encodage
+        OSError: Si les opérations sur le système de fichiers échouent
+    """
+    if output_path:
+        pdf_path = output_path
+        output_dir = os.path.dirname(pdf_path)
+        if output_dir:
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+            except PermissionError:
+                error_msg = f"Permission refusée lors de la création du répertoire : {output_dir}"
+                log_error(error_msg)
+                raise PermissionError(error_msg)
+            except OSError as e:
+                error_msg = f"Erreur système lors de la création du répertoire {output_dir} : {str(e)}"
+                log_error(error_msg)
+                raise OSError(error_msg)
+    else:
+        output_dir = "/tmp/disk2qcow2_logs"
         try:
-            with open(lf, "r", errors="replace") as f:
-                all_lines.append("=" * 60)
-                all_lines.append(f"File: {os.path.basename(lf)}")
-                all_lines.append("=" * 60)
-                all_lines.extend(f.read().splitlines())
+            os.makedirs(output_dir, exist_ok=True)
+        except PermissionError:
+            error_msg = f"Permission refusée lors de la création du répertoire : {output_dir}"
+            log_error(error_msg)
+            raise PermissionError(error_msg)
         except OSError as e:
-            all_lines.append(f"[Error reading {lf}: {e}]")
-
-    if not all_lines:
-        raise ValueError("No log content available")
-
-    if output_path is None:
-        ts          = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = f"/tmp/p2v_complete_log_{ts}.pdf"
-
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    _create_simple_pdf(
-        output_path,
-        "P2V Converter - Complete Log Report",
-        all_lines,
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"Source files: {len(get_all_log_files())}",
-        f"Total lines: {len(all_lines)}",
-    )
-    log_info(f"Complete log PDF generated: {output_path}")
-    return output_path
+            error_msg = f"Erreur système lors de la création du répertoire {output_dir} : {str(e)}"
+            log_error(error_msg)
+            raise OSError(error_msg)
 
 
-# ── Low-level PDF builder (stdlib only) ───────────────────────────────────────
+        # Générer le nom du fichier avec horodatage
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pdf_filename = f"disk2qcow2_complete_log_{timestamp}.pdf"
+        pdf_path = os.path.join(output_dir, pdf_filename)
+    
+    # Lire le fichier de log
+    if not os.path.exists(log_file):
+        error_msg = f"Fichier de log introuvable : {log_file}"
+        log_error(error_msg)
+        raise FileNotFoundError(error_msg)
+    
+    try:
+        with open(log_file, 'r', encoding='utf-8') as f:
+            log_lines = [line.strip() for line in f.readlines() if line.strip()]
+    except UnicodeDecodeError:
+        # Essayer avec un encodage différent si UTF-8 échoue
+        try:
+            with open(log_file, 'r', encoding='latin-1') as f:
+                log_lines = [line.strip() for line in f.readlines() if line.strip()]
+        except UnicodeDecodeError as e:
+            error_msg = f"Impossible de décoder le fichier de log avec UTF-8 ou latin-1 : {str(e)}"
+            log_error(error_msg)
+            raise UnicodeDecodeError(e.encoding, e.object, e.start, e.end, error_msg)
+    except PermissionError:
+        error_msg = f"Permission refusée lors de la lecture du fichier de log : {log_file}"
+        log_error(error_msg)
+        raise
+    except OSError as e:
+        error_msg = f"Erreur système lors de la lecture du fichier de log : {str(e)}"
+        log_error(error_msg)
+        raise
+    except IOError as e:
+        error_msg = f"Erreur d'E/S lors de la lecture du fichier de log : {str(e)}"
+        log_error(error_msg)
+        raise IOError(error_msg)
+    
+    try:
+        # Créer le PDF à l'aide d'une structure PDF basique
+        _create_simple_pdf(
+            pdf_path,
+            "Disk Cloner - Rapport complet du fichier de log",
+            log_lines,
+            f"Rapport généré : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Fichier de log : {log_file}",
+            f"Nombre total de lignes de log : {len(log_lines)}"
+        )
+        
+        log_info(f"PDF du fichier de log complet généré avec succès : {pdf_path}")
+        return pdf_path
+        
+    except PermissionError:
+        error_msg = f"Permission refusée lors de l'écriture du PDF vers {pdf_path}"
+        log_error(error_msg)
+        raise
+    except OSError as e:
+        error_msg = f"Erreur système pendant la génération du PDF : {str(e)}"
+        log_error(error_msg)
+        raise
+    except IOError as e:
+        error_msg = f"Erreur d'E/S pendant la génération du PDF : {str(e)}"
+        log_error(error_msg)
+        raise IOError(error_msg)
+
+def _create_simple_pdf(file_path: str, title: str, content_lines: List[str], *info_lines: str) -> None:
+    """
+    Créer un fichier PDF simple en utilisant une structure PDF basique sans bibliothèques externes.
+    Gère automatiquement plusieurs pages.
+    
+    Args:
+        file_path: Chemin où enregistrer le PDF
+        title: Titre du document
+        content_lines: Liste des lignes de contenu à inclure
+        *info_lines: Lignes d'information supplémentaires à inclure dans l'en-tête
+        
+    Raises:
+        PermissionError: Si l'écriture dans le fichier est impossible
+        OSError: Si les opérations sur le système de fichiers échouent
+        ValueError: Si les paramètres fournis sont invalides
+    """
+    if not file_path:
+        raise ValueError("Le chemin du fichier ne peut pas être vide")
+    if not title:
+        raise ValueError("Le titre ne peut pas être vide")
+    if not isinstance(content_lines, list):
+        raise ValueError("Les lignes de contenu doivent être une liste")
+    
+    try:
+        with open(file_path, 'wb') as f:
+            # En-tête PDF
+            f.write(b'%PDF-1.4\n')
+            
+            # Préparer le contenu et calculer le nombre de pages nécessaires
+            try:
+                pages_content = _prepare_pdf_pages(title, content_lines, *info_lines)
+                num_pages = len(pages_content)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Erreur lors de la préparation des pages PDF : {str(e)}")
+            
+            # Suivre les positions des objets pour la table xref
+            object_positions = {}
+            
+            # Objet 1 : catalogue
+            object_positions[1] = f.tell()
+            catalog_obj = b'''1 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+'''
+            f.write(catalog_obj)
+            
+            # Objet 2 : pages (parent) - construire les références de page dynamiquement
+            object_positions[2] = f.tell()
+            page_object_nums = [3 + i * 2 for i in range(num_pages)]  # Objets page : 3, 5, 7, 9, etc.
+            page_refs = " ".join([f"{num} 0 R" for num in page_object_nums])
+            
+            pages_obj = f'''2 0 obj
+<<
+/Type /Pages
+/Kids [{page_refs}]
+/Count {num_pages}
+>>
+endobj
+'''.encode('utf-8')
+            f.write(pages_obj)
+            
+            # Créer les objets page et les flux de contenu
+            obj_counter = 3
+            for page_idx, page_content in enumerate(pages_content):
+                content_bytes = page_content.encode('utf-8')
+                content_length = len(content_bytes)
+                
+                # Objet page (numéros impairs : 3, 5, 7, etc.)
+                object_positions[obj_counter] = f.tell()
+                page_obj = f'''{obj_counter} 0 obj
+<<
+/Type /Page
+/Parent 2 0 R
+/MediaBox [0 0 612 792]
+/Contents {obj_counter + 1} 0 R
+/Resources <<
+/Font <<
+/F1 {3 + num_pages * 2} 0 R
+>>
+>>
+>>
+endobj
+'''.encode('utf-8')
+                f.write(page_obj)
+                obj_counter += 1
+                
+                # Objet flux de contenu (numéros pairs : 4, 6, 8, etc.)
+                object_positions[obj_counter] = f.tell()
+                content_obj = f'''{obj_counter} 0 obj
+<<
+/Length {content_length}
+>>
+stream
+{page_content}
+endstream
+endobj
+'''.encode('utf-8')
+                f.write(content_obj)
+                obj_counter += 1
+            
+            # Objet police (dernier objet)
+            font_obj_num = obj_counter
+            object_positions[font_obj_num] = f.tell()
+            font_obj = f'''{font_obj_num} 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Courier
+>>
+endobj
+'''.encode('utf-8')
+            f.write(font_obj)
+            
+            # Table de références croisées
+            xref_start = f.tell()
+            total_objects = font_obj_num + 1
+            
+            f.write(b'xref\n')
+            f.write(f'0 {total_objects}\n'.encode())
+            f.write(b'0000000000 65535 f \n')  # Objet 0 (toujours libre)
+            
+            # Écrire les entrées xref pour tous les objets
+            for i in range(1, total_objects):
+                if i in object_positions:
+                    f.write(f'{object_positions[i]:010d} 00000 n \n'.encode())
+                else:
+                    f.write(b'0000000000 00000 f \n')  # Marquer comme libre si absent
+            
+            # Bande-annonce
+            trailer = f'''trailer
+<<
+/Size {total_objects}
+/Root 1 0 R
+>>
+startxref
+{xref_start}
+%%EOF
+'''.encode('utf-8')
+            f.write(trailer)
+            
+    except PermissionError:
+        raise PermissionError(f"Permission refusée lors de l'écriture dans le fichier : {file_path}")
+    except OSError as e:
+        raise OSError(f"Erreur système lors de l'écriture du fichier PDF : {str(e)}")
+    except IOError as e:
+        raise IOError(f"Erreur d'E/S lors de l'écriture du fichier PDF : {str(e)}")
+    except UnicodeEncodeError as e:
+        raise ValueError(f"Erreur d'encodage Unicode dans le contenu PDF : {str(e)}")
+
+
+def _prepare_pdf_pages(title: str, content_lines: List[str], *info_lines: str) -> List[str]:
+    """
+    Préparer le contenu PDF réparti sur plusieurs pages.
+    
+    Args:
+        title: Titre du document
+        content_lines: Liste des lignes de contenu
+        *info_lines: Lignes d'information supplémentaires
+    
+    Returns:
+        List[str]: Liste des contenus de pages (flux de contenu PDF)
+        
+    Raises:
+        ValueError: Si les paramètres fournis sont invalides
+        TypeError: Si les paramètres sont du mauvais type
+    """
+    if not isinstance(title, str):
+        raise TypeError("Le titre doit être une chaîne de caractères")
+    if not isinstance(content_lines, list):
+        raise TypeError("Les lignes de contenu doivent être une liste")
+    
+    try:
+        pages = []
+        lines_per_page = 55  # Nombre conservateur de lignes tenant sur une page
+        first_page_content_lines = lines_per_page - 10  # Tenir compte du titre et des infos
+        other_page_content_lines = lines_per_page - 4   # Tenir compte de l'en-tête de page
+        
+        # Envelopper d'abord toutes les lignes de contenu
+        wrapped_lines = []
+        display_line_number = 1
+        
+        if not content_lines:
+            wrapped_lines = ["Aucun contenu disponible."]
+        else:
+            for content_line in content_lines:
+                try:
+                    wrapped_content = _wrap_log_line(content_line, display_line_number)
+                    wrapped_lines.extend(wrapped_content)
+                    display_line_number += 1
+                except (TypeError, ValueError) as e:
+                    # Gérer proprement les lignes problématiques
+                    wrapped_lines.append(f"{display_line_number:4d}: [Erreur lors du traitement de la ligne : {str(e)}]")
+                    display_line_number += 1
+        
+        # Répartir les lignes enveloppées sur plusieurs pages
+        processed_lines = 0
+        page_num = 1
+        
+        while processed_lines < len(wrapped_lines):
+            is_first_page = (page_num == 1)
+            max_lines_this_page = first_page_content_lines if is_first_page else other_page_content_lines
+            
+            # Récupérer les lignes pour cette page
+            end_line = min(processed_lines + max_lines_this_page, len(wrapped_lines))
+            lines_for_this_page = wrapped_lines[processed_lines:end_line]
+            
+            if lines_for_this_page:
+                try:
+                    page_content = _create_page_content(title, lines_for_this_page, page_num, is_first_page, *info_lines)
+                    pages.append(page_content)
+                except (ValueError, TypeError) as e:
+                    # Créer une page de secours si la création du contenu échoue
+                    fallback_content = f"BT\n/F1 12 Tf\n50 400 Td\n(Erreur lors de la création de la page {page_num} : {_escape_pdf_string(str(e))}) Tj\nET"
+                    pages.append(fallback_content)
+                
+                processed_lines = end_line
+                page_num += 1
+                
+                # Vérification de sécurité pour éviter les boucles infinies
+                if page_num > 100:  # Maximum raisonnable
+                    break
+            else:
+                break
+        
+        # S'assurer qu'il existe au moins une page
+        if not pages:
+            try:
+                fallback_page = _create_page_content(title, ["Aucun contenu disponible."], 1, True, *info_lines)
+                pages.append(fallback_page)
+            except (ValueError, TypeError):
+                # Secours ultime
+                pages.append("BT\n/F1 12 Tf\n50 400 Td\n(Erreur : impossible de créer le contenu de la page) Tj\nET")
+        
+        return pages
+        
+    except MemoryError:
+        raise ValueError("Contenu trop volumineux à traiter - mémoire insuffisante")
+    except RecursionError:
+        raise ValueError("Structure de contenu trop complexe - limite de récursion dépassée")
+
+
+def _create_page_content(title: str, content_lines: List[str], page_number: int, is_first_page: bool, *info_lines: str) -> str:
+    """
+    Créer le flux de contenu PDF pour une seule page.
+    
+    Args:
+        title: Titre du document
+        content_lines: Liste des lignes de contenu pour cette page
+        page_number: Numéro de la page actuelle
+        is_first_page: Indique s'il s'agit de la première page
+        *info_lines: Lignes d'information supplémentaires
+    
+    Returns:
+        str: Flux de contenu PDF pour cette page
+        
+    Raises:
+        ValueError: Si les paramètres fournis sont invalides
+        TypeError: Si les paramètres sont du mauvais type
+    """
+    if not isinstance(title, str):
+        raise TypeError("Le titre doit être une chaîne de caractères")
+    if not isinstance(content_lines, list):
+        raise TypeError("Les lignes de contenu doivent être une liste")
+    if not isinstance(page_number, int) or page_number < 1:
+        raise ValueError("Le numéro de page doit être un entier positif")
+    if not isinstance(is_first_page, bool):
+        raise TypeError("is_first_page doit être un booléen")
+    
+    try:
+        lines = []
+        
+        # Démarrer le flux de contenu
+        lines.append("BT")  # Début du texte
+        lines.append("/F1 8 Tf")  # Définir la police tôt
+        
+        if is_first_page:
+            # Première page : en-tête complet avec titre et infos
+            lines.append("50 750 Td")  # Aller à la position du haut
+            lines.append("/F1 16 Tf")  # Police plus grande pour le titre
+            lines.append(f"({_escape_pdf_string(title)}) Tj")
+            
+            # Ajouter les lignes d'information
+            lines.append("/F1 10 Tf")  # Police plus petite pour les infos
+            for info_line in info_lines:
+                lines.append("0 -15 Td")  # Descendre de 15 points
+                lines.append(f"({_escape_pdf_string(info_line)}) Tj")
+            
+            lines.append("0 -20 Td")  # Espace supplémentaire avant le contenu
+            lines.append("/F1 8 Tf")   # Définir la police du contenu
+        else:
+            # Pages suivantes : en-tête de page simple
+            lines.append("50 750 Td")  # Aller à la position du haut
+            lines.append("/F1 12 Tf")  # Police moyenne pour l'en-tête de page
+            lines.append(f"({_escape_pdf_string(f'{title} - Page {page_number}')}) Tj")
+            lines.append("0 -25 Td")   # Descendre avant le contenu
+            lines.append("/F1 8 Tf")   # Définir la police du contenu
+        
+        # Ajouter les lignes de contenu
+        for i, content_line in enumerate(content_lines):
+            lines.append("0 -12 Td")  # Descendre de 12 points
+            try:
+                escaped_line = _escape_pdf_string(content_line)
+                lines.append(f"({escaped_line}) Tj")
+            except (TypeError, ValueError):
+                # Gérer proprement le contenu problématique
+                lines.append(f"([Ligne {i+1} : erreur lors du traitement du contenu]) Tj")
+        
+        # Ajouter le numéro de page en bas (déplacement en position absolue)
+        lines.append("50 30 Td")  # Aller en bas à gauche (position absolue)
+        lines.append("/F1 8 Tf")  # S'assurer que la police est définie
+        lines.append(f"({_escape_pdf_string(f'Page {page_number}')}) Tj")
+        
+        lines.append("ET")  # Fin du texte
+        
+        return "\n".join(lines)
+        
+    except MemoryError:
+        # Retourner une page d'erreur minimale en cas de manque de mémoire
+        return f"BT\n/F1 12 Tf\n50 400 Td\n(Erreur : page {page_number} - mémoire insuffisante) Tj\nET"
+
+
+def _wrap_log_line(content_line: str, line_number: int, max_width: int = 75) -> List[str]:
+    """
+    Découper une ligne de log unique en plusieurs lignes si elle est trop longue.
+    
+    Args:
+        content_line: La ligne de log originale
+        line_number: Le numéro de ligne à afficher
+        max_width: Nombre maximal de caractères par ligne (en tenant compte du préfixe du numéro de ligne)
+    
+    Returns:
+        List[str]: Liste des lignes découpées avec le formatage approprié
+        
+    Raises:
+        TypeError: Si les paramètres sont du mauvais type
+        ValueError: Si les paramètres sont invalides
+    """
+    if not isinstance(content_line, str):
+        raise TypeError("La ligne de contenu doit être une chaîne de caractères")
+    if not isinstance(line_number, int) or line_number < 1:
+        raise ValueError("Le numéro de ligne doit être un entier positif")
+    if not isinstance(max_width, int) or max_width < 10:
+        raise ValueError("La largeur maximale doit être un entier >= 10")
+    
+    try:
+        # Calculer la largeur disponible après le préfixe du numéro de ligne
+        line_prefix = f"{line_number:4d}: "
+        continuation_prefix = "      "  # 6 espaces pour aligner avec le contenu
+        available_width = max_width - len(line_prefix)
+        
+        if available_width < 10:
+            # Solution de secours pour les largeurs très faibles
+            return [f"{line_number:4d}: {content_line[:10]}..."]
+        
+        try:
+            # Utiliser textwrap pour couper les lignes longues sur les limites des mots
+            wrapped_content = textwrap.fill(
+                content_line,
+                width=available_width,
+                break_long_words=True,
+                break_on_hyphens=True,
+                expand_tabs=True,
+                replace_whitespace=False
+            )
+        except (TypeError, ValueError):
+            # Solution de secours avec troncature simple si textwrap échoue
+            if len(content_line) > available_width:
+                wrapped_content = content_line[:available_width-3] + "..."
+            else:
+                wrapped_content = content_line
+        
+        wrapped_lines = wrapped_content.split('\n')
+        
+        # Formater les lignes avec les préfixes appropriés
+        formatted_lines = []
+        for i, line in enumerate(wrapped_lines):
+            if i == 0:
+                # La première ligne reçoit le numéro de ligne
+                formatted_lines.append(f"{line_prefix}{line}")
+            else:
+                # Les lignes suivantes sont indentées pour s'aligner avec le contenu
+                formatted_lines.append(f"{continuation_prefix}{line}")
+        
+        return formatted_lines
+        
+    except MemoryError:
+        # Solution de secours en cas de problème mémoire
+        return [f"{line_number:4d}: [Erreur mémoire lors du traitement de la ligne]"]
+    except RecursionError:
+        # Solution de secours en cas de problème de récursion
+        return [f"{line_number:4d}: [Erreur de récursion lors du traitement de la ligne]"]
+
+
 def _escape_pdf_string(text: str) -> str:
+    """
+    Échapper les caractères spéciaux dans les chaînes PDF.
+    
+    Args:
+        text: Texte à échapper
+    
+    Returns:
+        str: Texte échappé, sûr pour le PDF
+        
+    Raises:
+        TypeError: Si text n'est pas une chaîne de caractères
+    """
     if text is None:
         return ""
-    text = str(text)
-    text = text.replace("\\", "\\\\")
-    text = text.replace("(", "\\(")
-    text = text.replace(")", "\\)")
-    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
-    return "".join(c if 32 <= ord(c) <= 126 else " " for c in text)
-
-
-def _create_simple_pdf(pdf_path: str, title: str,
-                       lines: List[str], *info_lines: str) -> None:
-    LINES_PER_PAGE = 55
-    wrapped: List[str] = []
-    for i, line in enumerate(lines, 1):
-        prefix = f"{i:4d}: "
-        avail  = 90 - len(prefix)
-        parts  = textwrap.wrap(line or " ", avail, break_long_words=True) or [" "]
-        for j, part in enumerate(parts):
-            wrapped.append(f"{prefix if j == 0 else '      '}{part}")
-
-    pages = [wrapped[i: i + LINES_PER_PAGE]
-             for i in range(0, max(1, len(wrapped)), LINES_PER_PAGE)]
-
-    objects: List[str] = []
-
-    def add(obj: str) -> int:
-        objects.append(obj)
-        return len(objects)
-
-    catalog_id = add("")   # 1
-    pages_id   = add("")   # 2
-    font_id    = add("3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj")
-
-    page_ids: List[int] = []
-
-    for p_idx, page_lines in enumerate(pages):
-        is_first = (p_idx == 0)
-        page_num = p_idx + 1
-
-        cl: List[str] = ["BT", "/F1 8 Tf"]
-        if is_first:
-            cl += ["50 750 Td", "/F1 14 Tf",
-                   f"({_escape_pdf_string(title)}) Tj", "/F1 9 Tf"]
-            for il in info_lines:
-                cl += ["0 -14 Td", f"({_escape_pdf_string(il)}) Tj"]
-            cl += ["0 -18 Td", "/F1 8 Tf"]
-        else:
-            cl += ["50 750 Td", "/F1 11 Tf",
-                   f"({_escape_pdf_string(f'{title} - page {page_num}')}) Tj",
-                   "0 -20 Td", "/F1 8 Tf"]
-
-        for line in page_lines:
-            cl += ["0 -11 Td", f"({_escape_pdf_string(line)}) Tj"]
-
-        cl += ["50 25 Td", "/F1 7 Tf",
-               f"(Page {page_num}/{len(pages)}) Tj", "ET"]
-        stream_body = "\n".join(cl)
-
-        sid = add(f"{len(objects)+1} 0 obj\n<< /Length {len(stream_body)} >>\n"
-                  f"stream\n{stream_body}\nendstream\nendobj")
-        pid = add(f"{len(objects)+1} 0 obj\n"
-                  f"<< /Type /Page /Parent {pages_id} 0 R "
-                  f"/MediaBox [0 0 612 792] "
-                  f"/Contents {sid} 0 R "
-                  f"/Resources << /Font << /F1 {font_id} 0 R >> >> >>\n"
-                  f"endobj")
-        page_ids.append(pid)
-
-    objects[catalog_id - 1] = (
-        f"1 0 obj\n<< /Type /Catalog /Pages {pages_id} 0 R >>\nendobj"
-    )
-    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
-    objects[pages_id - 1] = (
-        f"2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>\nendobj"
-    )
-
-    numbered: List[str] = []
-    for i, obj in enumerate(objects, 1):
-        if not obj.startswith(f"{i} 0 obj"):
-            obj = f"{i} 0 obj\n" + obj.split(" 0 obj\n", 1)[-1]
-        numbered.append(obj)
-
-    body    = "%PDF-1.4\n"
-    offsets: List[int] = []
-    for obj in numbered:
-        offsets.append(len(body))
-        body += obj + "\n"
-
-    xref_offset = len(body)
-    xref = f"xref\n0 {len(numbered)+1}\n0000000000 65535 f \n"
-    for off in offsets:
-        xref += f"{off:010d} 00000 n \n"
-
-    trailer = (f"trailer\n<< /Size {len(numbered)+1} /Root 1 0 R >>\n"
-               f"startxref\n{xref_offset}\n%%EOF\n")
-
-    with open(pdf_path, "w", errors="replace") as f:
-        f.write(body + xref + trailer)
+    
+    try:
+        # Convertir en chaîne si ce n'est pas déjà le cas
+        text = str(text)
+        
+        # Remplacer les caractères spéciaux des chaînes PDF
+        text = text.replace('\\', '\\\\')  # L'antislash doit être traité en premier
+        text = text.replace('(', '\\(')
+        text = text.replace(')', '\\)')
+        text = text.replace('\r', ' ')
+        text = text.replace('\n', ' ')
+        text = text.replace('\t', ' ')
+        
+        # Supprimer ou remplacer les caractères non imprimables
+        cleaned_text = ""
+        for char in text:
+            try:
+                char_ord = ord(char)
+                if 32 <= char_ord <= 126:
+                    cleaned_text += char
+                else:
+                    cleaned_text += " "  # Remplacer par un espace
+            except (TypeError, ValueError):
+                cleaned_text += " "  # Remplacer les caractères problématiques par un espace
+        
+        return cleaned_text
+        
+    except (TypeError, ValueError, AttributeError):
+        return f"[Erreur lors du traitement du texte : {type(text).__name__}]"
+    except MemoryError:
+        return "[Erreur mémoire lors du traitement du texte]"

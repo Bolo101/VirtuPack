@@ -49,7 +49,7 @@ class QCow2CloneResizer:
         
         try:
             if progress_callback:
-                progress_callback(0, "Preparing compression...")
+                progress_callback(0, "Préparation de la compression...")
             
             print(f"Starting compression of: {image_path}")
             
@@ -62,7 +62,7 @@ class QCow2CloneResizer:
             print(f"  File size: {QCow2CloneResizer.format_size(original_file_size)}")
             
             if progress_callback:
-                progress_callback(2, "Creating temporary file...")
+                progress_callback(2, "Création du fichier temporaire...")
             
             # Remove temp file if it exists
             if os.path.exists(temp_compressed_path):
@@ -72,7 +72,7 @@ class QCow2CloneResizer:
                     print(f"Warning: Could not remove existing temp file: {e}")
             
             if progress_callback:
-                progress_callback(5, "Starting compression...")
+                progress_callback(5, "Démarrage de la compression...")
             
             # Compression command
             cmd = [
@@ -117,7 +117,7 @@ class QCow2CloneResizer:
                                 scaled_progress = 5 + int(percent * 0.85)
                                 
                                 if progress_callback:
-                                    progress_callback(scaled_progress, f"Compressing: {int(percent)}%")
+                                    progress_callback(scaled_progress, f"Compression : {int(percent)}%")
                                 
                                 last_update_time = current_time
                         except (ValueError, IndexError, AttributeError):
@@ -129,7 +129,7 @@ class QCow2CloneResizer:
                 raise subprocess.CalledProcessError(return_code, cmd)
             
             if progress_callback:
-                progress_callback(92, "Compression complete, verifying...")
+                progress_callback(92, "Compression terminée, vérification...")
             
             # Verify compressed image was created
             if not os.path.exists(temp_compressed_path):
@@ -150,7 +150,7 @@ class QCow2CloneResizer:
             print(f"  Compression ratio: {compression_ratio:.1f}%")
             
             if progress_callback:
-                progress_callback(95, "Checking compression savings...")
+                progress_callback(95, "Vérification des gains de compression...")
             
             # Check if compression is worth it (more than 1MB savings)
             min_savings = 1024 * 1024
@@ -159,7 +159,7 @@ class QCow2CloneResizer:
                 QCow2CloneResizer._force_remove_file(temp_compressed_path)
                 
                 if progress_callback:
-                    progress_callback(100, "Compression skipped (minimal savings)")
+                    progress_callback(100, "Compression ignorée (gains minimes)")
                 
                 return {
                     'original_size': original_file_size,
@@ -169,7 +169,7 @@ class QCow2CloneResizer:
                 }
             
             if progress_callback:
-                progress_callback(97, "Replacing original with compressed version...")
+                progress_callback(97, "Remplacement de l'original par la version compressée...")
             
             print(f"Replacing original with compressed version...")
             
@@ -191,7 +191,7 @@ class QCow2CloneResizer:
             print(f"Image compression completed and replaced in place")
             
             if progress_callback:
-                progress_callback(100, "Compression complete")
+                progress_callback(100, "Compression terminée")
             
             return {
                 'original_size': original_file_size,
@@ -933,7 +933,7 @@ class QCow2CloneResizer:
         """Create a new QCOW2 image with specified size and metadata preallocation"""
         try:
             if progress_callback:
-                progress_callback(20, "Creating new image with metadata preallocation...")
+                progress_callback(20, "Création de la nouvelle image avec préallocation des métadonnées...")
             
             # Remove file if it already exists
             if os.path.exists(target_path):
@@ -982,7 +982,7 @@ class QCow2CloneResizer:
                         if percent > last_percent:
                             progress_callback(
                                 percent,
-                                f"Creating image... {int(elapsed)}s elapsed ({int(size_gb)}GB)"
+                                f"Création de l'image... {int(elapsed)}s écoulées ({int(size_gb)} Go)"
                             )
                             last_percent = percent
                     
@@ -1028,7 +1028,7 @@ class QCow2CloneResizer:
             print(f"  Format: {verify_info['format']}")
             
             if progress_callback:
-                progress_callback(30, "New image created successfully")
+                progress_callback(30, "Nouvelle image créée avec succès")
             
             return target_path
             
@@ -1064,7 +1064,7 @@ class QCow2CloneResizer:
         """
         try:
             if progress_callback:
-                progress_callback(40, "Cloning partition table...")
+                progress_callback(40, "Clonage de la table des partitions...")
 
             print(f"Cloning disk structure from {source_nbd} to {target_nbd}")
 
@@ -1081,7 +1081,7 @@ class QCow2CloneResizer:
             subprocess.run(dd_cmd, capture_output=True, text=True, check=True)
 
             if progress_callback:
-                progress_callback(50, "Recreating partition table...")
+                progress_callback(50, "Recréation de la table des partitions...")
 
             # ── Step 2: Detect partition table type and flags from source ─────
             parted_result = subprocess.run(
@@ -1131,7 +1131,7 @@ class QCow2CloneResizer:
                 is_last  = (i == last_index)
 
                 if progress_callback:
-                    progress_callback(55 + i * 5, f"Creating partition {part_num}...")
+                    progress_callback(55 + i * 5, f"Création de la partition {part_num}...")
 
                 # ── Both start AND end must use the same unit (bytes) ─────────
                 # Mixing units (e.g. '538MB' start + '32234274816B' end) causes
@@ -1368,7 +1368,7 @@ class QCow2CloneResizer:
 
             if progress_callback:
                 pct = 60 + int((idx / total) * 30)
-                progress_callback(pct, f"Cloning partition {part_num}/{total} ({QCow2CloneResizer.format_size(src_size_bytes)})...")
+                progress_callback(pct, f"Clonage de la partition {part_num}/{total} ({QCow2CloneResizer.format_size(src_size_bytes)})...")
 
             print(f"\n[Partition {part_num}/{total}]")
             print(f"  src : {src_device}  ({QCow2CloneResizer.format_size(src_size_bytes)})")
@@ -1403,7 +1403,7 @@ class QCow2CloneResizer:
                     f"dd FAILED for partition {part_num} ({src_device} → {dst_device}):\n{err_detail}"
                 )
         if progress_callback:
-            progress_callback(90, f"All {total} partitions cloned successfully")
+            progress_callback(90, f"{total} partitions clonées avec succès")
 
         print(f"\n{'='*60}")
         print(f"✓ All {total} partition(s) cloned — {os_type.upper()} ({source_nbd} → {target_nbd})")
